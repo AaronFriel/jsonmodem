@@ -1,0 +1,1412 @@
+//! The JSON streaming parser implementation.
+//!
+//! This module provides the `StreamingParser` for incremental JSON parsing,
+//! capable of processing input in chunks and emitting `ParseEvent`s.
+//!
+//! # Examples
+//!
+//! Basic usage:
+//!
+//! ```rust
+//! use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+//!
+//! let mut parser = StreamingParser::new(ParserOptions::default());
+//! parser.feed(r#"{"key": [null, true, 3.14]}"#);
+//! for event in parser.finish() {
+//!     let event = event.unwrap();
+//!     println!("{:?}", event);
+//! }
+//! ```
+#![allow(clippy::single_match_else)]
+#![allow(clippy::enum_glob_use)]
+#![allow(clippy::struct_excessive_bools)]
+
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::{f64, fmt};
+
+#[cfg(test)]
+use crate::Value;
+use crate::{
+    buffer::Buffer,
+    escape_buffer::UnicodeEscapeBuffer,
+    event::{ParseEvent, PathComponent},
+    event_stack::EventStack,
+    literal_buffer::{self, ExpectedLiteralBuffer},
+    options::ParserOptions,
+    value_zipper::{ValueBuilder, ZipperError},
+};
+
+// ------------------------------------------------------------------------------------------------
+// Lexer - internal tokens & states
+// ------------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) enum TokenValue {
+    Eof,
+    String {
+        value: String,
+        fragment: String,
+    },
+    Boolean(bool),
+    Null,
+    Number(f64),
+    #[allow(clippy::doc_link_with_quotes)]
+    /// Must be one of: `{` `}` `[` `]` `:` `,`
+    Punctuator(u8),
+    // /// for testing purposes, arbitrary whitespace between tokens
+    // #[cfg(test)] TODO
+    // Whitespace(String),
+}
+
+impl TokenValue {
+    /// Returns `true` if the token value is [`Eof`].
+    ///
+    /// [`Eof`]: TokenValue::Eof
+    #[must_use]
+    fn is_eof(&self) -> bool {
+        matches!(self, Self::Eof)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Token {
+    pub(crate) value: TokenValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Represents a peeked character from the input buffer.
+enum PeekedChar {
+    /// None if the buffer is empty
+    Empty,
+    /// Some character
+    Char(char),
+    /// End of input, the input stream is closed.
+    EndOfInput,
+}
+
+use PeekedChar::*;
+
+/// ------------------------------------------------------------------------------------------------
+/// State machines (1‑for‑1 with TS enums)
+/// ------------------------------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    Start,
+    BeforePropertyName,
+    AfterPropertyName,
+    BeforePropertyValue,
+    BeforeArrayValue,
+    AfterPropertyValue,
+    AfterArrayValue,
+    End,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LexState {
+    Default,
+    Value,
+    ValueLiteral,
+    Sign,
+    Zero,
+    DecimalInteger,
+    DecimalPoint,
+    DecimalFraction,
+    DecimalExponent,
+    DecimalExponentSign,
+    DecimalExponentInteger,
+    String,
+    Start,
+    StringEscape,
+    StringEscapeUnicode,
+    BeforePropertyName,
+    AfterPropertyName,
+    BeforePropertyValue,
+    BeforeArrayValue,
+    AfterPropertyValue,
+    AfterArrayValue,
+    End,
+    Error,
+}
+
+impl From<ParseState> for LexState {
+    fn from(state: ParseState) -> Self {
+        match state {
+            ParseState::Start => LexState::Start,
+            ParseState::BeforePropertyName => LexState::BeforePropertyName,
+            ParseState::AfterPropertyName => LexState::AfterPropertyName,
+            ParseState::BeforePropertyValue => LexState::BeforePropertyValue,
+            ParseState::BeforeArrayValue => LexState::BeforeArrayValue,
+            ParseState::AfterPropertyValue => LexState::AfterPropertyValue,
+            ParseState::AfterArrayValue => LexState::AfterArrayValue,
+            ParseState::End => LexState::End,
+            ParseState::Error => LexState::Error,
+        }
+    }
+}
+
+/// Stack entry – one per open container
+#[derive(Clone, Debug)]
+pub enum Frame {
+    Array {
+        next_index: usize, // slot for the next element
+    },
+    Object {
+        pending_key: Option<String>, // key waiting for its value
+    },
+}
+
+impl Frame {
+    pub fn new_array_frame() -> Self {
+        Frame::Array { next_index: 0 }
+    }
+
+    pub fn new_object_frame() -> Self {
+        Frame::Object { pending_key: None }
+    }
+
+    pub fn to_path_component(&self) -> PathComponent {
+        match self {
+            Frame::Array { next_index } => PathComponent::Index(*next_index),
+            Frame::Object { pending_key } => {
+                PathComponent::Key(pending_key.clone().unwrap_or_default())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FrameStack {
+    root: Option<Frame>,
+    stack: Vec<(PathComponent, Frame)>,
+}
+
+impl Default for FrameStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FrameStack {
+    pub fn new() -> Self {
+        Self {
+            root: None,
+            stack: Vec::new(),
+        }
+    }
+
+    pub fn last(&self) -> Option<&Frame> {
+        if let Some((_, frame)) = self.stack.last() {
+            return Some(frame);
+        }
+        self.root.as_ref()
+    }
+
+    pub fn last_mut(&mut self) -> Option<&mut Frame> {
+        if let Some((_, frame)) = self.stack.last_mut() {
+            Some(frame)
+        } else {
+            self.root.as_mut()
+        }
+    }
+
+    pub fn push(&mut self, frame: Frame) {
+        match self.last() {
+            Some(last_frame) => {
+                let next_path_component = last_frame.to_path_component();
+                self.stack.push((next_path_component, frame));
+            }
+            None => {
+                self.root = Some(frame);
+            }
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<Frame> {
+        match self.stack.pop() {
+            Some((_, f)) => Some(f),
+            None => self.root.take(),
+        }
+    }
+
+    pub fn to_path_components(&self) -> Vec<PathComponent> {
+        self.stack.iter().map(|(pc, _)| pc.clone()).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.root = None;
+        self.stack.clear();
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Parser itself
+// ------------------------------------------------------------------------------------------------
+
+struct ParseResult {
+    events: Vec<ParseEvent>,
+}
+
+#[derive(Debug)]
+/// The streaming JSON parser.
+///
+/// `StreamingParser` can be fed partial or complete JSON input in chunks.
+/// It implements `Iterator` to yield `ParseEvent`s representing JSON tokens
+/// and structural events.
+///
+/// # Examples
+///
+/// ```rust
+/// use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+///
+/// let mut parser = StreamingParser::new(ParserOptions::default());
+/// parser.feed(r#"[{"key": "value"}, true, null]"#);
+/// let mut closed = parser.finish();
+/// while let Some(result) = closed.next() {
+///     let event = result.unwrap();
+///     println!("{:?}", event);
+/// }
+/// ```
+pub struct StreamingParser {
+    // Raw source buffer (always grows then gets truncated after each “round”).
+    source: Buffer,
+    end_of_input: bool,
+
+    /// Current *global* character position.
+    pos: usize,
+    line: usize,
+    column: usize,
+
+    /// Current parse / lex states
+    parse_state: ParseState,
+    lex_state: LexState,
+
+    /// Lexer helpers
+    buffer: String, // reused for numbers / literals / strings
+    partial_buffer: String, // only for PartialString events
+    unicode_escape_buffer: UnicodeEscapeBuffer, // for unicode escapes
+    expected_literal: ExpectedLiteralBuffer,
+    partial_lex: bool, // true ← we returned an *incomplete* token
+
+    /// Last token we produced
+    token: Token,
+    frames: FrameStack, // stack of open containers (arrays or objects)
+    events: EventStack,
+
+    multiple_values: bool,
+    emit_completed_strings: bool,
+    emit_non_scalar_values: bool,
+    emit_completed_values: bool,
+
+    /// Panic on syntax errors instead of returning them
+    #[cfg(test)]
+    panic_on_error: bool,
+
+    /// Sequence of tokens produced by the lexer.
+    #[cfg(test)]
+    lexed_tokens: Vec<Token>,
+}
+
+impl Default for StreamingParser {
+    fn default() -> Self {
+        Self::new(ParserOptions::default())
+    }
+}
+
+impl Iterator for StreamingParser {
+    type Item = Result<ParseEvent, ParserError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_event()
+    }
+}
+
+/// A `StreamingParser` that has been closed to further input.
+///
+/// Returned by [`StreamingParser::finish`], this parser will process any
+/// remaining input and then end. It implements `Iterator` to yield
+/// `ParseEvent` results.
+pub struct ClosedStreamingParser {
+    parser: StreamingParser,
+}
+
+impl ClosedStreamingParser {
+    #[cfg(test)]
+    pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
+        self.parser.get_lexed_tokens()
+    }
+}
+
+impl Iterator for ClosedStreamingParser {
+    type Item = Result<ParseEvent, ParserError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.parser.next_event()
+    }
+}
+
+impl StreamingParser {
+    #[must_use]
+    /// Creates a new `StreamingParser` with the given options.
+    ///
+    /// # Arguments
+    ///
+    /// * `options` - Parser configuration options.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonmodem::{ParserOptions, StreamingParser};
+    ///
+    /// let parser = StreamingParser::new(ParserOptions {
+    ///     allow_multiple_json_values: true,
+    ///     ..Default::default()
+    /// });
+    /// ```
+    pub fn new(options: ParserOptions) -> Self {
+        Self {
+            source: Buffer::new(),
+            end_of_input: false,
+            partial_lex: false,
+
+            pos: 0,
+            line: 1,
+            column: 1,
+
+            lex_state: LexState::Default,
+            parse_state: ParseState::Start,
+
+            buffer: String::new(),
+            partial_buffer: String::new(),
+            unicode_escape_buffer: UnicodeEscapeBuffer::new(),
+            expected_literal: ExpectedLiteralBuffer::none(),
+            frames: FrameStack::new(),
+
+            events: EventStack::new(
+                vec![],
+                if options.emit_non_scalar_values || options.emit_completed_values {
+                    Some(ValueBuilder::Empty)
+                } else {
+                    None
+                },
+            ),
+
+            token: Token {
+                value: TokenValue::Eof,
+            },
+
+            multiple_values: options.allow_multiple_json_values,
+            emit_completed_strings: options.emit_completed_strings,
+            emit_non_scalar_values: options.emit_non_scalar_values,
+            emit_completed_values: options.emit_completed_values,
+            #[cfg(test)]
+            panic_on_error: options.panic_on_error,
+            #[cfg(test)]
+            lexed_tokens: vec![],
+        }
+    }
+
+    /// Feeds a chunk of JSON text into the parser.
+    ///
+    /// The parser buffers the input and parses it incrementally,
+    /// yielding events when complete JSON tokens or structures are recognized.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A string slice containing JSON data or partial data.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use jsonmodem::{StreamingParser, ParserOptions};
+    /// let mut parser = StreamingParser::new(ParserOptions::default());
+    /// parser.feed("{\"hello\":");
+    /// ```
+    pub fn feed(&mut self, text: &str) {
+        self.source.push(text);
+    }
+
+    #[must_use]
+    /// Marks the end of input and returns a closed parser to consume pending
+    /// events.
+    ///
+    /// After calling `finish`, no further input can be fed. The returned
+    /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
+    /// and then ends.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+    /// let mut parser = StreamingParser::new(ParserOptions::default());
+    /// parser.feed("true");
+    /// let mut closed = parser.finish();
+    /// assert_eq!(
+    ///     closed.next().unwrap().unwrap(),
+    ///     ParseEvent::Boolean {
+    ///         path: vec![],
+    ///         value: true
+    ///     }
+    /// );
+    /// ```
+    pub fn finish(mut self) -> ClosedStreamingParser {
+        self.end_of_input = true;
+        ClosedStreamingParser { parser: self }
+    }
+
+    #[doc(hidden)]
+    pub fn feed_todo_remove_me(&mut self, text: &str) -> Result<Vec<ParseEvent>, ParserError> {
+        let ParseResult { events, .. } = self.parse_internal(text)?;
+        Ok(events)
+    }
+
+    #[doc(hidden)]
+    /// Process the remainder of the input as end-of-input and return any
+    /// pending parse events.
+    pub fn finish_todo_remove_me(&mut self, text: &str) -> Result<Vec<ParseEvent>, ParserError> {
+        self.end_of_input = true;
+
+        // Parse any final chunk (if provided), then flush builder state.
+        let mut events = Vec::new();
+        // Propagate any syntax errors on final input.
+        let ParseResult { events: evts, .. } = self.parse_internal(text)?;
+        events.extend(evts);
+        // Flush any remaining builder state by parsing empty input in end-of-input
+        // mode.
+        let ParseResult { events: evts, .. } = self.parse_internal("")?;
+        events.extend(evts);
+        Ok(events)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_value(&self) -> Option<Value> {
+        self.events.read_root().cloned()
+    }
+
+    /// Drive the parser until we either
+    ///   * produce one `ParseEvent`, or
+    ///   * reach "need more data / end‑of‑input"
+    ///   * encounter a syntax error
+    ///
+    /// Returns:
+    /// * `Some(Ok(event))`      – one event ready
+    /// * `Some(Err(err))`       - the parser has errored, and no more events
+    ///   can be produced
+    /// * `None`                 – the parser has no events.
+    fn next_event(&mut self) -> Option<Result<ParseEvent, ParserError>> {
+        match self.next_event_internal() {
+            Some(Ok(event)) => Some(Ok(event)),
+            None => None,
+            Some(Err(err)) => {
+                #[cfg(test)]
+                assert!(
+                    !self.panic_on_error,
+                    "Syntax error at {}:{}: {err}",
+                    self.line, self.column
+                );
+                self.parse_state = ParseState::Error;
+                self.lex_state = LexState::Error;
+                Some(Err(err))
+            }
+        }
+    }
+
+    fn next_event_internal(&mut self) -> Option<Result<ParseEvent, ParserError>> {
+        if self.parse_state == ParseState::Error {
+            // If we are in error state, we can’t produce any more events
+            return None;
+        }
+
+        loop {
+            #[cfg(any(test, feature = "fuzzing"))]
+            assert!(
+                self.events.len() <= 1,
+                "Internal error: more than one event in the queue"
+            );
+            // Anything already queued up?
+            if let Some(ev) = self.events.pop() {
+                return Some(Ok(ev));
+            }
+
+            // Streaming reset (mirrors TS `if (this.stream && this.parseState === 'end')`)
+            if self.multiple_values && matches!(self.parse_state, ParseState::End) {
+                // Reset *except* the source buffer
+                self.lex_state = LexState::Default;
+                self.parse_state = ParseState::Start;
+                self.frames.clear();
+                self.events = EventStack::new(
+                    vec![],
+                    if self.emit_non_scalar_values || self.emit_completed_values {
+                        Some(ValueBuilder::Empty)
+                    } else {
+                        None
+                    },
+                );
+            }
+
+            // Drive the old lexer / dispatcher one token forward
+            self.token = match self.lex() {
+                Ok(tok) => tok,
+                Err(err) => {
+                    #[cfg(test)]
+                    assert!(
+                        !self.panic_on_error,
+                        "Syntax error at {}:{}: {err}",
+                        self.line, self.column
+                    );
+                    return Some(Err(err));
+                }
+            };
+            match self.dispatch_parse_state() {
+                Ok(()) => {}
+                Err(err) => {
+                    #[cfg(test)]
+                    assert!(
+                        !self.panic_on_error,
+                        "Syntax error at {}:{}: {err}",
+                        self.line, self.column
+                    );
+                    return Some(Err(err));
+                }
+            }
+
+            // Stop when we reach EoF or partial token
+            if self.token.value.is_eof() || self.partial_lex {
+                break;
+            }
+        }
+
+        None
+    }
+
+    fn parse_internal(&mut self, text: &str) -> Result<ParseResult, ParserError> {
+        self.source.push(text);
+
+        let mut events = vec![];
+        while let Some(res) = self.next_event() {
+            events.push(res?);
+        }
+
+        Ok(ParseResult { events })
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Lexer
+    // ------------------------------------------------------------------------------------------------
+
+    fn lex(&mut self) -> Result<Token, ParserError> {
+        if !self.partial_lex {
+            self.lex_state = LexState::Default;
+        }
+
+        loop {
+            let next_char = self.peek_char();
+            if let Some(tok) = self.lex_state_step(self.lex_state, next_char)? {
+                #[cfg(test)]
+                self.lexed_tokens.push(tok.clone());
+                return Ok(tok);
+            }
+        }
+    }
+
+    /// Convenience – TS uses `undefined | eof` sentinel.  We return `None` for
+    /// buffer depleted, `Some(EOI)` for forced end‑of‑input, else
+    /// `Some(ch)`.
+    fn peek_char(&mut self) -> PeekedChar {
+        if let Some(ch) = self.source.peek() {
+            return Char(ch);
+        }
+
+        if self.end_of_input {
+            return EndOfInput;
+        }
+
+        Empty
+    }
+
+    fn read_and_invalid_char(&mut self, c: PeekedChar) -> ParserError {
+        // self.advance_char();
+        self.invalid_char(c)
+    }
+
+    fn advance_char(&mut self) {
+        let c = self.source.next();
+        match c {
+            Some(ch) => {
+                if ch == '\n' {
+                    self.line += 1;
+                    self.column = 1;
+                } else {
+                    self.column += 1;
+                }
+                self.pos += 1;
+
+                Some(ch)
+            }
+            None => None,
+        };
+    }
+
+    fn new_token(&mut self, value: TokenValue, partial: bool) -> Token {
+        self.partial_lex = partial;
+        Token { value }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn lex_state_step(
+        &mut self,
+        lex_state: LexState,
+        next_char: PeekedChar,
+    ) -> Result<Option<Token>, ParserError> {
+        use LexState::*;
+        match lex_state {
+            Error => Ok(None),
+            Default => {
+                match next_char {
+                    Char(
+                        '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n' | '\r'
+                        | '\u{2028}' | '\u{2029}',
+                    ) => {
+                        // Skip whitespace
+                        self.advance_char();
+                        Ok(None)
+                    }
+                    Char(c) if c.is_whitespace() => {
+                        self.advance_char();
+                        Ok(None)
+                    }
+                    Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                    EndOfInput => {
+                        self.advance_char();
+                        Ok(Some(self.new_token(TokenValue::Eof, false)))
+                    }
+
+                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char),
+                }
+            }
+
+            // -------------------------- VALUE entry --------------------------
+            Value => match next_char {
+                Char(c) if matches!(c, '{' | '[') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                }
+                Char(c) if matches!(c, 'n' | 't' | 'f') => {
+                    self.buffer.clear();
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = ValueLiteral;
+                    self.expected_literal = ExpectedLiteralBuffer::new(c);
+                    Ok(None)
+                }
+                Char(c @ '-') => {
+                    self.buffer.clear();
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = Sign;
+                    Ok(None)
+                }
+                Char(c @ '0') => {
+                    self.buffer.clear();
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = Zero;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.buffer.clear();
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalInteger;
+                    Ok(None)
+                }
+                Char('"') => {
+                    self.advance_char(); // consume quote
+                    self.buffer.clear();
+                    self.partial_buffer.clear();
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                c => Err(self.invalid_char(c)),
+            },
+
+            // -------------------------- LITERALS -----------------------------
+            ValueLiteral => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) => match self.expected_literal.step(c) {
+                    literal_buffer::Step::NeedMore => {
+                        self.advance_char();
+                        self.buffer.push(c);
+                        Ok(None)
+                    }
+                    literal_buffer::Step::Done(tok) => {
+                        self.advance_char();
+                        self.buffer.push(c);
+                        Ok(Some(self.new_token(tok, false)))
+                    }
+                    literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
+                },
+                c @ EndOfInput => Err(self.read_and_invalid_char(c)),
+            },
+
+            // -------------------------- NUMBERS -----------------------------
+            Sign => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c @ '0') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = Zero;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalInteger;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            Zero => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c @ '.') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalPoint;
+                    Ok(None)
+                }
+                Char(c) if matches!(c, 'e' | 'E') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponent;
+                    Ok(None)
+                }
+                _ => {
+                    let num = self.buffer.parse::<f64>().unwrap();
+                    self.buffer.clear();
+                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                }
+            },
+
+            DecimalInteger => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c @ '.') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalPoint;
+                    Ok(None)
+                }
+                Char(c) if matches!(c, 'e' | 'E') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponent;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    Ok(None)
+                }
+                _ => {
+                    let num = self.buffer.parse::<f64>().unwrap();
+                    self.buffer.clear();
+                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                }
+            },
+
+            DecimalPoint => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) if matches!(c, 'e' | 'E') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponent;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalFraction;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            DecimalFraction => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) if matches!(c, 'e' | 'E') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponent;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    Ok(None)
+                }
+                _ => {
+                    let num = self.buffer.parse::<f64>().unwrap();
+                    self.buffer.clear();
+                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                }
+            },
+
+            DecimalExponent => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) if matches!(c, '+' | '-') => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponentSign;
+                    Ok(None)
+                }
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponentInteger;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            DecimalExponentSign => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    self.lex_state = DecimalExponentInteger;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            DecimalExponentInteger => match next_char {
+                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Char(c) if c.is_ascii_digit() => {
+                    self.advance_char();
+                    self.buffer.push(c);
+                    Ok(None)
+                }
+                _ => {
+                    let num = self.buffer.parse::<f64>().unwrap();
+                    self.buffer.clear();
+                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                }
+            },
+
+            // -------------------------- STRING -----------------------------
+            LexState::String => match next_char {
+                // escape sequence
+                Char('\\') => {
+                    self.advance_char();
+                    self.lex_state = LexState::StringEscape;
+                    Ok(None)
+                }
+                // closing quote -> complete string
+                Char('"') => {
+                    self.advance_char();
+                    let whole = core::mem::take(&mut self.buffer);
+                    let part = core::mem::take(&mut self.partial_buffer);
+                    let tok = self.new_token(
+                        TokenValue::String {
+                            value: whole,
+                            fragment: part,
+                        },
+                        false,
+                    );
+                    Ok(Some(tok))
+                }
+                Char(c @ '\0'..='\x1F') => {
+                    // JSON spec allows 0x20 .. 0x10FFFF unescaped.
+                    Err(self.read_and_invalid_char(Char(c)))
+                }
+                Empty => {
+                    let part = core::mem::take(&mut self.partial_buffer);
+                    let tok = self.new_token(
+                        TokenValue::String {
+                            value: self.buffer.clone(),
+                            fragment: part,
+                        },
+                        true,
+                    );
+                    Ok(Some(tok))
+                }
+                Char(c) => {
+                    self.partial_buffer.push(c);
+                    self.advance_char();
+                    self.buffer.push(c);
+                    Ok(None)
+                }
+                EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
+            },
+
+            StringEscape => match next_char {
+                Empty => Ok(Some(self.produce_partial_string())),
+                Char(ch) if matches!(ch, '"' | '\\' | '/') => {
+                    self.advance_char();
+                    self.buffer.push(ch);
+                    self.partial_buffer.push(ch);
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('b') => {
+                    self.advance_char();
+                    self.buffer.push('\u{0008}');
+                    self.partial_buffer.push('\u{0008}');
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('f') => {
+                    self.advance_char();
+                    self.buffer.push('\u{000C}');
+                    self.partial_buffer.push('\u{000C}');
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('n') => {
+                    self.advance_char();
+                    self.buffer.push('\n');
+                    self.partial_buffer.push('\n');
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('r') => {
+                    self.advance_char();
+                    self.buffer.push('\r');
+                    self.partial_buffer.push('\r');
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('t') => {
+                    self.advance_char();
+                    self.buffer.push('\t');
+                    self.partial_buffer.push('\t');
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                Char('u') => {
+                    self.advance_char();
+                    self.unicode_escape_buffer.reset();
+                    self.lex_state = LexState::StringEscapeUnicode;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            StringEscapeUnicode => {
+                match next_char {
+                    Empty => Ok(Some(self.produce_partial_string())),
+                    Char(c) if c.is_ascii_hexdigit() => {
+                        self.advance_char();
+                        match self.unicode_escape_buffer.feed(c) {
+                            Ok(Some(char)) => {
+                                self.buffer.push(char);
+                                self.partial_buffer.push(char);
+                                self.lex_state = LexState::String;
+                                Ok(None)
+                            }
+                            Ok(None) => {
+                                // Still waiting for more hex digits
+                                Ok(None)
+                            }
+                            Err(err) => Err(self
+                                .syntax_error(format!("Invalid unicode escape sequence: {err}"))),
+                        }
+                    }
+                    EndOfInput => {
+                        // consume EOF sentinel and advance column to match TS behavior
+                        self.advance_char();
+                        self.column += 1;
+                        Err(self.invalid_eof())
+                    }
+                    c @ Char(_) => Err(self.read_and_invalid_char(c)),
+                }
+            }
+
+            Start => match next_char {
+                Char(c) if matches!(c, '{' | '[') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                }
+                _ => {
+                    self.lex_state = LexState::Value;
+                    Ok(None)
+                }
+            },
+
+            BeforePropertyName => match next_char {
+                Char('}') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(b'}'), false)))
+                }
+
+                Char('"') => {
+                    self.advance_char();
+                    self.buffer.clear();
+                    self.partial_buffer.clear();
+                    self.lex_state = LexState::String;
+                    Ok(None)
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            AfterPropertyName => match next_char {
+                Char(c @ ':') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            BeforePropertyValue => {
+                self.lex_state = LexState::Value;
+                Ok(None)
+            }
+
+            AfterPropertyValue => match next_char {
+                Char(c) if matches!(c, ',' | '}') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            BeforeArrayValue => match next_char {
+                Char(']') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(b']'), false)))
+                }
+                _ => {
+                    self.lex_state = LexState::Value;
+                    Ok(None)
+                }
+            },
+
+            AfterArrayValue => match next_char {
+                Char(c) if matches!(c, ',' | ']') => {
+                    self.advance_char();
+                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                }
+                c => Err(self.read_and_invalid_char(c)),
+            },
+
+            End => {
+                let c = self.peek_char();
+                Err(self.invalid_char(c))
+            }
+        }
+    }
+
+    fn produce_partial_string(&mut self) -> Token {
+        let part = core::mem::take(&mut self.partial_buffer);
+        self.new_token(
+            TokenValue::String {
+                value: self.buffer.clone(),
+                fragment: part,
+            },
+            true,
+        )
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Parse state dispatcher (translation of TS parseStates method)
+    // ------------------------------------------------------------------------------------------------
+    fn dispatch_parse_state(&mut self) -> Result<(), ParserError> {
+        use ParseState::*;
+
+        match self.parse_state {
+            // In single-value mode, EOF at start when end_of_input indicates unexpected end.
+            Start => match self.token.value {
+                TokenValue::Eof if self.end_of_input && !self.multiple_values => {
+                    Err(self.invalid_eof())?;
+                }
+                TokenValue::Eof => (),
+                _ => self.push()?,
+            },
+
+            BeforePropertyName => match self.token.value {
+                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
+                // Only handle whole key values:
+                TokenValue::String { .. } if self.partial_lex => (),
+                TokenValue::String {
+                    value: ref whole, ..
+                } => {
+                    match self.frames.last_mut() {
+                        Some(Frame::Object {
+                            pending_key: value @ None,
+                        }) => {
+                            *value = Some(whole.clone());
+                        }
+                        _ => Err(self
+                            .syntax_error("Expected object frame for property name".to_string()))?,
+                    }
+                    self.parse_state = AfterPropertyName;
+                }
+                TokenValue::Punctuator(_) => self.pop()?,
+                _ => (),
+            },
+
+            AfterPropertyName => match self.token.value {
+                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
+                TokenValue::Eof => (),
+                _ => self.parse_state = BeforePropertyValue,
+            },
+
+            BeforePropertyValue => match self.token.value {
+                TokenValue::Eof => (),
+                _ => self.push()?,
+            },
+
+            BeforeArrayValue => match self.token.value {
+                TokenValue::Eof => (),
+                TokenValue::Punctuator(b']') => self.pop()?,
+                _ => self.push()?,
+            },
+
+            AfterPropertyValue => match self.token.value {
+                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
+                TokenValue::Punctuator(b',') => {
+                    if let Some(Frame::Object { pending_key }) = self.frames.last_mut() {
+                        *pending_key = None; // <-- reset for next property
+                    }
+                    self.parse_state = BeforePropertyName;
+                }
+                TokenValue::Punctuator(b'}') => self.pop()?,
+                _ => (),
+            },
+
+            AfterArrayValue => match self.token.value {
+                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
+                TokenValue::Punctuator(b',') => {
+                    match self.frames.last_mut() {
+                        Some(Frame::Array { next_index }) => {
+                            *next_index += 1; // increment index for next value
+                        }
+                        _ => Err(self.syntax_error(
+                            "Expected array frame for after array value".to_string(),
+                        ))?,
+                    }
+
+                    self.parse_state = BeforeArrayValue;
+                }
+                TokenValue::Punctuator(b']') => self.pop()?,
+                _ => (),
+            },
+            End | Error => {}
+        }
+
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Result<(), ParserError> {
+        let path = self.frames.to_path_components();
+        match self.frames.pop() {
+            Some(Frame::Array { .. }) => {
+                self.events
+                    .push(ParseEvent::ArrayEnd { path, value: None })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            Some(Frame::Object { .. }) => {
+                self.events
+                    .push(ParseEvent::ObjectEnd { path, value: None })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            _ => {}
+        }
+
+        // We actually need to peek at the new last frame and restore the parse state
+        // now:
+        if let Some(last_frame) = self.frames.last() {
+            self.parse_state = match last_frame {
+                Frame::Array { .. } => ParseState::AfterArrayValue,
+                Frame::Object { .. } => ParseState::AfterPropertyValue,
+            };
+        } else {
+            self.parse_state = ParseState::End;
+        }
+
+        Ok(())
+    }
+
+    fn push(&mut self) -> Result<(), ParserError> {
+        match self.token.value {
+            TokenValue::Punctuator(b'{') => {
+                self.frames.push(Frame::new_object_frame());
+                self.events
+                    .push(ParseEvent::ObjectBegin {
+                        path: self.frames.to_path_components(),
+                    })
+                    .map_err(|err| self.zipper_error(err))?;
+                self.parse_state = ParseState::BeforePropertyName;
+                return Ok(());
+            }
+            TokenValue::Punctuator(b'[') => {
+                self.frames.push(Frame::new_array_frame());
+                self.events
+                    .push(ParseEvent::ArrayStart {
+                        path: self.frames.to_path_components(),
+                    })
+                    .map_err(|err| self.zipper_error(err))?;
+                self.parse_state = ParseState::BeforeArrayValue;
+                return Ok(());
+            }
+            _ => {
+                // Handle primitive values below
+            }
+        }
+
+        let mut path = self.frames.to_path_components();
+        if let Some(frame) = self.frames.last() {
+            path.push(frame.to_path_component());
+        }
+
+        match (&mut self.token.value, self.partial_lex) {
+            (TokenValue::Null, _) => {
+                self.events
+                    .push(ParseEvent::Null { path })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            (TokenValue::Boolean(b), _) => {
+                self.events
+                    .push(ParseEvent::Boolean { path, value: *b })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            (TokenValue::Number(n), _) => {
+                self.events
+                    .push(ParseEvent::Number { path, value: *n })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            // Streaming string fragments (partial) build up until the full string is complete.
+            (TokenValue::String { value, fragment }, partial) => {
+                self.events
+                    .push(ParseEvent::String {
+                        path,
+                        value: if self.emit_completed_strings && !partial {
+                            Some(core::mem::take(value))
+                        } else {
+                            None
+                        },
+                        fragment: core::mem::take(fragment),
+                        is_final: !partial,
+                    })
+                    .map_err(|err| self.zipper_error(err))?;
+            }
+            _ => (),
+        }
+
+        // 3. Adjust parse state exactly once, using `parent_kind`
+        if !self.partial_lex {
+            if let Some(Frame::Object { pending_key }) = self.frames.last_mut() {
+                *pending_key = None;
+            }
+
+            self.parse_state = match self.frames.last() {
+                None => ParseState::End,
+                Some(Frame::Array { .. }) => ParseState::AfterArrayValue,
+                Some(Frame::Object { .. }) => ParseState::AfterPropertyValue,
+            };
+        }
+
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Errors
+    // ------------------------------------------------------------------------------------------------
+    fn invalid_char(&self, c: PeekedChar) -> ParserError {
+        match c {
+            EndOfInput | Empty => self.syntax_error("JSON5: invalid end of input".to_string()),
+            Char(c) => self.syntax_error(format!(
+                "JSON5: invalid character '{}' at {}:{}",
+                Self::format_char(c),
+                self.line,
+                self.column
+            )),
+        }
+    }
+
+    fn invalid_eof(&self) -> ParserError {
+        self.syntax_error("JSON5: invalid end of input".to_string())
+    }
+
+    fn syntax_error(&self, msg: String) -> ParserError {
+        let err = ParserError {
+            msg,
+            line: self.line,
+            column: self.column,
+        };
+        #[cfg(test)]
+        assert!(!self.panic_on_error, "{err}");
+        err
+    }
+
+    fn zipper_error(&self, err: ZipperError) -> ParserError {
+        self.syntax_error(format!("Internal error: {err}"))
+    }
+
+    fn format_char(c: char) -> String {
+        match c {
+            '"' => "\\\"".into(),
+            '\'' => "\\'".into(),
+            '\\' => "\\\\".into(),
+            '\u{0008}' /* \b */=> "\\b".into(),
+            '\u{000C}' /* \f */ => "\\f".into(),
+            '\n' => "\\n".into(),
+            '\r' => "\\r".into(),
+            '\t' => "\\t".into(),
+            '\u{0000b}' /* \v */ => "\\v".into(),
+            '\0' => "\\0".into(),
+            '\u{2028}' => "\\u{2028}".into(),
+            '\u{2029}' => "\\u{2029}".into(),
+            c if c.is_control() => {
+              format!("\\u{:04X}", c as u32)
+            }
+            c if c.is_whitespace() && !c.is_ascii_whitespace() => {
+                format!("\\u{:04X}", c as u32)
+            }
+            c => c.to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
+        &self.lexed_tokens
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParserError {
+    msg: String,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl fmt::Display for ParserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.msg.fmt(f)
+    }
+}
+
+impl core::error::Error for ParserError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn size_of_parser() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<StreamingParser>(), 376);
+    }
+
+    #[test]
+    fn size_of_closed_parser() {
+        use core::mem::size_of;
+        assert_eq!(size_of::<ClosedStreamingParser>(), 376);
+    }
+}

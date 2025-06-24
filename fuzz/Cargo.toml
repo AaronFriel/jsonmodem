@@ -1,0 +1,25 @@
+[package]
+name = "jsonmodem-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.4.1", features = ["derive"] }
+libfuzzer-sys = { version = "0.15.3", package = "libafl_libfuzzer" }
+rand = "0.9.1"
+serde_json = "1.0.140"
+
+[dependencies.jsonmodem]
+path = "../crates/jsonmodem"
+features = ["fuzzing"]
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+bench = false
