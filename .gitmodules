@@ -1,0 +1,3 @@
+[submodule "fn-stream"]
+	path = fn-stream
+	url = https://github.com/aaronfriel/fn-stream
