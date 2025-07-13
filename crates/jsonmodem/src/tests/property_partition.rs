@@ -5,14 +5,16 @@ use alloc::{
 
 use quickcheck::QuickCheck;
 
-use crate::{event::reconstruct_values, options::ParserOptions, StreamingParser, Value};
+use crate::{
+    StreamingParser, StringValueMode, Value, event::reconstruct_values, options::ParserOptions,
+};
 
 /// Property: Feeding a JSON document in arbitrary chunk sizes must yield the
 /// exact same `Value` when reconstructed from the emitted `ParseEvent`s.
 #[test]
 fn partition_roundtrip_quickcheck() {
     #[allow(clippy::needless_pass_by_value)]
-    fn prop(value: Value, splits: Vec<usize>) -> bool {
+    fn prop(value: Value, splits: Vec<usize>, string_value_mode: StringValueMode) -> bool {
         let src = value.to_string();
         if src.is_empty() {
             return true;
@@ -23,6 +25,7 @@ fn partition_roundtrip_quickcheck() {
         let mut parser = StreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             emit_non_scalar_values: true,
+            string_value_mode,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
@@ -55,19 +58,17 @@ fn partition_roundtrip_quickcheck() {
             }
         }
 
-
         // Flush any pending events.
         let parser = parser.finish();
         for event in parser {
             events.push(event.unwrap());
         }
 
-        let reconstructed = reconstruct_values(events);
-
+        let reconstructed = reconstruct_values(events.clone());
         reconstructed.len() == 1 && reconstructed[0] == value
     }
 
     QuickCheck::new()
         .tests(100)
-        .quickcheck(prop as fn(Value, Vec<usize>) -> bool);
+        .quickcheck(prop as fn(Value, Vec<usize>, StringValueMode) -> bool);
 }

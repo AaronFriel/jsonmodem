@@ -1,0 +1,22 @@
+name: Miri
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly with Miri
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: miri
+
+      - name: Run tests under Miri
+        run: cargo +nightly miri test --all-features --workspace
+

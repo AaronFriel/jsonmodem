@@ -32,6 +32,10 @@ pub type Array = Vec<Value>;
 /// ```
 ///
 /// [RFC 8259]: https://datatracker.ietf.org/doc/html/rfc8259
+// Enable serde support for tests and when the optional `serde` feature is
+// activated by downstream crates.  The `cfg_attr` conditional keeps the core
+// crate free of a serde dependency in normal builds.
+#[cfg_attr(any(test, feature = "serde"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Null,

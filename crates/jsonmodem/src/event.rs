@@ -33,9 +33,21 @@
 //!     ]
 //! );
 //! ```
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use crate::value::Value;
+
+// Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
+// is `false`.
+#[doc(hidden)]
+#[cfg(any(test, feature = "serde"))]
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
 
 /// A component in the path to a JSON value.
 ///
@@ -58,6 +70,151 @@ use crate::value::Value;
 pub enum PathComponent {
     Key(String),
     Index(usize),
+}
+
+// Convenient conversions so users can write `path![0, "foo"]` etc.
+macro_rules! impl_from_int_for_pathcomponent {
+    ($($t:ty),*) => {
+        $(
+            impl From<$t> for PathComponent {
+                fn from(i: $t) -> Self {
+                    #[allow(clippy::cast_possible_truncation)]
+                    PathComponent::Index(i as usize)
+                }
+            }
+        )*
+    };
+}
+
+impl_from_int_for_pathcomponent!(u8, u16, u32, u64, usize);
+
+impl From<&str> for PathComponent {
+    fn from(s: &str) -> Self {
+        Self::Key(s.to_string())
+    }
+}
+
+impl From<String> for PathComponent {
+    fn from(s: String) -> Self {
+        Self::Key(s)
+    }
+}
+
+#[doc(hidden)]
+pub trait PathComponentFrom<T> {
+    fn from_path_component(value: T) -> PathComponent;
+}
+
+// use macro_rules to implement for i8..i64, u8..u64, isize, usize, &str and
+// String
+macro_rules! impl_integer_as_path_component {
+    ($($t:ty),+) => {
+        $(
+            impl PathComponentFrom<$t> for PathComponent {
+                fn from_path_component(value: $t) -> Self {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    PathComponent::Index(value as usize)
+                }
+            }
+        )+
+    };
+}
+impl_integer_as_path_component!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+impl PathComponentFrom<&str> for PathComponent {
+    fn from_path_component(value: &str) -> Self {
+        PathComponent::Key(value.to_string())
+    }
+}
+
+impl PathComponentFrom<String> for PathComponent {
+    fn from_path_component(value: String) -> Self {
+        PathComponent::Key(value)
+    }
+}
+
+// Custom (de)serialization so that a `Vec<PathComponent>` becomes e.g.
+// `["foo", 0, "bar"]` instead of the default tagged representation.
+#[cfg(any(test, feature = "serde"))]
+mod serde_impls {
+    use alloc::string::{String, ToString};
+    use core::fmt;
+
+    use serde::{
+        Deserialize, Deserializer, Serialize, Serializer,
+        de::{Error, Unexpected, Visitor},
+    };
+
+    use super::PathComponent;
+
+    impl Serialize for PathComponent {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            match self {
+                PathComponent::Key(k) => serializer.serialize_str(k),
+                PathComponent::Index(i) => serializer.serialize_u64(*i as u64),
+            }
+        }
+    }
+
+    struct PathComponentVisitor;
+
+    impl Visitor<'_> for PathComponentVisitor {
+        type Value = PathComponent;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or unsigned integer")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(PathComponent::Key(value.to_string()))
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(PathComponent::Key(value))
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(PathComponent::Index(value as usize))
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value < 0 {
+                return Err(Error::invalid_value(
+                    Unexpected::Signed(value),
+                    &"non-negative index",
+                ));
+            }
+
+            #[allow(clippy::cast_sign_loss)]
+            #[allow(clippy::cast_possible_truncation)]
+            Ok(PathComponent::Index(value as usize))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for PathComponent {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(PathComponentVisitor)
+        }
+    }
 }
 
 impl PathComponent {
@@ -98,6 +255,11 @@ impl PathComponent {
 /// let evt = ParseEvent::Null { path: Vec::new() };
 /// assert_eq!(evt, ParseEvent::Null { path: Vec::new() });
 /// ```
+#[cfg_attr(
+    any(test, feature = "serde"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[cfg_attr(any(test, feature = "serde"), serde(tag = "kind"))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseEvent {
     /// A JSON `null` value.
@@ -126,14 +288,22 @@ pub enum ParseEvent {
     String {
         /// The path to the string value.
         path: Vec<PathComponent>,
-        /// If set, the value of the string. Implies `is_final`.
+        /// The value of the string. The interpretation of this value depends on the `string_value_mode` used to create the parser.
         ///
-        /// This value is not set when option `emit_completed_strings` is false.
+        /// This value is not set when the mode is `StringValueMode::None`.
+        #[cfg_attr(
+            any(test, feature = "serde"),
+            serde(skip_serializing_if = "Option::is_none")
+        )]
         value: Option<String>,
         /// A fragment of a string value.
         fragment: String,
         /// Whether this is the final fragment of a string value. Implied when
         /// `value` is set.
+        #[cfg_attr(
+            any(test, feature = "serde"),
+            serde(skip_serializing_if = "crate::event::is_false")
+        )]
         is_final: bool,
     },
     /// Marks the start of a JSON array.
@@ -148,6 +318,10 @@ pub enum ParseEvent {
         /// The value of the array.
         ///
         /// This value is not set when option `emit_non_scalar_values` is false.
+        #[cfg_attr(
+            any(test, feature = "serde"),
+            serde(skip_serializing_if = "Option::is_none")
+        )]
         value: Option<Vec<Value>>,
     },
     /// Marks the start of a JSON object.
@@ -162,6 +336,10 @@ pub enum ParseEvent {
         /// The value of the object.
         ///
         /// This value is not set when option `emit_non_scalar_values` is false.
+        #[cfg_attr(
+            any(test, feature = "serde"),
+            serde(skip_serializing_if = "Option::is_none")
+        )]
         value: Option<BTreeMap<String, Value>>,
     },
 }

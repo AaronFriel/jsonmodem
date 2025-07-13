@@ -44,8 +44,6 @@ impl EventStack {
                         path.last(),
                         || Value::String(String::new()),
                         |v| {
-                            #[cfg(test)]
-                            std::dbg!(&v);
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
                                 Ok(())
@@ -73,10 +71,8 @@ impl EventStack {
                             value.replace(root_array);
                         } else {
                             #[cfg(test)]
-                            {
-                                std::dbg!(&root);
-                                panic!("Expected root to be an array");
-                            }
+                            panic!("Expected root to be an array");
+
                             #[cfg(not(test))]
                             return Err(ZipperError::ExpectedArray);
                         }
@@ -97,10 +93,7 @@ impl EventStack {
                             value.replace(root_object);
                         } else {
                             #[cfg(test)]
-                            {
-                                std::dbg!(&root);
-                                panic!("Expected root to be an array");
-                            }
+                            panic!("Expected root to be an array");
                             #[cfg(not(test))]
                             return Err(ZipperError::ExpectedObject);
                         }
@@ -120,7 +113,6 @@ impl EventStack {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(crate) fn read_root(&self) -> Option<&Value> {
         self.builder.as_ref().and_then(|x| x.read_root())
     }

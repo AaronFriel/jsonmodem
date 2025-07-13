@@ -29,9 +29,8 @@ use alloc::{
 };
 use core::{f64, fmt};
 
-#[cfg(test)]
-use crate::Value;
 use crate::{
+    StringValueMode,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
     event::{ParseEvent, PathComponent},
@@ -46,10 +45,13 @@ use crate::{
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub(crate) enum TokenValue {
+pub(crate) enum Token {
     Eof,
-    String {
+    PropertyName {
         value: String,
+    },
+    String {
+        value: Option<String>,
         fragment: String,
     },
     Boolean(bool),
@@ -60,7 +62,7 @@ pub(crate) enum TokenValue {
     Punctuator(u8),
 }
 
-impl TokenValue {
+impl Token {
     /// Returns `true` if the token value is [`Eof`].
     ///
     /// [`Eof`]: TokenValue::Eof
@@ -68,11 +70,6 @@ impl TokenValue {
     fn is_eof(&self) -> bool {
         matches!(self, Self::Eof)
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Token {
-    pub(crate) value: TokenValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,18 +275,17 @@ pub struct StreamingParser {
 
     /// Lexer helpers
     buffer: String, // reused for numbers / literals / strings
-    partial_buffer: String, // only for PartialString events
+    fragment_start: usize, // used to track string fragments start position within `buffer`
     unicode_escape_buffer: UnicodeEscapeBuffer, // for unicode escapes
     expected_literal: ExpectedLiteralBuffer,
     partial_lex: bool, // true ← we returned an *incomplete* token
 
     /// Last token we produced
-    token: Token,
     frames: FrameStack, // stack of open containers (arrays or objects)
     events: EventStack,
 
     multiple_values: bool,
-    emit_completed_strings: bool,
+    string_value_mode: StringValueMode,
     emit_non_scalar_values: bool,
     emit_completed_values: bool,
 
@@ -372,7 +368,7 @@ impl StreamingParser {
             parse_state: ParseState::Start,
 
             buffer: String::new(),
-            partial_buffer: String::new(),
+            fragment_start: 0,
             unicode_escape_buffer: UnicodeEscapeBuffer::new(),
             expected_literal: ExpectedLiteralBuffer::none(),
             frames: FrameStack::new(),
@@ -386,12 +382,8 @@ impl StreamingParser {
                 },
             ),
 
-            token: Token {
-                value: TokenValue::Eof,
-            },
-
             multiple_values: options.allow_multiple_json_values,
-            emit_completed_strings: options.emit_completed_strings,
+            string_value_mode: options.string_value_mode,
             emit_non_scalar_values: options.emit_non_scalar_values,
             emit_completed_values: options.emit_completed_values,
             #[cfg(test)]
@@ -449,9 +441,20 @@ impl StreamingParser {
         ClosedStreamingParser { parser: self }
     }
 
-    #[cfg(test)]
-    pub(crate) fn current_value(&self) -> Option<Value> {
+    /// Experimental helper that returns the *currently* fully-parsed JSON value
+    /// (if any).
+    ///
+    /// ⚠️ **Unstable API** – exposed solely for benchmarking and may change or
+    /// disappear without notice.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unstable_get_current_value(&self) -> Option<crate::value::Value> {
         self.events.read_root().cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_value(&self) -> Option<crate::value::Value> {
+        self.unstable_get_current_value()
     }
 
     /// Drive the parser until we either
@@ -516,7 +519,7 @@ impl StreamingParser {
             }
 
             // Drive the old lexer / dispatcher one token forward
-            self.token = match self.lex() {
+            let token = match self.lex() {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -528,7 +531,8 @@ impl StreamingParser {
                     return Some(Err(err));
                 }
             };
-            match self.dispatch_parse_state() {
+            let is_eof = token.is_eof();
+            match self.dispatch_parse_state(token) {
                 Ok(()) => {}
                 Err(err) => {
                     #[cfg(test)]
@@ -542,7 +546,7 @@ impl StreamingParser {
             }
 
             // Stop when we reach EoF or partial token
-            if self.token.value.is_eof() || self.partial_lex {
+            if is_eof || self.partial_lex {
                 break;
             }
         }
@@ -607,9 +611,72 @@ impl StreamingParser {
         };
     }
 
-    fn new_token(&mut self, value: TokenValue, partial: bool) -> Token {
+    fn new_token(&mut self, value: Token, partial: bool) -> Token {
         self.partial_lex = partial;
-        Token { value }
+        value
+    }
+
+    fn produce_string(&mut self, partial: bool) -> Token {
+        use Token::{Eof, PropertyName, String};
+
+        #[cfg(test)]
+        std::eprintln!(
+            "produce_string: partial = {}, buffer = {:?}",
+            partial, self.buffer
+        );
+
+        self.partial_lex = partial;
+
+        if self.parse_state == ParseState::BeforePropertyName {
+            if partial {
+                return Eof;
+            }
+
+            let value = core::mem::take(&mut self.buffer);
+            return PropertyName { value };
+        }
+
+        match self.string_value_mode {
+            _ if partial && self.buffer.len() == self.fragment_start => Eof,
+            StringValueMode::None => {
+                let fragment = core::mem::take(&mut self.buffer);
+                String {
+                    fragment,
+                    value: None,
+                }
+            }
+            StringValueMode::Values if partial => {
+                let fragment = self.buffer[self.fragment_start..].to_string();
+                self.fragment_start = self.buffer.len(); // reset for next fragment
+                String {
+                    fragment,
+                    value: None,
+                }
+            }
+            StringValueMode::Values => {
+                let fragment = self.buffer[self.fragment_start..].to_string();
+                let value = core::mem::take(&mut self.buffer);
+                self.fragment_start = self.buffer.len(); // reset for next fragment
+                String {
+                    fragment,
+                    value: Some(value),
+                }
+            }
+            StringValueMode::Prefixes => {
+                let fragment = self.buffer[self.fragment_start..].to_string();
+                let value = if partial {
+                    self.fragment_start = self.buffer.len(); // reset for next fragment
+                    self.buffer.clone()
+                } else {
+                    self.fragment_start = 0; // reset for next fragment
+                    core::mem::take(&mut self.buffer)
+                };
+                String {
+                    fragment,
+                    value: Some(value),
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -635,10 +702,10 @@ impl StreamingParser {
                         self.advance_char();
                         Ok(None)
                     }
-                    Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
                     EndOfInput => {
                         self.advance_char();
-                        Ok(Some(self.new_token(TokenValue::Eof, false)))
+                        Ok(Some(self.new_token(Token::Eof, false)))
                     }
 
                     Char(_) => self.lex_state_step(self.parse_state.into(), next_char),
@@ -649,7 +716,7 @@ impl StreamingParser {
             Value => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 Char(c) if matches!(c, 'n' | 't' | 'f') => {
                     self.buffer.clear();
@@ -683,7 +750,6 @@ impl StreamingParser {
                 Char('"') => {
                     self.advance_char(); // consume quote
                     self.buffer.clear();
-                    self.partial_buffer.clear();
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -692,7 +758,7 @@ impl StreamingParser {
 
             // -------------------------- LITERALS -----------------------------
             ValueLiteral => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         self.advance_char();
@@ -711,7 +777,7 @@ impl StreamingParser {
 
             // -------------------------- NUMBERS -----------------------------
             Sign => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '0') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -728,7 +794,7 @@ impl StreamingParser {
             },
 
             Zero => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -744,12 +810,12 @@ impl StreamingParser {
                 _ => {
                     let num = self.buffer.parse::<f64>().unwrap();
                     self.buffer.clear();
-                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                    Ok(Some(self.new_token(Token::Number(num), false)))
                 }
             },
 
             DecimalInteger => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -770,12 +836,12 @@ impl StreamingParser {
                 _ => {
                     let num = self.buffer.parse::<f64>().unwrap();
                     self.buffer.clear();
-                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                    Ok(Some(self.new_token(Token::Number(num), false)))
                 }
             },
 
             DecimalPoint => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -792,7 +858,7 @@ impl StreamingParser {
             },
 
             DecimalFraction => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -807,12 +873,12 @@ impl StreamingParser {
                 _ => {
                     let num = self.buffer.parse::<f64>().unwrap();
                     self.buffer.clear();
-                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                    Ok(Some(self.new_token(Token::Number(num), false)))
                 }
             },
 
             DecimalExponent => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, '+' | '-') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -829,7 +895,7 @@ impl StreamingParser {
             },
 
             DecimalExponentSign => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -840,7 +906,7 @@ impl StreamingParser {
             },
 
             DecimalExponentInteger => match next_char {
-                Empty => Ok(Some(self.new_token(TokenValue::Eof, true))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -849,7 +915,7 @@ impl StreamingParser {
                 _ => {
                     let num = self.buffer.parse::<f64>().unwrap();
                     self.buffer.clear();
-                    Ok(Some(self.new_token(TokenValue::Number(num), false)))
+                    Ok(Some(self.new_token(Token::Number(num), false)))
                 }
             },
 
@@ -864,34 +930,14 @@ impl StreamingParser {
                 // closing quote -> complete string
                 Char('"') => {
                     self.advance_char();
-                    let whole = core::mem::take(&mut self.buffer);
-                    let part = core::mem::take(&mut self.partial_buffer);
-                    let tok = self.new_token(
-                        TokenValue::String {
-                            value: whole,
-                            fragment: part,
-                        },
-                        false,
-                    );
-                    Ok(Some(tok))
+                    Ok(Some(self.produce_string(false)))
                 }
                 Char(c @ '\0'..='\x1F') => {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
-                Empty => {
-                    let part = core::mem::take(&mut self.partial_buffer);
-                    let tok = self.new_token(
-                        TokenValue::String {
-                            value: self.buffer.clone(),
-                            fragment: part,
-                        },
-                        true,
-                    );
-                    Ok(Some(tok))
-                }
+                Empty => Ok(Some(self.produce_string(true))),
                 Char(c) => {
-                    self.partial_buffer.push(c);
                     self.advance_char();
                     self.buffer.push(c);
                     Ok(None)
@@ -900,46 +946,40 @@ impl StreamingParser {
             },
 
             StringEscape => match next_char {
-                Empty => Ok(Some(self.produce_partial_string())),
+                Empty => Ok(Some(self.produce_string(true))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     self.advance_char();
                     self.buffer.push(ch);
-                    self.partial_buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('b') => {
                     self.advance_char();
                     self.buffer.push('\u{0008}');
-                    self.partial_buffer.push('\u{0008}');
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('f') => {
                     self.advance_char();
                     self.buffer.push('\u{000C}');
-                    self.partial_buffer.push('\u{000C}');
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('n') => {
                     self.advance_char();
                     self.buffer.push('\n');
-                    self.partial_buffer.push('\n');
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('r') => {
                     self.advance_char();
                     self.buffer.push('\r');
-                    self.partial_buffer.push('\r');
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('t') => {
                     self.advance_char();
                     self.buffer.push('\t');
-                    self.partial_buffer.push('\t');
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -954,13 +994,12 @@ impl StreamingParser {
 
             StringEscapeUnicode => {
                 match next_char {
-                    Empty => Ok(Some(self.produce_partial_string())),
+                    Empty => Ok(Some(self.produce_string(true))),
                     Char(c) if c.is_ascii_hexdigit() => {
                         self.advance_char();
                         match self.unicode_escape_buffer.feed(c) {
                             Ok(Some(char)) => {
                                 self.buffer.push(char);
-                                self.partial_buffer.push(char);
                                 self.lex_state = LexState::String;
                                 Ok(None)
                             }
@@ -985,7 +1024,7 @@ impl StreamingParser {
             Start => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 _ => {
                     self.lex_state = LexState::Value;
@@ -996,13 +1035,12 @@ impl StreamingParser {
             BeforePropertyName => match next_char {
                 Char('}') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(b'}'), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(b'}'), false)))
                 }
 
                 Char('"') => {
                     self.advance_char();
                     self.buffer.clear();
-                    self.partial_buffer.clear();
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1012,7 +1050,7 @@ impl StreamingParser {
             AfterPropertyName => match next_char {
                 Char(c @ ':') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -1025,7 +1063,7 @@ impl StreamingParser {
             AfterPropertyValue => match next_char {
                 Char(c) if matches!(c, ',' | '}') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -1033,7 +1071,7 @@ impl StreamingParser {
             BeforeArrayValue => match next_char {
                 Char(']') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(b']'), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(b']'), false)))
                 }
                 _ => {
                     self.lex_state = LexState::Value;
@@ -1044,7 +1082,7 @@ impl StreamingParser {
             AfterArrayValue => match next_char {
                 Char(c) if matches!(c, ',' | ']') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(TokenValue::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -1056,87 +1094,75 @@ impl StreamingParser {
         }
     }
 
-    fn produce_partial_string(&mut self) -> Token {
-        let part = core::mem::take(&mut self.partial_buffer);
-        self.new_token(
-            TokenValue::String {
-                value: self.buffer.clone(),
-                fragment: part,
-            },
-            true,
-        )
-    }
-
     // ------------------------------------------------------------------------------------------------
     // Parse state dispatcher (translation of TS parseStates method)
     // ------------------------------------------------------------------------------------------------
-    fn dispatch_parse_state(&mut self) -> Result<(), ParserError> {
+    fn dispatch_parse_state(&mut self, token: Token) -> Result<(), ParserError> {
         use ParseState::*;
 
         match self.parse_state {
             // In single-value mode, EOF at start when end_of_input indicates unexpected end.
-            Start => match self.token.value {
-                TokenValue::Eof if self.end_of_input && !self.multiple_values => {
-                    Err(self.invalid_eof())?;
+            Start => match token {
+                Token::Eof if self.end_of_input && !self.multiple_values => {
+                    return Err(self.invalid_eof());
                 }
-                TokenValue::Eof => (),
-                _ => self.push()?,
+                Token::Eof => (),
+                _ => self.push(token)?,
             },
 
-            BeforePropertyName => match self.token.value {
-                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
-                // Only handle whole key values:
-                TokenValue::String { .. } if self.partial_lex => (),
-                TokenValue::String {
-                    value: ref whole, ..
-                } => {
+            BeforePropertyName => match token {
+                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::PropertyName { value } => {
                     match self.frames.last_mut() {
-                        Some(Frame::Object {
-                            pending_key: value @ None,
-                        }) => {
-                            *value = Some(whole.clone());
+                        Some(Frame::Object { pending_key }) => {
+                            *pending_key = Some(value);
                         }
                         _ => Err(self
                             .syntax_error("Expected object frame for property name".to_string()))?,
                     }
                     self.parse_state = AfterPropertyName;
                 }
-                TokenValue::Punctuator(_) => self.pop()?,
+                Token::Punctuator(_) => self.pop()?,
+                Token::String { .. } => {
+                    return Err(
+                        self.syntax_error("Unexpected string value in property name".to_string())
+                    );
+                }
                 _ => (),
             },
 
-            AfterPropertyName => match self.token.value {
-                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
-                TokenValue::Eof => (),
+            AfterPropertyName => match token {
+                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Eof => (),
                 _ => self.parse_state = BeforePropertyValue,
             },
 
-            BeforePropertyValue => match self.token.value {
-                TokenValue::Eof => (),
-                _ => self.push()?,
+            BeforePropertyValue => match token {
+                Token::Eof => (),
+                _ => self.push(token)?,
             },
 
-            BeforeArrayValue => match self.token.value {
-                TokenValue::Eof => (),
-                TokenValue::Punctuator(b']') => self.pop()?,
-                _ => self.push()?,
+            BeforeArrayValue => match token {
+                Token::Eof => (),
+                Token::Punctuator(b']') => self.pop()?,
+                _ => self.push(token)?,
             },
 
-            AfterPropertyValue => match self.token.value {
-                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
-                TokenValue::Punctuator(b',') => {
+            AfterPropertyValue => match token {
+                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Punctuator(b',') => {
                     if let Some(Frame::Object { pending_key }) = self.frames.last_mut() {
                         *pending_key = None; // <-- reset for next property
                     }
                     self.parse_state = BeforePropertyName;
                 }
-                TokenValue::Punctuator(b'}') => self.pop()?,
+                Token::Punctuator(b'}') => self.pop()?,
                 _ => (),
             },
 
-            AfterArrayValue => match self.token.value {
-                TokenValue::Eof if self.end_of_input => Err(self.invalid_eof())?,
-                TokenValue::Punctuator(b',') => {
+            AfterArrayValue => match token {
+                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Punctuator(b',') => {
                     match self.frames.last_mut() {
                         Some(Frame::Array { next_index }) => {
                             *next_index += 1; // increment index for next value
@@ -1148,7 +1174,7 @@ impl StreamingParser {
 
                     self.parse_state = BeforeArrayValue;
                 }
-                TokenValue::Punctuator(b']') => self.pop()?,
+                Token::Punctuator(b']') => self.pop()?,
                 _ => (),
             },
             End | Error => {}
@@ -1187,9 +1213,9 @@ impl StreamingParser {
         Ok(())
     }
 
-    fn push(&mut self) -> Result<(), ParserError> {
-        match self.token.value {
-            TokenValue::Punctuator(b'{') => {
+    fn push(&mut self, token: Token) -> Result<(), ParserError> {
+        match token {
+            Token::Punctuator(b'{') => {
                 self.frames.push(Frame::new_object_frame());
                 self.events
                     .push(ParseEvent::ObjectBegin {
@@ -1199,7 +1225,7 @@ impl StreamingParser {
                 self.parse_state = ParseState::BeforePropertyName;
                 return Ok(());
             }
-            TokenValue::Punctuator(b'[') => {
+            Token::Punctuator(b'[') => {
                 self.frames.push(Frame::new_array_frame());
                 self.events
                     .push(ParseEvent::ArrayStart {
@@ -1219,36 +1245,37 @@ impl StreamingParser {
             path.push(frame.to_path_component());
         }
 
-        match (&mut self.token.value, self.partial_lex) {
-            (TokenValue::Null, _) => {
+        match (token, self.partial_lex) {
+            (Token::Null, _) => {
                 self.events
                     .push(ParseEvent::Null { path })
                     .map_err(|err| self.zipper_error(err))?;
             }
-            (TokenValue::Boolean(b), _) => {
+            (Token::Boolean(b), _) => {
                 self.events
-                    .push(ParseEvent::Boolean { path, value: *b })
+                    .push(ParseEvent::Boolean { path, value: b })
                     .map_err(|err| self.zipper_error(err))?;
             }
-            (TokenValue::Number(n), _) => {
+            (Token::Number(n), _) => {
                 self.events
-                    .push(ParseEvent::Number { path, value: *n })
+                    .push(ParseEvent::Number { path, value: n })
                     .map_err(|err| self.zipper_error(err))?;
             }
             // Streaming string fragments (partial) build up until the full string is complete.
-            (TokenValue::String { value, fragment }, partial) => {
+            (Token::String { fragment, value }, partial) => {
                 self.events
                     .push(ParseEvent::String {
                         path,
-                        value: if self.emit_completed_strings && !partial {
-                            Some(core::mem::take(value))
-                        } else {
-                            None
-                        },
-                        fragment: core::mem::take(fragment),
+                        fragment,
+                        value,
                         is_final: !partial,
                     })
                     .map_err(|err| self.zipper_error(err))?;
+            }
+            (Token::PropertyName { .. }, _) => {
+                return Err(
+                    self.syntax_error("Unexpected property name outside of object".to_string())
+                );
             }
             _ => (),
         }
@@ -1355,12 +1382,12 @@ mod tests {
     #[test]
     fn size_of_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<StreamingParser>(), 376);
+        assert_eq!(size_of::<StreamingParser>(), 312);
     }
 
     #[test]
     fn size_of_closed_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser>(), 376);
+        assert_eq!(size_of::<ClosedStreamingParser>(), 312);
     }
 }

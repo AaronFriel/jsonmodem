@@ -1,0 +1,44 @@
+name: Fuzzing
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # setup + 5 min fuzzing
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain (nightly)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - name: Cache fuzz corpora and artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            fuzz/corpus
+            fuzz/artifacts
+          key: ${{ runner.os }}-cargo-fuzz-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run fuzzer (5 minutes)
+        run: |
+          cargo fuzz run fuzz_parser -- -max_total_time=300 -exit_on_crash=1
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+

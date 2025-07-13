@@ -3,11 +3,10 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use std::dbg;
 
 use quickcheck::{QuickCheck, TestResult};
 
-use crate::{ParseEvent, ParserOptions, StreamingParser, Value, event::reconstruct_values};
+use crate::{event::reconstruct_values, ParseEvent, ParserOptions, StreamingParser, StringValueMode, Value};
 
 /// Repro for missing string roots in multi-value stream reconstruction.
 /// Currently fails because no complete Value events are emitted for top-level
@@ -42,7 +41,7 @@ fn repro_multi_value_string_root() {
 #[test]
 fn multi_value_roundtrip_quickcheck() {
     #[allow(clippy::needless_pass_by_value)]
-    fn prop(values: Vec<Value>, splits: Vec<usize>) -> TestResult {
+    fn prop(values: Vec<Value>, splits: Vec<usize>, string_value_mode: StringValueMode) -> TestResult {
         if values.is_empty() {
             return TestResult::discard();
         }
@@ -57,6 +56,7 @@ fn multi_value_roundtrip_quickcheck() {
         let mut parser = StreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             emit_non_scalar_values: true,
+            string_value_mode,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
@@ -81,8 +81,7 @@ fn multi_value_roundtrip_quickcheck() {
             for event in parser.by_ref() {
                 match event {
                     Ok(event) => events.push(event),
-                    Err(err) => {
-                        dbg!(chunks, err);
+                    Err(_err) => {
                         return TestResult::failed();
                     }
                 }
@@ -98,8 +97,7 @@ fn multi_value_roundtrip_quickcheck() {
             for event in parser.by_ref() {
                 match event {
                     Ok(event) => events.push(event),
-                    Err(err) => {
-                        dbg!(chunks, err);
+                    Err(_err) => {
                         return TestResult::failed();
                     }
                 }
@@ -109,8 +107,7 @@ fn multi_value_roundtrip_quickcheck() {
         for event in parser {
             match event {
                 Ok(event) => events.push(event),
-                Err(err) => {
-                    dbg!(chunks, err);
+                Err(_err) => {
                     return TestResult::failed();
                 }
             }
@@ -120,12 +117,6 @@ fn multi_value_roundtrip_quickcheck() {
         let original: Vec<Value> = values.into_iter().collect();
 
         let result = reconstructed == original;
-        if !result {
-            dbg!(chunks);
-            dbg!(&original);
-            dbg!(&reconstructed);
-            dbg!(reconstructed == original);
-        }
 
         TestResult::from_bool(result)
     }
@@ -137,7 +128,7 @@ fn multi_value_roundtrip_quickcheck() {
 
     QuickCheck::new()
         .tests(tests)
-        .quickcheck(prop as fn(Vec<Value>, Vec<usize>) -> TestResult);
+        .quickcheck(prop as fn(Vec<Value>, Vec<usize>, StringValueMode) -> TestResult);
 }
 
 #[test]
@@ -157,8 +148,7 @@ fn multi_value_roundtrip_repro() {
             match event {
                 Ok(event) => events.push(event),
                 Err(err) => {
-                    dbg!(&err);
-                    panic!("Error while parsing: {}", err);
+                    panic!("Error while parsing: {err}");
                 }
             }
         }
@@ -169,8 +159,7 @@ fn multi_value_roundtrip_repro() {
         match event {
             Ok(event) => events.push(event),
             Err(err) => {
-                dbg!(&err);
-                panic!("Error while parsing: {}", err);
+                panic!("Error while parsing: {err}");
             }
         }
     }

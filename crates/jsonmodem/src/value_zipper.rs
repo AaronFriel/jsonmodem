@@ -124,7 +124,6 @@ impl ValueZipper {
     }
 
     #[inline]
-    #[cfg(test)]
     pub fn read_root(&self) -> &Value {
         &self.root
     }
@@ -405,7 +404,6 @@ impl ValueBuilder {
     }
 
     #[inline]
-    #[cfg(test)]
     pub fn read_root(&self) -> Option<&Value> {
         match self {
             ValueBuilder::Ready(z) => Some(z.read_root()),
@@ -477,8 +475,6 @@ impl StreamingParserBuilder {
                         path.last(),
                         || Value::String(String::new()),
                         |v| {
-                            #[cfg(test)]
-                            std::dbg!(&v);
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
                                 Ok(())

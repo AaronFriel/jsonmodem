@@ -1,13 +1,8 @@
 use alloc::string::{String, ToString};
-use std::dbg;
 
 use quickcheck::QuickCheck;
 
-use crate::{
-    ParserOptions, StreamingParser, Value,
-    parser::{Token, TokenValue},
-    value::{escape_string, write_escaped_string},
-};
+use crate::{ParserOptions, StreamingParser, Value, parser::Token, value::write_escaped_string};
 
 pub fn write_rendered_tokens<W: core::fmt::Write>(
     tokens: &[Token],
@@ -18,26 +13,31 @@ pub fn write_rendered_tokens<W: core::fmt::Write>(
     let mut writing_string = false;
     for token in tokens {
         if writing_string {
-            if let TokenValue::String { fragment: part, .. } = &token.value {
+            if let Token::String { fragment, .. } = &token {
                 // If we are already writing a string, we append the next part of the string
-                f.write_str(escape_string(part).as_str())?;
+                write_escaped_string(fragment, f)?;
                 continue;
             }
             f.write_char('"')?;
             writing_string = false;
         }
 
-        match &token.value {
-            TokenValue::Eof => break,
-            TokenValue::String { fragment: part, .. } => {
+        match &token {
+            Token::Eof => break,
+            Token::PropertyName { value } => {
+                f.write_char('"')?;
+                write_escaped_string(value, f)?;
+                f.write_char('"')?;
+            }
+            Token::String { fragment, .. } => {
                 f.write_char('"')?;
                 writing_string = true;
-                write_escaped_string(part, f)?;
+                write_escaped_string(fragment, f)?;
             }
-            TokenValue::Boolean(b) => write!(f, "{b}")?,
-            TokenValue::Null => write!(f, "null")?,
-            TokenValue::Number(n) => write!(f, "{n}")?,
-            TokenValue::Punctuator(p) => f.write_char(*p as char)?,
+            Token::Boolean(b) => write!(f, "{b}")?,
+            Token::Null => write!(f, "null")?,
+            Token::Number(n) => write!(f, "{n}")?,
+            Token::Punctuator(p) => f.write_char(*p as char)?,
         }
     }
 
@@ -85,7 +85,6 @@ fn roundtrip_rendered_tokens() {
         let mut parser = StreamingParser::new(ParserOptions::default());
 
         let str_repr = value.to_string();
-        dbg!(&str_repr);
         parser.feed(&str_repr);
         let mut parser = parser.finish();
 
@@ -95,11 +94,7 @@ fn roundtrip_rendered_tokens() {
 
         let rendered_tokens = render_tokens(tokens).expect("Failed to render tokens");
 
-        let result = str_repr == rendered_tokens;
-        if !result {
-            dbg!(str_repr, rendered_tokens);
-        }
-        result
+        str_repr == rendered_tokens
     }
 
     #[cfg(not(miri))]

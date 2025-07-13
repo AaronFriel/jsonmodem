@@ -5,3 +5,5 @@ mod property_multivalue;
 mod property_partition;
 mod repro;
 pub mod utils;
+
+mod snapshot_events;

@@ -1,4 +1,4 @@
-use crate::parser::TokenValue;
+use crate::parser::Token;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedLiteralValue {
@@ -12,7 +12,7 @@ pub enum Step {
     /// Character matched, but the literal is not finished yet.
     NeedMore,
     /// Character matched *and* we consumed the last byte of the literal.
-    Done(TokenValue),
+    Done(Token),
     /// Character did **not** match the expected byte.
     Reject,
 }
@@ -53,9 +53,9 @@ impl ExpectedLiteralBuffer {
             if rest.is_empty() {
                 // Literal finished – emit a token
                 Step::Done(match kind {
-                    ExpectedLiteralValue::Null => TokenValue::Null,
-                    ExpectedLiteralValue::True => TokenValue::Boolean(true),
-                    ExpectedLiteralValue::False => TokenValue::Boolean(false),
+                    ExpectedLiteralValue::Null => Token::Null,
+                    ExpectedLiteralValue::True => Token::Boolean(true),
+                    ExpectedLiteralValue::False => Token::Boolean(false),
                 })
             } else {
                 // Still more to go – remember the rest

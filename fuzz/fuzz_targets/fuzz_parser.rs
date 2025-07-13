@@ -1,9 +1,8 @@
 #![no_main]
-#![feature(string_from_utf8_lossy_owned)]
 use std::cell::RefCell;
 
 use arbitrary::Arbitrary;
-use jsonmodem::{ParserOptions, StreamingParser};
+use jsonmodem::{ParserOptions, StreamingParser, StringValueMode};
 use libfuzzer_sys::{fuzz_mutator, fuzz_target, fuzzer_mutate};
 use rand::rngs::SmallRng; // faster than StdRng
 use rand::{Rng, RngCore, SeedableRng};
@@ -171,8 +170,15 @@ fn parser(data: &[u8]) {
         allow_multiple_json_values: flags & 1 != 0,
         emit_non_scalar_values: flags & 2 != 0,
         allow_unicode_whitespace: flags & 4 != 0,
-        emit_completed_strings: flags & 8 != 0,
-        emit_completed_values: flags & 16 != 0,
+        emit_completed_values: flags & 8 != 0,
+        // Take two bits of the flags, and map them to StringValueMode::None,
+        // StringValueMode::Values, StringValueMode::Prefixes,
+        string_value_mode: match (flags >> 3) & 3 {
+            0 => StringValueMode::None,
+            1 => StringValueMode::Values,
+            2 => StringValueMode::Prefixes,
+            _ => StringValueMode::None,
+        },
         panic_on_error: false,
     });
     for chunk in chunks.iter() {

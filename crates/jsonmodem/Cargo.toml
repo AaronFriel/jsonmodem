@@ -6,31 +6,29 @@ authors = ["Aaron Friel <mayreply@aaronfriel.com>"]
 description = "A streaming, incremental JSON parser"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aaronfriel/jsonmodem"
+autobenches = false
+rust-version = "1.85"
 
 [features]
 default = []
 fuzzing = []
 serde = []
+bench = []
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }
-# The core crate purposely avoids third-party dependencies to ease
-# compilation in restricted environments.
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["yaml"] }
 serde = { version = "1.0", features = ["derive"] }
-
-# Dev-dependencies are kept minimal; external test helpers that required
-# additional crates have been disabled (see tests/ directory) so we do not
-# need to pull them in here.  `quickcheck` is brought in exclusively for
-# property-based tests and is **not** used in the production code path.
-
 quickcheck = "1.0"
 rstest = "0.25.0"
 quickcheck_macros = "1.1.0"
 is_ci = "1.2.0"
+serde_yaml = "0.9.34"
+serde_json = "1.0"
+criterion = { version = "0.5", features = ["default", "html_reports"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -43,3 +41,11 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 pedantic = "warn"
 perf = "deny"
 suspicious = "deny"
+
+[[bench]]
+name = "partial_json"
+harness = false
+
+[[bench]]
+name = "streaming_parser"
+harness = false

@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 
 use quickcheck::{Arbitrary, Gen};
 
-use crate::{Value, value::Map};
+use crate::{value::Map, StringValueMode, Value};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct JsonNumber(f64);
@@ -58,5 +58,15 @@ impl Arbitrary for Value {
 
         let depth = usize::arbitrary(g) % 2;
         gen_val(g, depth)
+    }
+}
+
+impl Arbitrary for StringValueMode {
+    fn arbitrary(g: &mut Gen) -> Self {
+        match usize::arbitrary(g) % 3 {
+            0 => StringValueMode::None,
+            1 => StringValueMode::Prefixes,
+            _ => StringValueMode::Values,
+        }
     }
 }

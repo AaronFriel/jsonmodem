@@ -1,3 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "fuzz"]
+members = ["crates/*"]
+
+[profile.bench]
+debug = true

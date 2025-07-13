@@ -9,7 +9,7 @@ use crate::{ParseEvent, StreamingParser, Value, options::ParserOptions, value::M
 fn finish_seq(chunks: &[&str]) -> Value {
     let mut parser = StreamingParser::new(ParserOptions {
         emit_non_scalar_values: true,
-        emit_completed_strings: true,
+        string_value_mode: crate::StringValueMode::Values,
         ..Default::default()
     });
     for &chunk in chunks {
@@ -20,8 +20,6 @@ fn finish_seq(chunks: &[&str]) -> Value {
     let mut events = vec![];
 
     events.extend(parser);
-
-    std::dbg!(&events);
 
     // Use the fact that the final event will have a value
     let last_event = events
