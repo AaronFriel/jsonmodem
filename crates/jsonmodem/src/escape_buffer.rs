@@ -134,12 +134,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "called `Option::unwrap()` on a `None` value")]
-    fn invalid_scalar_panics() {
+    fn invalid_scalar_errors() {
         // 'D800' is a surrogate range high half and not a valid scalar
         let mut buf = UnicodeEscapeBuffer::new();
-        for ch in "D800".chars() {
+        for ch in "D80".chars() {
             let _ = buf.feed(ch).unwrap();
         }
+        let _ = buf.feed('0').unwrap_err();
     }
 }

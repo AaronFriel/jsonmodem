@@ -5,7 +5,7 @@ use alloc::{
 
 use quickcheck::QuickCheck;
 
-use crate::{StreamingParser, Value, options::ParserOptions};
+use crate::{event::reconstruct_values, options::ParserOptions, StreamingParser, Value};
 
 /// Property: Feeding a JSON document in arbitrary chunk sizes must yield the
 /// exact same `Value` when reconstructed from the emitted `ParseEvent`s.
@@ -40,41 +40,31 @@ fn partition_roundtrip_quickcheck() {
             let size = 1 + (s % remaining);
             let end = idx + size;
             let chunk: String = chars[idx..end].iter().collect();
-            if let Ok(evts) = parser.feed_todo_remove_me(&chunk) {
-                events.extend(evts);
+            parser.feed(&chunk);
+            for event in parser.by_ref() {
+                events.push(event.unwrap());
             }
             idx = end;
             remaining -= size;
         }
         if remaining > 0 {
             let chunk: String = chars[idx..].iter().collect();
-            if let Ok(evts) = parser.feed_todo_remove_me(&chunk) {
-                events.extend(evts);
+            parser.feed(&chunk);
+            for event in parser.by_ref() {
+                events.push(event.unwrap());
             }
         }
 
-        true // TODO
 
-        // // Collect *all* events after the full input has been supplied.
-        // let mut events = Vec::new();
-        // // Flush remaining events by passing empty chunk at the end.
-        // match parser.feed("") {
-        //     Ok(evts) => events.extend(evts),
-        //     Err(_) => return false,
-        // };
+        // Flush any pending events.
+        let parser = parser.finish();
+        for event in parser {
+            events.push(event.unwrap());
+        }
 
-        // return true;
-        // // Flush remaining events by signaling end-of-input so structural
-        // events // are emitted.
-        // if let Ok(evts) = parser.finish("") {
-        //     events.extend(evts);
-        // } else {
-        //     return false;
-        // }
-        // let reconstructed = reconstruct_values(events);
-        // // Single root → exactly one reconstructed value identical to the
-        // // source `Value`.
-        // reconstructed.len() == 1 && reconstructed[0] == original_val
+        let reconstructed = reconstruct_values(events);
+
+        reconstructed.len() == 1 && reconstructed[0] == value
     }
 
     QuickCheck::new()

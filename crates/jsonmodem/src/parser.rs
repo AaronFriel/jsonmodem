@@ -58,9 +58,6 @@ pub(crate) enum TokenValue {
     #[allow(clippy::doc_link_with_quotes)]
     /// Must be one of: `{` `}` `[` `]` `:` `,`
     Punctuator(u8),
-    // /// for testing purposes, arbitrary whitespace between tokens
-    // #[cfg(test)] TODO
-    // Whitespace(String),
 }
 
 impl TokenValue {
@@ -243,14 +240,6 @@ impl FrameStack {
         self.root = None;
         self.stack.clear();
     }
-}
-
-// ------------------------------------------------------------------------------------------------
-// Parser itself
-// ------------------------------------------------------------------------------------------------
-
-struct ParseResult {
-    events: Vec<ParseEvent>,
 }
 
 #[derive(Debug)]
@@ -460,30 +449,6 @@ impl StreamingParser {
         ClosedStreamingParser { parser: self }
     }
 
-    #[doc(hidden)]
-    pub fn feed_todo_remove_me(&mut self, text: &str) -> Result<Vec<ParseEvent>, ParserError> {
-        let ParseResult { events, .. } = self.parse_internal(text)?;
-        Ok(events)
-    }
-
-    #[doc(hidden)]
-    /// Process the remainder of the input as end-of-input and return any
-    /// pending parse events.
-    pub fn finish_todo_remove_me(&mut self, text: &str) -> Result<Vec<ParseEvent>, ParserError> {
-        self.end_of_input = true;
-
-        // Parse any final chunk (if provided), then flush builder state.
-        let mut events = Vec::new();
-        // Propagate any syntax errors on final input.
-        let ParseResult { events: evts, .. } = self.parse_internal(text)?;
-        events.extend(evts);
-        // Flush any remaining builder state by parsing empty input in end-of-input
-        // mode.
-        let ParseResult { events: evts, .. } = self.parse_internal("")?;
-        events.extend(evts);
-        Ok(events)
-    }
-
     #[cfg(test)]
     pub(crate) fn current_value(&self) -> Option<Value> {
         self.events.read_root().cloned()
@@ -583,17 +548,6 @@ impl StreamingParser {
         }
 
         None
-    }
-
-    fn parse_internal(&mut self, text: &str) -> Result<ParseResult, ParserError> {
-        self.source.push(text);
-
-        let mut events = vec![];
-        while let Some(res) = self.next_event() {
-            events.push(res?);
-        }
-
-        Ok(ParseResult { events })
     }
 
     // ------------------------------------------------------------------------------------------------

@@ -11,8 +11,8 @@ fn feed_and_reconstruct(payload: &str) -> (Vec<ParseEvent>, Vec<Value>) {
         ..Default::default()
     });
     // Feed the payload and collect events
-    let mut events = parser.feed_todo_remove_me(payload).expect("feed failed");
-    events.extend(parser.finish_todo_remove_me("").expect("finish failed"));
+    parser.feed(payload);
+    let events: Vec<_> = parser.finish().map(Result::unwrap).collect();
     (events.clone(), reconstruct_values(events))
 }
 

@@ -197,9 +197,19 @@ fn test_continue_within_array_value() {
 #[test]
 fn test_continue_string_with_escape() {
     let mut parser = StreamingParser::new(ParserOptions::default());
-    parser.feed_todo_remove_me("\"").unwrap();
+
+    // Feed the opening quote of the string – this is not enough to complete
+    // a JSON value, so we should not receive any events yet and `current_value`
+    // must stay `None`.
+    parser.feed("\"");
+    assert!(parser.by_ref().all(|r| r.is_ok()));
     assert!(parser.current_value().is_none());
-    parser.feed_todo_remove_me("\\").unwrap();
+
+    // Feed a backslash – still inside the string escape sequence, which is
+    // incomplete at this point. Again, we must not observe any completed
+    // events and `current_value` should remain unset.
+    parser.feed("\\");
+    assert!(parser.all(|r| r.is_ok()));
     assert!(parser.current_value().is_none());
 }
 
@@ -245,7 +255,12 @@ fn test_streaming_multiple_values() {
         ..Default::default()
     });
 
-    let evts = parser.feed_todo_remove_me("1 ").unwrap();
+    // First chunk – should yield exactly one number event with value `1`.
+    parser.feed("1 ");
+    let evts: Vec<_> = parser
+        .by_ref()
+        .map(Result::unwrap)
+        .collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -255,7 +270,12 @@ fn test_streaming_multiple_values() {
         .collect();
     assert_eq!(vals, vec![1.0]);
 
-    let evts = parser.feed_todo_remove_me(" 2 ").unwrap();
+    // Second chunk – should yield exactly one number event with value `2`.
+    parser.feed(" 2 ");
+    let evts: Vec<_> = parser
+        .by_ref()
+        .map(Result::unwrap)
+        .collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -265,6 +285,11 @@ fn test_streaming_multiple_values() {
         .collect();
     assert_eq!(vals, vec![2.0]);
 
-    let evts = parser.feed_todo_remove_me("   ").unwrap();
+    // Third chunk – whitespace only, should not emit any events.
+    parser.feed("   ");
+    let evts: Vec<_> = parser
+        .by_ref()
+        .map(Result::unwrap)
+        .collect();
     assert!(evts.is_empty());
 }

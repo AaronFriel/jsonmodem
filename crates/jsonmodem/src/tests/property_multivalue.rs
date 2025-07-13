@@ -20,7 +20,8 @@ fn repro_multi_value_string_root() {
         emit_non_scalar_values: true,
         ..Default::default()
     });
-    let events = parser.feed_todo_remove_me(payload).expect("feed failed");
+    parser.feed(payload);
+    let events: Vec<_> = parser.map(|x| x.unwrap()).collect();
     assert_eq!(
         &events,
         &[ParseEvent::String {

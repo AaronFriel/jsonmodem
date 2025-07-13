@@ -38,8 +38,6 @@ pub fn write_rendered_tokens<W: core::fmt::Write>(
             TokenValue::Null => write!(f, "null")?,
             TokenValue::Number(n) => write!(f, "{n}")?,
             TokenValue::Punctuator(p) => f.write_char(*p as char)?,
-            // #[cfg(test)] TODO
-            // TokenValue::Whitespace(str) => f.write_str(str)?,
         }
     }
 

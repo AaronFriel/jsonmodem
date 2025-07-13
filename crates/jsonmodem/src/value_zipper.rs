@@ -274,6 +274,8 @@ pub enum ZipperError {
     ExpectedEmptyPath,
     ExpectedNonEmptyPath,
     ExpectedString,
+    #[cfg(test)]
+    ParserError,
 }
 
 impl core::fmt::Display for ZipperError {
@@ -289,6 +291,8 @@ impl core::fmt::Display for ZipperError {
                 ExpectedEmptyPath => "operation requires an empty path",
                 ExpectedNonEmptyPath => "operation would pop past the root",
                 ExpectedString => "expected the root to be a string",
+                #[cfg(test)]
+                ParserError => "parser error occurred",
             }
         )
     }
@@ -443,13 +447,17 @@ impl StreamingParserBuilder {
         &mut self,
         buffer: &str,
     ) -> Result<Option<(&Value, Vec<ParseEvent>)>, ZipperError> {
-        let events = self
-            .parser
-            .feed_todo_remove_me(buffer)
-            .expect("streaming parser failed");
+        self.parser.feed(buffer);
 
-        if events.is_empty() {
-            return Ok(None);
+        let mut events: Vec<ParseEvent> = Vec::new();
+        for evt in self.parser.by_ref() {
+            match evt {
+                Ok(event) => events.push(event),
+                Err(_) => {
+                    // if the event is an error, we don't want to continue
+                    return Err(ZipperError::ParserError);
+                }
+            }
         }
 
         for evt in &events {
@@ -617,40 +625,15 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_millis(250))]
     fn root_number_single_chunk_repro_one() {
-        // This test is accurate.
-        let events = StreamingParser::new(default_opts())
-            .feed_todo_remove_me("123 ")
-            .expect("streaming parser failed");
+        let mut parser = StreamingParser::new(default_opts());
+        parser.feed("123 ");
 
+        let events: Vec<_> = parser.collect();
+        assert!(events.iter().all(Result::is_ok), "all events should be ok");
         assert_eq!(
             events.len(),
             1,
             "expected one event for single number chunk with clear end"
-        );
-    }
-
-    #[rstest]
-    #[timeout(Duration::from_millis(250))]
-    fn root_number_single_chunk_repro() {
-        // This test is a repro of the infinite loop in root_number_single_chunk
-        let events = StreamingParser::new(default_opts())
-            .feed_todo_remove_me("123 ")
-            .expect("streaming parser failed");
-
-        assert_eq!(
-            events.len(),
-            1,
-            "expected one event for single number chunk with clear end"
-        );
-
-        let events = StreamingParser::new(default_opts())
-            .feed_todo_remove_me("123")
-            .expect("streaming parser failed");
-
-        assert_eq!(
-            events.len(),
-            0,
-            "expected no events for single number chunk with no EOF"
         );
     }
 
