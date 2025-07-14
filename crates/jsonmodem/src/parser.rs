@@ -939,10 +939,9 @@ impl StreamingParser {
                 Char(_c) => {
                     // Fast-path: copy as many consecutive non-escaped, non-terminating
                     // characters as possible in a single pass.
-                    let copied = self.source.copy_while(
-                        &mut self.buffer,
-                        |ch| ch != '\\' && ch != '"' && ch >= '\u{20}',
-                    );
+                    let copied = self.source.copy_while(&mut self.buffer, |ch| {
+                        ch != '\\' && ch != '"' && ch >= '\u{20}'
+                    });
 
                     // Update lexer coordinates – the copied characters cannot contain
                     // a newline (0x0A) as it is < 0x20 and thus rejected by the
