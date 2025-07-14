@@ -25,7 +25,7 @@ fn snapshot_complex_document() {
         .expect("parser should not error on valid input");
 
     #[cfg(not(miri))]
-    assert_yaml_snapshot!(events, @r"
+    insta::assert_yaml_snapshot!(events, @r"
     - kind: ObjectBegin
       path: []
     - kind: ArrayStart
