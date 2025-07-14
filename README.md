@@ -6,7 +6,7 @@ Parse → filter → act **while the bytes are still in flight**.
 
 [![Crates.io](https://img.shields.io/crates/v/jsonmodem)](https://crates.io/crates/jsonmodem)
 [![Docs.rs](https://img.shields.io/docsrs/jsonmodem)](https://docs.rs/jsonmodem)
-[![CI](https://github.com/aaronfriel/jsonmodem/actions/workflows/ci.yml/badge.svg)](…) [![MSRV
+![CI](https://github.com/aaronfriel/jsonmodem/actions/workflows/test.yml/badge.svg) [![MSRV
 1.85](https://img.shields.io/badge/MSRV-1.85-blue)](#msrv)
 
 ---
