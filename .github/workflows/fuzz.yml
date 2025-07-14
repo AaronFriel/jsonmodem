@@ -17,27 +17,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
-          componentsa: llvm-tools
-
-      - name: Install LLVM 19 toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg lsb-release
-          # Import the official signing key
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
-            sudo tee /usr/share/keyrings/llvm.asc
-          # Add the apt.llvm.org repo for *this* Ubuntu release
-          echo "deb [signed-by=/usr/share/keyrings/llvm.asc] \
-            http://apt.llvm.org/$(lsb_release -cs)/ \
-            llvm-toolchain-$(lsb_release -cs)-19 main" | \
-            sudo tee /etc/apt/sources.list.d/llvm19.list
-          sudo apt-get update
-          # Install the pieces you need; amend as required
-          sudo apt-get install -y clang-19 lldb-19 lld-19 llvm-19-dev
-
-          # (Optional) make Clang 19 the default ‘clang’ on PATH
-          sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-19   100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100
+          components: llvm-tools
 
       - name: Cache fuzz corpora and artifacts
         uses: actions/cache@v4
