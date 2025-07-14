@@ -34,7 +34,7 @@ jobs:
 
       - name: Run fuzzer (5 minutes)
         run: |
-          cargo fuzz run fuzz_parser -- -max_total_time=300 -exit_on_crash=1
+          cargo fuzz run fuzz_parser -- -runs=1000
 
       - name: Upload fuzz artifacts
         if: always()

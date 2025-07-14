@@ -287,7 +287,6 @@ pub struct StreamingParser {
     multiple_values: bool,
     string_value_mode: StringValueMode,
     emit_non_scalar_values: bool,
-    emit_completed_values: bool,
 
     /// Panic on syntax errors instead of returning them
     #[cfg(test)]
@@ -375,7 +374,7 @@ impl StreamingParser {
 
             events: EventStack::new(
                 vec![],
-                if options.emit_non_scalar_values || options.emit_completed_values {
+                if options.emit_non_scalar_values {
                     Some(ValueBuilder::Empty)
                 } else {
                     None
@@ -385,7 +384,6 @@ impl StreamingParser {
             multiple_values: options.allow_multiple_json_values,
             string_value_mode: options.string_value_mode,
             emit_non_scalar_values: options.emit_non_scalar_values,
-            emit_completed_values: options.emit_completed_values,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
@@ -510,7 +508,7 @@ impl StreamingParser {
                 self.frames.clear();
                 self.events = EventStack::new(
                     vec![],
-                    if self.emit_non_scalar_values || self.emit_completed_values {
+                    if self.emit_non_scalar_values {
                         Some(ValueBuilder::Empty)
                     } else {
                         None

@@ -4,9 +4,6 @@
 
 use alloc::vec::Vec;
 
-// Enable the `yaml` feature for a more human-readable snapshot format.
-use insta::assert_yaml_snapshot;
-
 use crate::{ParseEvent, ParserOptions, StreamingParser};
 
 #[test]
@@ -27,7 +24,7 @@ fn snapshot_complex_document() {
         .collect::<Result<_, _>>()
         .expect("parser should not error on valid input");
 
-    // Inline snapshot taken from a known-good run via `cargo insta review`.
+    #[cfg(not(miri))]
     assert_yaml_snapshot!(events, @r"
     - kind: ObjectBegin
       path: []

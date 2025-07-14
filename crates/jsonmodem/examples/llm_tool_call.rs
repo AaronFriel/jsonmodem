@@ -42,7 +42,6 @@
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
 
-use insta::assert_snapshot;
 use jsonmodem::{ParseEvent, ParserOptions, PathComponent, StreamingParser, StringValueMode};
 
 fn main() {
@@ -157,7 +156,8 @@ fn main() {
 
     // Finally, verify that the produced event stream stays stable.  Run
     // `cargo insta review` after the first execution to approve the snapshot.
-    assert_snapshot!(reference_value, @r#"
+    #[cfg(not(miri))]
+    insta::assert_snapshot!(reference_value, @r#"
     {"kind":"ObjectBegin","path":[]}
     {"kind":"ObjectBegin","path":["moderation"]}
     {"kind":"String","path":["moderation","decision"],"value":"al","fragment":"al"}

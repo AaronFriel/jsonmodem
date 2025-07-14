@@ -131,19 +131,6 @@ pub struct ParserOptions {
     /// `false`
     pub emit_non_scalar_values: bool,
 
-    /// Whether to emit a `ParseEvent::Complete` after fully parsing one or more
-    /// JSON values.
-    ///
-    /// When enabled, the parser accumulates each JSON root value until it is
-    /// complete and then emits `ParseEvent::Complete`. If
-    /// `allow_multiple_json_values` is also `true`, multiple complete events
-    /// may be produced from the same input stream.
-    ///
-    /// # Default
-    ///
-    /// `false`
-    pub emit_completed_values: bool,
-
     #[cfg(any(test, feature = "fuzzing"))]
     /// Panic on syntax errors instead of returning them.
     ///

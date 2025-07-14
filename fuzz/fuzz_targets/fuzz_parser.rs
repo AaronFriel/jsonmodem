@@ -170,7 +170,6 @@ fn parser(data: &[u8]) {
         allow_multiple_json_values: flags & 1 != 0,
         emit_non_scalar_values: flags & 2 != 0,
         allow_unicode_whitespace: flags & 4 != 0,
-        emit_completed_values: flags & 8 != 0,
         // Take two bits of the flags, and map them to StringValueMode::None,
         // StringValueMode::Values, StringValueMode::Prefixes,
         string_value_mode: match (flags >> 3) & 3 {
