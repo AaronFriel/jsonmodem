@@ -1,6 +1,9 @@
 name: Lint GitHub Actions workflows
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
 
 jobs:
   actionlint:
@@ -16,4 +19,3 @@ jobs:
       - name: Check workflow files
         run: ${{ steps.get_actionlint.outputs.executable }} -color
         shell: bash
-
