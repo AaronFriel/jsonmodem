@@ -622,7 +622,8 @@ impl StreamingParser {
         #[cfg(test)]
         std::eprintln!(
             "produce_string: partial = {}, buffer = {:?}",
-            partial, self.buffer
+            partial,
+            self.buffer
         );
 
         self.partial_lex = partial;

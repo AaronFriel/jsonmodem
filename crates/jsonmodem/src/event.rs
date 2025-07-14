@@ -288,7 +288,8 @@ pub enum ParseEvent {
     String {
         /// The path to the string value.
         path: Vec<PathComponent>,
-        /// The value of the string. The interpretation of this value depends on the `string_value_mode` used to create the parser.
+        /// The value of the string. The interpretation of this value depends on
+        /// the `string_value_mode` used to create the parser.
         ///
         /// This value is not set when the mode is `StringValueMode::None`.
         #[cfg_attr(

@@ -104,12 +104,14 @@ pub struct ParserOptions {
     /// controlling memory and network overhead. See [`StringValueMode`] for
     /// details:
     ///
-    /// - `None`: The `value` field is always `None`. Only incremental fragments are returned.
+    /// - `None`: The `value` field is always `None`. Only incremental fragments
+    ///   are returned.
     /// - `Values`: The full string is returned only when fully parsed.
-    /// - `Prefixes`: Each fragment returns the prefix parsed so far, emitted incrementally.
+    /// - `Prefixes`: Each fragment returns the prefix parsed so far, emitted
+    ///   incrementally.
     ///
-    /// See [`StringValueMode`] for a detailed explanation of each mode and their
-    /// trade-offs.
+    /// See [`StringValueMode`] for a detailed explanation of each mode and
+    /// their trade-offs.
     ///
     /// # Default
     ///

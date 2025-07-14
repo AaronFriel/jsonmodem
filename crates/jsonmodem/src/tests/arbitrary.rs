@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 
 use quickcheck::{Arbitrary, Gen};
 
-use crate::{value::Map, StringValueMode, Value};
+use crate::{StringValueMode, Value, value::Map};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct JsonNumber(f64);

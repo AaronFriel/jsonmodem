@@ -255,10 +255,7 @@ fn test_streaming_multiple_values() {
 
     // First chunk – should yield exactly one number event with value `1`.
     parser.feed("1 ");
-    let evts: Vec<_> = parser
-        .by_ref()
-        .map(Result::unwrap)
-        .collect();
+    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -270,10 +267,7 @@ fn test_streaming_multiple_values() {
 
     // Second chunk – should yield exactly one number event with value `2`.
     parser.feed(" 2 ");
-    let evts: Vec<_> = parser
-        .by_ref()
-        .map(Result::unwrap)
-        .collect();
+    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -285,9 +279,6 @@ fn test_streaming_multiple_values() {
 
     // Third chunk – whitespace only, should not emit any events.
     parser.feed("   ");
-    let evts: Vec<_> = parser
-        .by_ref()
-        .map(Result::unwrap)
-        .collect();
+    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
     assert!(evts.is_empty());
 }

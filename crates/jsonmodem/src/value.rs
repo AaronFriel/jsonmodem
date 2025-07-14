@@ -1,8 +1,7 @@
 //! JSON value types and utilities.
 //!
-//! This module defines the [`Value`] enum, which represents any valid JSON value, and
-//! provides helper functions for escaping JSON strings.
-//!
+//! This module defines the [`Value`] enum, which represents any valid JSON
+//! value, and provides helper functions for escaping JSON strings.
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 pub type Map = BTreeMap<String, Value>;
@@ -22,7 +21,7 @@ pub type Array = Vec<Value>;
 /// # Examples
 ///
 /// ```
-/// use jsonmodem::{Value, Map};
+/// use jsonmodem::{Map, Value};
 ///
 /// // Creating a JSON object:
 /// let mut map = Map::new();
@@ -35,7 +34,10 @@ pub type Array = Vec<Value>;
 // Enable serde support for tests and when the optional `serde` feature is
 // activated by downstream crates.  The `cfg_attr` conditional keeps the core
 // crate free of a serde dependency in normal builds.
-#[cfg_attr(any(test, feature = "serde"), derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(test, feature = "serde"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Null,
@@ -175,7 +177,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
-    /// use jsonmodem::{Value, Map};
+    /// use jsonmodem::{Map, Value};
     ///
     /// let map = Map::new();
     /// let v = Value::Object(map);
@@ -188,11 +190,12 @@ impl Value {
     }
 }
 
-/// Escapes control characters in a string for inclusion in a JSON string literal.
+/// Escapes control characters in a string for inclusion in a JSON string
+/// literal.
 ///
 /// This function writes to the provided formatter, replacing characters such as
-/// quotes, backslashes, control characters (<= U+001F), and Unicode line separators
-/// with their JSON escape sequences.
+/// quotes, backslashes, control characters (<= U+001F), and Unicode line
+/// separators with their JSON escape sequences.
 pub(crate) fn write_escaped_string<W: core::fmt::Write>(src: &str, f: &mut W) -> core::fmt::Result {
     for c in src.chars() {
         match c {
@@ -215,9 +218,11 @@ pub(crate) fn write_escaped_string<W: core::fmt::Write>(src: &str, f: &mut W) ->
     Ok(())
 }
 
-/// Escapes control characters in a string for inclusion in a JSON string literal and returns the result.
+/// Escapes control characters in a string for inclusion in a JSON string
+/// literal and returns the result.
 ///
-/// This function is a convenience wrapper around [`write_escaped_string`] that returns a `String`.
+/// This function is a convenience wrapper around [`write_escaped_string`] that
+/// returns a `String`.
 pub(crate) fn escape_string(src: &str) -> String {
     let mut result = String::with_capacity(src.len() + 2); // +2 for surrounding quotes
     write_escaped_string(src, &mut result).expect("Failed to escape string");

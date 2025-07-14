@@ -2,12 +2,12 @@
 //! a moderately complex JSON input.  The test is particularly useful to catch
 //! unintended behaviour changes when the parser implementation is modified.
 
-use crate::{ParserOptions, StreamingParser, ParseEvent};
+use alloc::vec::Vec;
 
 // Enable the `yaml` feature for a more human-readable snapshot format.
 use insta::assert_yaml_snapshot;
 
-use alloc::vec::Vec;
+use crate::{ParseEvent, ParserOptions, StreamingParser};
 
 #[test]
 fn snapshot_complex_document() {

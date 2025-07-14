@@ -6,7 +6,9 @@ use alloc::{
 
 use quickcheck::{QuickCheck, TestResult};
 
-use crate::{event::reconstruct_values, ParseEvent, ParserOptions, StreamingParser, StringValueMode, Value};
+use crate::{
+    ParseEvent, ParserOptions, StreamingParser, StringValueMode, Value, event::reconstruct_values,
+};
 
 /// Repro for missing string roots in multi-value stream reconstruction.
 /// Currently fails because no complete Value events are emitted for top-level
@@ -41,7 +43,11 @@ fn repro_multi_value_string_root() {
 #[test]
 fn multi_value_roundtrip_quickcheck() {
     #[allow(clippy::needless_pass_by_value)]
-    fn prop(values: Vec<Value>, splits: Vec<usize>, string_value_mode: StringValueMode) -> TestResult {
+    fn prop(
+        values: Vec<Value>,
+        splits: Vec<usize>,
+        string_value_mode: StringValueMode,
+    ) -> TestResult {
         if values.is_empty() {
             return TestResult::discard();
         }

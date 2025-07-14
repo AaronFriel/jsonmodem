@@ -36,11 +36,14 @@ pub use value::{Array, Map, Value};
 /// extern crate alloc;
 /// # use jsonmodem::{path, PathComponent};
 /// let p = path![0, "foo", 2];
-/// assert_eq!(p, vec![
-///     PathComponent::Index(0),
-///     PathComponent::Key("foo".into()),
-///     PathComponent::Index(2)
-/// ]);
+/// assert_eq!(
+///     p,
+///     vec![
+///         PathComponent::Index(0),
+///         PathComponent::Key("foo".into()),
+///         PathComponent::Index(2)
+///     ]
+/// );
 /// ```
 #[macro_export]
 macro_rules! path {
