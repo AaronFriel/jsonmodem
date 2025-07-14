@@ -74,6 +74,6 @@ fn partition_roundtrip_quickcheck() {
     let tests = 10;
 
     QuickCheck::new()
-        .tests(10)
+        .tests(tests)
         .quickcheck(prop as fn(Value, Vec<usize>, StringValueMode) -> bool);
 }

@@ -19,5 +19,5 @@ jobs:
 
       - name: Run tests under Miri
         run: |
-          cargi miri setup
+          cargo miri setup
           cargo miri test --all-features --workspace

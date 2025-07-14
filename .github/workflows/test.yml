@@ -14,10 +14,11 @@ jobs:
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable, llvm-tools
+          toolchain: stable
+          components: llvm-tools
 
       - name: Build
-        run: cargo build --all --release --workspace
+        run: cargo build --all --release --workspace --exclude jsonmodem-fuzz
 
   tests:
     runs-on: ubuntu-latest
@@ -30,4 +31,4 @@ jobs:
           toolchain: stable
 
       - name: Run test suite
-        run: cargo test --all --workspace --all-features --verbose
+        run: cargo test --all --workspace --exclude jsonmodem-fuzz --all-features --verbose

@@ -19,5 +19,4 @@ jobs:
       - name: Run benchmarks
         env:
           RUSTFLAGS: "--cfg=bench"
-        run: cargo bench --all --workspace --verbose || true # allow non-zero exit due to unsupported benches on stable
-
+        run: cargo bench --all --workspace --exclude jsonmodem-fuzz --verbose || true # allow non-zero exit due to unsupported benches on stable
