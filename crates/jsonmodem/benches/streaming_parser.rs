@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 //! Benchmark – `jsonmodem::StreamingParser`
 
+use std::time::Duration;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::{ParserOptions, StreamingParser};
 
@@ -57,6 +59,9 @@ fn bench_streaming_parser(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
     let mut group = c.benchmark_group("streaming_parser_split");
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(5));
+
     for &parts in &[100usize, 1_000, 5_000] {
         group.bench_with_input(BenchmarkId::from_parameter(parts), &parts, |b, &p| {
             b.iter(|| {

@@ -2,6 +2,8 @@
 
 mod parse_partial_json_port;
 
+use std::time::Duration;
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::{ParserOptions, StreamingParser};
 
@@ -82,6 +84,8 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
     let mut group = c.benchmark_group("partial_json_strategies");
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(5));
 
     for &parts in &[100usize, 1_000, 5_000] {
         group.bench_with_input(
@@ -137,6 +141,8 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
     let second_half = &payload[midpoint..];
 
     let mut group = c.benchmark_group("partial_json_incremental");
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(5));
 
     for &parts in &[100usize, 1_000, 5_000] {
         // size of one incremental chunk we want to measure
