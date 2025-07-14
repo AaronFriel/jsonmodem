@@ -634,7 +634,7 @@ fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &
                     vec[*i] = Value::String(String::from(fragment));
                 }
             } else {
-                let mut vec = Vec::new();
+                let mut vec = Vec::with_capacity(*i + 1);
                 if *i >= vec.len() {
                     vec.resize(*i + 1, Value::Null);
                 }

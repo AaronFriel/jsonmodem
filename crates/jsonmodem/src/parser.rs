@@ -191,7 +191,7 @@ impl FrameStack {
     pub fn new() -> Self {
         Self {
             root: None,
-            stack: Vec::new(),
+            stack: Vec::with_capacity(16),
         }
     }
 
@@ -366,7 +366,7 @@ impl StreamingParser {
             lex_state: LexState::Default,
             parse_state: ParseState::Start,
 
-            buffer: String::new(),
+            buffer: String::with_capacity(1024),
             fragment_start: 0,
             unicode_escape_buffer: UnicodeEscapeBuffer::new(),
             expected_literal: ExpectedLiteralBuffer::none(),
@@ -632,6 +632,7 @@ impl StreamingParser {
             }
 
             let value = core::mem::take(&mut self.buffer);
+            self.buffer.reserve(1024);
             return PropertyName { value };
         }
 
@@ -639,6 +640,7 @@ impl StreamingParser {
             _ if partial && self.buffer.len() == self.fragment_start => Eof,
             StringValueMode::None => {
                 let fragment = core::mem::take(&mut self.buffer);
+                self.buffer.reserve(1024);
                 String {
                     fragment,
                     value: None,
@@ -655,6 +657,7 @@ impl StreamingParser {
             StringValueMode::Values => {
                 let fragment = self.buffer[self.fragment_start..].to_string();
                 let value = core::mem::take(&mut self.buffer);
+                self.buffer.reserve(1024);
                 self.fragment_start = self.buffer.len(); // reset for next fragment
                 String {
                     fragment,
@@ -668,7 +671,9 @@ impl StreamingParser {
                     self.buffer.clone()
                 } else {
                     self.fragment_start = 0; // reset for next fragment
-                    core::mem::take(&mut self.buffer)
+                    let result = core::mem::take(&mut self.buffer);
+                    self.buffer.reserve(1024);
+                    result
                 };
                 String {
                     fragment,

@@ -222,7 +222,7 @@ fn error_control_characters_escaped_in_message() {
 fn unclosed_objects_before_property_names() {
     let mut parser = StreamingParser::new(ParserOptions {
         emit_non_scalar_values: true,
-        ..Default::default()
+        ..ParserOptions::default()
     });
     parser.feed("{");
     // Drive the parser to process the already-fed chunk so that the builder is

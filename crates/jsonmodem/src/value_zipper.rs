@@ -19,9 +19,9 @@ impl ValueZipper {
     pub fn new(value: Value) -> Self {
         Self {
             root: Box::new(value),
-            path: Vec::new(),
+            path: Vec::with_capacity(16),
             #[cfg(test)]
-            path_components: Vec::new(),
+            path_components: Vec::with_capacity(16),
         }
     }
 
@@ -468,7 +468,7 @@ impl StreamingParserBuilder {
     ) -> Result<Option<(&Value, Vec<ParseEvent>)>, ZipperError> {
         self.parser.feed(buffer);
 
-        let mut events: Vec<ParseEvent> = Vec::new();
+        let mut events: Vec<ParseEvent> = Vec::with_capacity(16);
         for evt in self.parser.by_ref() {
             match evt {
                 Ok(event) => events.push(event),
@@ -494,7 +494,7 @@ impl StreamingParserBuilder {
                 ParseEvent::String { fragment, path, .. } => {
                     self.state.mutate_with(
                         path.last(),
-                        || Value::String(String::new()),
+                        || Value::String(String::with_capacity(1024)),
                         |v| {
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
@@ -515,7 +515,7 @@ impl StreamingParserBuilder {
                 }
                 ParseEvent::ArrayStart { path } => {
                     self.state
-                        .enter_with(path.last(), || Value::Array(Vec::new()))?;
+                        .enter_with(path.last(), || Value::Array(Vec::with_capacity(16)))?;
                 }
 
                 // ── container ends ─────────────────────────────────────────
@@ -719,7 +719,7 @@ mod tests {
         zipper
             .mutate_lazy(
                 PathComponent::Key("s".into()),
-                || Value::String(String::new()),
+                || Value::String(String::with_capacity(1024)),
                 |v| {
                     if let Value::String(s) = v {
                         s.push_str("hello");

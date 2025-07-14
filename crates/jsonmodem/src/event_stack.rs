@@ -42,7 +42,7 @@ impl EventStack {
                 ParseEvent::String { fragment, path, .. } => {
                     builder.mutate_with(
                         path.last(),
-                        || Value::String(String::new()),
+                        || Value::String(String::with_capacity(1024)),
                         |v| {
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
@@ -59,7 +59,7 @@ impl EventStack {
                     builder.enter_with(path.last(), || Value::Object(Map::new()))?;
                 }
                 ParseEvent::ArrayStart { path } => {
-                    builder.enter_with(path.last(), || Value::Array(Vec::new()))?;
+                    builder.enter_with(path.last(), || Value::Array(Vec::with_capacity(16)))?;
                 }
 
                 // ── container ends ─────────────────────────────────────────

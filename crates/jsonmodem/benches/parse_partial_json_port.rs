@@ -364,7 +364,7 @@ pub fn fix_json(input: &str) -> String {
         #[allow(clippy::cast_sign_loss)]
         input[..=(last_valid_index as usize)].to_owned()
     } else {
-        String::new()
+        String::with_capacity(1024)
     };
 
     // Close any open constructs by unwinding the stack.
