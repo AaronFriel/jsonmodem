@@ -111,12 +111,12 @@ the user with minimal latency.
 
 ## 🔭 Roadmap
 
-| Target              | Status     | Notes                          |
-| ------------------- | ---------- | ------------------------------ |
-| Rust crate          | ✅ released |                                |
-| **Python** bindings | 🛠 next    | `pyo3`, published to PyPI      |
-| **Node‑API** module | ⏩ queued   | Native addon for TS/JS         |
-| **WASM** build      | ⏩ queued   | < 30 kB gz for browsers & Deno |
+| Target              | Status      | Notes                       |
+| ------------------- | ----------- | --------------------------- |
+| Rust crate          | ✅ released |                             |
+| **Python** bindings | 🛠 next      | `pyo3`, published to PyPI  |
+| **Node‑API** module | ⏩ queued   | Native addon for TS/JS      |
+| **WASM** build      | ⏩ queued   | For browsers and more       |
 
 ---
 

@@ -29,6 +29,9 @@ pub use options::{ParserOptions, StringValueMode};
 pub use parser::StreamingParser;
 pub use value::{Array, Map, Value};
 
+#[doc(hidden)]
+pub use alloc::vec;
+
 /// Macro to build a `Vec<PathComponent>` from a heterogeneous list of keys and
 /// indices.
 ///
@@ -49,6 +52,6 @@ pub use value::{Array, Map, Value};
 macro_rules! path {
     ( $( $elem:expr ),* $(,)? ) => {{
         use $crate::PathComponentFrom;
-        ::alloc::vec![$($crate::PathComponent::from_path_component($elem)),*]
+        $crate::vec![$($crate::PathComponent::from_path_component($elem)),*]
     }};
 }

@@ -42,7 +42,7 @@
 #![allow(clippy::needless_raw_string_hashes)]
 #![allow(clippy::doc_markdown)]
 
-use jsonmodem::{ParseEvent, ParserOptions, PathComponent, StreamingParser, StringValueMode, path};
+use jsonmodem::{ParseEvent, ParserOptions, StreamingParser, StringValueMode, path};
 
 fn main() {
     // A *toy* assistant response streamed in ten tiny chunks.  The
