@@ -23,14 +23,14 @@ mod parser;
 #[cfg(test)]
 mod tests;
 
+#[doc(hidden)]
+pub use alloc::vec;
+
 pub use error::ParserError;
 pub use event::{ParseEvent, PathComponent, PathComponentFrom};
 pub use options::{ParserOptions, StringValueMode};
 pub use parser::StreamingParser;
 pub use value::{Array, Map, Value};
-
-#[doc(hidden)]
-pub use alloc::vec;
 
 /// Macro to build a `Vec<PathComponent>` from a heterogeneous list of keys and
 /// indices.
