@@ -95,15 +95,15 @@ the user with minimal latency.
     `serde_json`
   * [`partial_json_fixer`](https://crates.io/crates/partial-json-fixer) - Rust crate
 
-**Result:** `jsonmodem::StreamingParser` is **8 – 77 × faster per chunk** because it never rebuilds
-  or re‑parses the buffer.
+**Result:** `jsonmodem::StreamingParser` is nearly 100 times faster because it never rebuilds or
+  re‑parses the buffer, with greater performance improvements as documents grow longer or are
+  streamed as more pieces.
 
-| chunks | jsonmodem | parse_partial_json | partial_json_fixer | speed-up\* |
-| -----: | --------------: | -------------------: | -------------------: | --------------------------: |
-|    100 |     **1.22 µs** |             10.46 µs |              9.93 µs |                   **× 8.2** |
-|  1 000 |     **0.22 µs** |             10.54 µs |              9.88 µs |                  **× 44.6** |
-|  5 000 |     **0.13 µs** |             10.51 µs |              9.80 µs |                  **× 77.0** |
-
+| chunks |     jsonmodem   |  parse_partial_json  |  partial_json_fixer  | speed-up\* |
+| -----: | --------------: | -------------------: | -------------------: | ---------: |
+|    100 |      **121 µs** |             1 627 µs |             1 552 µs |  **12.8×** |
+|  1 000 |      **250 µs** |            16 325 µs |            15 345 µs |  **61.3×** |
+|  5 000 |      **824 µs** |            81 619 µs |            76 613 µs |  **93.0×** |
 
 \* Versus the fastest helper (`partial_json_fixer`). Benchmarked with Criterion.
 
