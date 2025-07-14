@@ -28,6 +28,16 @@ impl ValueZipper {
     #[inline]
     fn current_mut(&mut self) -> &mut Value {
         match self.path.last().copied().as_mut() {
+            // SAFETY: `ptr` came from `NonNull::from` on a `&mut Value` (see
+            // `enter_*_lazy`).  It is still valid because:
+            //
+            //   * While it is stored in `self.path`, the collection that owns that element is
+            //     *never* mutated (the invariant above).
+            //   * We hold `&mut self`, so no other mutable reference to the same element can exist
+            //     simultaneously (unique-access rule).
+            //
+            // Consequently `ptr` is non-null, properly aligned, and points to live
+            // memory for the duration of this call.
             Some(ptr) => unsafe { ptr.as_mut() },
             None => self.root.as_mut(),
         }
@@ -114,6 +124,17 @@ impl ValueZipper {
 
     pub fn pop(&mut self) -> &mut Value {
         let leaf = match self.path.pop().as_mut() {
+            // SAFETY: identical reasoning as in `current_mut`:
+            //
+            //   * The pointer was created with `NonNull::from(&mut value)` and remained valid
+            //     because we did not touch its parent container until *after* removing it from
+            //     `self.path`.
+            //   * We still hold `&mut self`, so there is no aliasing.
+            //
+            // Note that `pop` hands the caller an `&mut Value` whose lifetime is tied
+            // to `&mut self`.  The borrow checker therefore prevents the caller from
+            // calling any other `&mut self` methods on the zipper while the returned
+            // reference is alive, upholding Rust’s exclusive-access guarantee.
             Some(ptr) => unsafe { ptr.as_mut() },
             None => self.root.as_mut(),
         };
