@@ -19,9 +19,9 @@ impl ValueZipper {
     pub fn new(value: Value) -> Self {
         Self {
             root: Box::new(value),
-            path: Vec::with_capacity(16),
+            path: Vec::new(),
             #[cfg(test)]
-            path_components: Vec::with_capacity(16),
+            path_components: Vec::new(),
         }
     }
 
