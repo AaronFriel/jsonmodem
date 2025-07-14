@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable, llvm-tools
+
+      - name: Build
+        run: cargo build --all --release --workspace
+
   tests:
     runs-on: ubuntu-latest
     steps:
@@ -15,11 +28,6 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-          components: clippy, rustfmt
-
-      - name: Build
-        run: cargo build --all --release --workspace
 
       - name: Run test suite
         run: cargo test --all --workspace --all-features --verbose
-

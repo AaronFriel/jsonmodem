@@ -68,7 +68,12 @@ fn partition_roundtrip_quickcheck() {
         reconstructed.len() == 1 && reconstructed[0] == value
     }
 
+    #[cfg(not(miri))]
+    let tests = if is_ci::cached() { 10_000 } else { 1_000 };
+    #[cfg(miri)]
+    let tests = 10;
+
     QuickCheck::new()
-        .tests(100)
+        .tests(10)
         .quickcheck(prop as fn(Value, Vec<usize>, StringValueMode) -> bool);
 }

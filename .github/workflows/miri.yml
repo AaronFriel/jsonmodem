@@ -18,5 +18,6 @@ jobs:
           components: miri
 
       - name: Run tests under Miri
-        run: cargo +nightly miri test --all-features --workspace
-
+        run: |
+          cargi miri setup
+          cargo miri test --all-features --workspace
