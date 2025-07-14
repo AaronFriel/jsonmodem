@@ -32,9 +32,10 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      - name: Run fuzzer (5 minutes)
+      - name: Fuzz
+        # Estimated to take about 5 minutes - a decent amount of time for PRs.
         run: |
-          cargo fuzz run fuzz_parser -- -runs=1000
+          cargo fuzz run fuzz_parser -- -runs=5000
 
       - name: Upload fuzz artifacts
         if: always()
