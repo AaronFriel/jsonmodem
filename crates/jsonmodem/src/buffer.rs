@@ -63,6 +63,32 @@ impl Buffer {
             }
         }
     }
+
+    /// Copy characters from the buffer into the provided `String` while the
+    /// supplied predicate returns `true` for the next character. Stops at the
+    /// first character for which the predicate returns `false` **or** when the
+    /// buffer is exhausted.
+    ///
+    /// Returns the number of characters that have been copied.
+    pub(crate) fn copy_while<F>(&mut self, dst: &mut String, mut predicate: F) -> usize
+    where
+        F: FnMut(char) -> bool,
+    {
+        let mut copied = 0;
+
+        loop {
+            match self.peek() {
+                Some(c) if predicate(c) => {
+                    // Safe to unwrap – we just peeked and know a character is available.
+                    dst.push(self.next().unwrap());
+                    copied += 1;
+                }
+                _ => break,
+            }
+        }
+
+        copied
+    }
 }
 
 impl Iterator for Buffer {
