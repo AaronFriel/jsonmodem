@@ -8,7 +8,7 @@ Parse → filter → act **while the bytes are still in flight**.
 [![Docs.rs](https://img.shields.io/docsrs/jsonmodem)](https://docs.rs/jsonmodem)
 ![Tests](https://github.com/aaronfriel/jsonmodem/actions/workflows/test.yml/badge.svg?branch=main)
 ![Fuzzing](https://github.com/aaronfriel/jsonmodem/actions/workflows/fuzz.yml/badge.svg?branch=main)
-![Miri](https://github.com/aaronfriel/jsonmodem/actions/workflows/Miri.yml/badge.svg?branch=main) [![MSRV
+![Miri](https://github.com/aaronfriel/jsonmodem/actions/workflows/miri.yml/badge.svg?branch=main) [![MSRV
 1.85](https://img.shields.io/badge/MSRV-1.85-blue)](#msrv)
 
 ---
