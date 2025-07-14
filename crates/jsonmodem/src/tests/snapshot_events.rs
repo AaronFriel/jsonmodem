@@ -1,6 +1,7 @@
 //! Snapshot test that verifies the exact sequence of `ParseEvent`s emitted for
 //! a moderately complex JSON input.  The test is particularly useful to catch
 //! unintended behaviour changes when the parser implementation is modified.
+#![cfg(not(miri))]
 
 use alloc::vec::Vec;
 
@@ -24,7 +25,6 @@ fn snapshot_complex_document() {
         .collect::<Result<_, _>>()
         .expect("parser should not error on valid input");
 
-    #[cfg(not(miri))]
     insta::assert_yaml_snapshot!(events, @r"
     - kind: ObjectBegin
       path: []
