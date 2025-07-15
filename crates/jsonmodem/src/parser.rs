@@ -556,6 +556,7 @@ impl StreamingParser {
     // Lexer
     // ------------------------------------------------------------------------------------------------
 
+    #[inline(always)]
     fn lex(&mut self) -> Result<Token, ParserError> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
@@ -574,6 +575,7 @@ impl StreamingParser {
     /// Convenience – TS uses `undefined | eof` sentinel.  We return `None` for
     /// buffer depleted, `Some(EOI)` for forced end‑of‑input, else
     /// `Some(ch)`.
+    #[inline(always)]
     fn peek_char(&mut self) -> PeekedChar {
         if let Some(ch) = self.source.peek() {
             return Char(ch);
@@ -591,29 +593,26 @@ impl StreamingParser {
         self.invalid_char(c)
     }
 
+    #[inline(always)]
     fn advance_char(&mut self) {
-        let c = self.source.next();
-        match c {
-            Some(ch) => {
-                if ch == '\n' {
-                    self.line += 1;
-                    self.column = 1;
-                } else {
-                    self.column += 1;
-                }
-                self.pos += 1;
-
-                Some(ch)
+        if let Some(ch) = self.source.next() {
+            if ch == '\n' {
+                self.line += 1;
+                self.column = 1;
+            } else {
+                self.column += 1;
             }
-            None => None,
-        };
+            self.pos += 1;
+        }
     }
 
+    #[inline(always)]
     fn new_token(&mut self, value: Token, partial: bool) -> Token {
         self.partial_lex = partial;
         value
     }
 
+    #[inline(always)]
     fn produce_string(&mut self, partial: bool) -> Token {
         use Token::{Eof, PropertyName, String};
 
@@ -679,6 +678,7 @@ impl StreamingParser {
     }
 
     #[allow(clippy::too_many_lines)]
+    #[inline(always)]
     fn lex_state_step(
         &mut self,
         lex_state: LexState,
@@ -1106,6 +1106,7 @@ impl StreamingParser {
     // ------------------------------------------------------------------------------------------------
     // Parse state dispatcher (translation of TS parseStates method)
     // ------------------------------------------------------------------------------------------------
+    #[inline(always)]
     fn dispatch_parse_state(&mut self, token: Token) -> Result<(), ParserError> {
         use ParseState::*;
 
@@ -1192,6 +1193,7 @@ impl StreamingParser {
         Ok(())
     }
 
+    #[inline(always)]
     fn pop(&mut self) -> Result<(), ParserError> {
         let path = self.frames.to_path_components();
         match self.frames.pop() {
@@ -1222,6 +1224,7 @@ impl StreamingParser {
         Ok(())
     }
 
+    #[inline(always)]
     fn push(&mut self, token: Token) -> Result<(), ParserError> {
         match token {
             Token::Punctuator(b'{') => {
