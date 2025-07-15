@@ -318,7 +318,7 @@ pub enum ParseEvent {
         path: Vec<PathComponent>,
         /// The value of the array.
         ///
-        /// This value is not set when option `emit_non_scalar_values` is false.
+        /// This value is not set when option `non_scalar_values` is `None`.
         #[cfg_attr(
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")
@@ -336,7 +336,7 @@ pub enum ParseEvent {
         path: Vec<PathComponent>,
         /// The value of the object.
         ///
-        /// This value is not set when option `emit_non_scalar_values` is false.
+        /// This value is not set when option `non_scalar_values` is `None`.
         #[cfg_attr(
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")

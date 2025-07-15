@@ -6,7 +6,9 @@ use alloc::{
 use quickcheck::QuickCheck;
 
 use crate::{
-    StreamingParser, StringValueMode, Value, event::reconstruct_values, options::ParserOptions,
+    StreamingParser, StringValueMode, Value,
+    event::reconstruct_values,
+    options::{NonScalarValueMode, ParserOptions},
 };
 
 /// Property: Feeding a JSON document in arbitrary chunk sizes must yield the
@@ -24,7 +26,7 @@ fn partition_roundtrip_quickcheck() {
         // emitted.
         let mut parser = StreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
-            emit_non_scalar_values: true,
+            non_scalar_values: NonScalarValueMode::All,
             string_value_mode,
             ..Default::default()
         });

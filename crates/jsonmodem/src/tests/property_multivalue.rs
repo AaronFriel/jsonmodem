@@ -8,6 +8,7 @@ use quickcheck::{QuickCheck, TestResult};
 
 use crate::{
     ParseEvent, ParserOptions, StreamingParser, StringValueMode, Value, event::reconstruct_values,
+    options::NonScalarValueMode,
 };
 
 /// Repro for missing string roots in multi-value stream reconstruction.
@@ -18,7 +19,7 @@ fn repro_multi_value_string_root() {
     let payload = "\"x\"";
     let mut parser = StreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed(payload);
@@ -61,7 +62,7 @@ fn multi_value_roundtrip_quickcheck() {
 
         let mut parser = StreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
-            emit_non_scalar_values: true,
+            non_scalar_values: NonScalarValueMode::All,
             string_value_mode,
             ..Default::default()
         });
@@ -143,7 +144,7 @@ fn multi_value_roundtrip_repro() {
 
     let mut parser = StreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         panic_on_error: true,
         ..Default::default()
     });

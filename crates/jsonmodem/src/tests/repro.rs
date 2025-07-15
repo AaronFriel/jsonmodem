@@ -1,12 +1,15 @@
 //! Repro cases for multi-value round-trip failures in streaming parser
 use alloc::{vec, vec::Vec};
 
-use crate::{ParseEvent, ParserOptions, StreamingParser, Value, event::reconstruct_values};
+use crate::{
+    ParseEvent, ParserOptions, StreamingParser, Value, event::reconstruct_values,
+    options::NonScalarValueMode,
+};
 
 fn feed_and_reconstruct(payload: &str) -> (Vec<ParseEvent>, Vec<Value>) {
     let mut parser = StreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         panic_on_error: true,
         ..Default::default()
     });
