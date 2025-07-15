@@ -101,9 +101,9 @@ the user with minimal latency.
 
 | chunks |     jsonmodem   |  parse_partial_json  |  partial_json_fixer  | speed-up\* |
 | -----: | --------------: | -------------------: | -------------------: | ---------: |
-|    100 |      **121 µs** |             1 627 µs |             1 552 µs |  **12.8×** |
-|  1 000 |      **250 µs** |            16 325 µs |            15 345 µs |  **61.3×** |
-|  5 000 |      **824 µs** |            81 619 µs |            76 613 µs |  **93.0×** |
+|    100 |      **75 µs** |             1 627 µs |             1 552 µs |  **20.8×** |
+|  1 000 |      **196 µs** |            16 347 µs |            15 339 µs |  **78.1×** |
+|  5 000 |      **730 µs** |            81 673 µs |            76 610 µs | **105.0×** |
 
 \* Versus the fastest helper (`partial_json_fixer`). Benchmarked with Criterion.
 

@@ -1,3 +1,5 @@
+#![allow(clippy::inline_always)]
+
 use alloc::string::{String, ToString};
 use core::{iter::Peekable, str::Chars};
 
@@ -37,6 +39,7 @@ impl Buffer {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn peek(&mut self) -> Option<char> {
         loop {
             match self.head {
@@ -94,6 +97,7 @@ impl Buffer {
 impl Iterator for Buffer {
     type Item = char;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.head {
