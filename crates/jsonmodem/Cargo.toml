@@ -29,6 +29,8 @@ is_ci = "1.2.0"
 serde_yaml = "0.9.34"
 serde_json = "1.0"
 criterion = { version = "0.5", features = ["default", "html_reports"] }
+jiter = "0.10.0"
+paste = "1.0.7"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -48,4 +50,8 @@ harness = false
 
 [[bench]]
 name = "streaming_parser"
+harness = false
+
+[[bench]]
+name = "competitive_benchmarks"
 harness = false

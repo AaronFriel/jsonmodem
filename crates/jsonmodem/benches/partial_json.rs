@@ -80,6 +80,23 @@ fn run_fix_json_parse(payload: &str, parts: usize) -> usize {
     calls
 }
 
+fn run_jiter_partial(payload: &str, parts: usize) -> usize {
+    use jiter::{JsonValue, PartialMode};
+
+    let chunk_size = payload.len().div_ceil(parts);
+    let mut buf = String::with_capacity(payload.len());
+    let mut calls = 0usize;
+
+    for chunk in payload.as_bytes().chunks(chunk_size) {
+        buf.push_str(std::str::from_utf8(chunk).unwrap());
+        let _ = JsonValue::parse_with_config(buf.as_bytes(), false, PartialMode::TrailingStrings)
+            .unwrap();
+        calls += 1;
+    }
+
+    calls
+}
+
 fn bench_partial_json_strategies(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
@@ -120,6 +137,13 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
                 });
             },
         );
+
+        group.bench_with_input(BenchmarkId::new("jiter_partial", parts), &parts, |b, &p| {
+            b.iter(|| {
+                let v = run_jiter_partial(black_box(&payload), p);
+                black_box(v);
+            });
+        });
     }
 
     group.finish();
@@ -210,6 +234,30 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
                     |mut buf| {
                         buf.push_str(incremental_part);
                         let _ = partial_json_fixer::fix_json_parse(&buf);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jiter_partial_inc", parts),
+            &parts,
+            |b, &_p| {
+                b.iter_batched(
+                    || {
+                        let mut buf = String::with_capacity(payload.len());
+                        buf.push_str(first_half);
+                        buf
+                    },
+                    |mut buf| {
+                        buf.push_str(incremental_part);
+                        let _ = jiter::JsonValue::parse_with_config(
+                            buf.as_bytes(),
+                            false,
+                            jiter::PartialMode::TrailingStrings,
+                        )
+                        .unwrap();
                     },
                     BatchSize::SmallInput,
                 );
