@@ -313,18 +313,18 @@ pub fn fix_json(input: &str) -> String {
                 }
                 '}' => {
                     stack.pop();
-                    if let Some(&state) = stack.last()
-                        && state == InsideObjectAfterValue
-                    {
-                        process_after_object_value(ch, idx, &mut stack, &mut last_valid_index);
+                    if let Some(&state) = stack.last() {
+                        if state == InsideObjectAfterValue {
+                            process_after_object_value(ch, idx, &mut stack, &mut last_valid_index);
+                        }
                     }
                 }
                 ']' => {
                     stack.pop();
-                    if let Some(&state) = stack.last()
-                        && state == InsideArrayAfterValue
-                    {
-                        process_after_array_value(ch, idx, &mut stack, &mut last_valid_index);
+                    if let Some(&state) = stack.last() {
+                        if state == InsideArrayAfterValue {
+                            process_after_array_value(ch, idx, &mut stack, &mut last_valid_index);
+                        }
                     }
                 }
                 _ => {

@@ -1,3 +1,5 @@
+#![allow(clippy::inline_always)]
+
 use alloc::string::{String, ToString};
 use core::{iter::Peekable, str::Chars};
 

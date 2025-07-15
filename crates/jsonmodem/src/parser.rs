@@ -20,6 +20,7 @@
 #![allow(clippy::single_match_else)]
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::struct_excessive_bools)]
+#![allow(clippy::inline_always)]
 
 use alloc::{
     format,
