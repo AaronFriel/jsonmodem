@@ -5,7 +5,9 @@ mod parse_partial_json_port;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{ParserOptions, StreamingParser};
+use jsonmodem::{
+    NonScalarValueMode, ParserOptions, StreamingParser, StreamingValuesParser, StringValueMode,
+};
 
 /// Deterministically create a JSON document of exactly `target_len` bytes.
 fn make_json_payload(target_len: usize) -> String {
@@ -38,6 +40,24 @@ fn run_streaming_parser(payload: &str, parts: usize) -> usize {
     }
 
     events
+}
+
+fn run_streaming_values_parser(payload: &str, parts: usize) -> usize {
+    let chunk_size = payload.len().div_ceil(parts);
+    let mut parser = StreamingValuesParser::new(ParserOptions {
+        non_scalar_values: NonScalarValueMode::Roots,
+        string_value_mode: StringValueMode::Values,
+        ..Default::default()
+    });
+    let mut produced = 0usize;
+
+    for chunk in payload.as_bytes().chunks(chunk_size) {
+        let values = parser.feed(std::str::from_utf8(chunk).unwrap()).unwrap();
+        produced += values.iter().filter(|v| v.is_final).count();
+    }
+
+    let values = parser.finish().unwrap();
+    produced + values.iter().filter(|v| v.is_final).count()
 }
 
 fn run_parse_partial_json(payload: &str, parts: usize) -> usize {
@@ -111,6 +131,17 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
             |b, &p| {
                 b.iter(|| {
                     let v = run_streaming_parser(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("streaming_values_parser", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_streaming_values_parser(black_box(&payload), p);
                     black_box(v);
                 });
             },
@@ -195,6 +226,28 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
                             events += 1;
                         }
                         black_box(events);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("streaming_values_parser_inc", parts),
+            &parts,
+            |b, &_p| {
+                b.iter_batched(
+                    || {
+                        let mut parser = StreamingValuesParser::new(ParserOptions {
+                            non_scalar_values: NonScalarValueMode::Roots,
+                            string_value_mode: StringValueMode::Values,
+                            ..Default::default()
+                        });
+                        parser.feed(first_half).unwrap();
+                        parser
+                    },
+                    |mut parser| {
+                        let _ = parser.feed(incremental_part).unwrap();
                     },
                     BatchSize::SmallInput,
                 );
