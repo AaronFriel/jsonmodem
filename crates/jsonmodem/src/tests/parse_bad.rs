@@ -1,6 +1,6 @@
 use alloc::{format, string::ToString, vec::Vec};
 
-use crate::{ParserOptions, StreamingParser, Value, value::Map};
+use crate::{ParserOptions, StreamingParser, Value, options::NonScalarValueMode, value::Map};
 
 #[test]
 fn error_empty_document() {
@@ -221,7 +221,7 @@ fn error_control_characters_escaped_in_message() {
 #[test]
 fn unclosed_objects_before_property_names() {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed("{");
@@ -234,7 +234,7 @@ fn unclosed_objects_before_property_names() {
 #[test]
 fn unclosed_objects_after_property_names() {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed("{\"a\"");
@@ -265,7 +265,7 @@ fn error_unclosed_objects_after_property_values() {
 #[test]
 fn unclosed_arrays_before_values() {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed("[");
@@ -276,7 +276,7 @@ fn unclosed_arrays_before_values() {
 #[test]
 fn unclosed_arrays_after_values() {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed("[");
@@ -347,7 +347,7 @@ fn error_leading_plus_in_number() {
 #[test]
 fn error_incorrectly_completed_partial_string() {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     parser.feed("\"abc");
@@ -365,7 +365,7 @@ fn error_incorrectly_completed_partial_string() {
 fn error_incorrectly_completed_partial_string_with_suffixes() {
     for &suffix in &["null", "\"", "1", "true", "{}", "[]"] {
         let mut parser = StreamingParser::new(ParserOptions {
-            emit_non_scalar_values: true,
+            non_scalar_values: NonScalarValueMode::All,
             ..Default::default()
         });
         parser.feed("\"abc");

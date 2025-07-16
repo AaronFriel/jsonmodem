@@ -37,7 +37,7 @@ use crate::{
     event::{ParseEvent, PathComponent},
     event_stack::EventStack,
     literal_buffer::{self, ExpectedLiteralBuffer},
-    options::ParserOptions,
+    options::{NonScalarValueMode, ParserOptions},
     value_zipper::{ValueBuilder, ZipperError},
 };
 
@@ -287,7 +287,7 @@ pub struct StreamingParser {
 
     multiple_values: bool,
     string_value_mode: StringValueMode,
-    emit_non_scalar_values: bool,
+    non_scalar_values: NonScalarValueMode,
 
     /// Panic on syntax errors instead of returning them
     #[cfg(test)]
@@ -325,6 +325,10 @@ impl ClosedStreamingParser {
     #[cfg(test)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
         self.parser.get_lexed_tokens()
+    }
+
+    pub(crate) fn unstable_get_current_value(&self) -> Option<crate::value::Value> {
+        self.parser.unstable_get_current_value()
     }
 }
 
@@ -375,16 +379,16 @@ impl StreamingParser {
 
             events: EventStack::new(
                 vec![],
-                if options.emit_non_scalar_values {
-                    Some(ValueBuilder::Empty)
-                } else {
+                if matches!(options.non_scalar_values, NonScalarValueMode::None) {
                     None
+                } else {
+                    Some(ValueBuilder::Empty)
                 },
             ),
 
             multiple_values: options.allow_multiple_json_values,
             string_value_mode: options.string_value_mode,
-            emit_non_scalar_values: options.emit_non_scalar_values,
+            non_scalar_values: options.non_scalar_values,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
@@ -498,6 +502,11 @@ impl StreamingParser {
             );
             // Anything already queued up?
             if let Some(ev) = self.events.pop() {
+                if matches!(self.non_scalar_values, NonScalarValueMode::Roots)
+                    && !Self::is_root_event(&ev)
+                {
+                    continue;
+                }
                 return Some(Ok(ev));
             }
 
@@ -509,10 +518,10 @@ impl StreamingParser {
                 self.frames.clear();
                 self.events = EventStack::new(
                     vec![],
-                    if self.emit_non_scalar_values {
-                        Some(ValueBuilder::Empty)
-                    } else {
+                    if matches!(self.non_scalar_values, NonScalarValueMode::None) {
                         None
+                    } else {
+                        Some(ValueBuilder::Empty)
                     },
                 );
             }
@@ -1341,6 +1350,20 @@ impl StreamingParser {
 
     fn zipper_error(&self, err: ZipperError) -> ParserError {
         self.syntax_error(format!("Internal error: {err}"))
+    }
+
+    fn is_root_event(ev: &ParseEvent) -> bool {
+        use ParseEvent::*;
+        match ev {
+            Null { path }
+            | Boolean { path, .. }
+            | Number { path, .. }
+            | String { path, .. }
+            | ArrayStart { path }
+            | ArrayEnd { path, .. }
+            | ObjectBegin { path }
+            | ObjectEnd { path, .. } => path.is_empty(),
+        }
     }
 
     fn format_char(c: char) -> String {

@@ -19,6 +19,7 @@ mod error;
 mod event_stack;
 mod options;
 mod parser;
+mod streaming_values;
 
 #[cfg(test)]
 mod tests;
@@ -28,8 +29,9 @@ pub use alloc::vec;
 
 pub use error::ParserError;
 pub use event::{ParseEvent, PathComponent, PathComponentFrom};
-pub use options::{ParserOptions, StringValueMode};
+pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
 pub use parser::StreamingParser;
+pub use streaming_values::{StreamingValue, StreamingValuesParser};
 pub use value::{Array, Map, Value};
 
 /// Macro to build a `Vec<PathComponent>` from a heterogeneous list of keys and

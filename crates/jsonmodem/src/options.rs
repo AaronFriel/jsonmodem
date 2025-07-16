@@ -41,6 +41,23 @@ impl Default for StringValueMode {
     }
 }
 
+/// Controls emission of composite values during parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonScalarValueMode {
+    /// Do not emit composite values.
+    None,
+    /// Emit events for all composite values.
+    All,
+    /// Emit events only for root values (those with an empty path).
+    Roots,
+}
+
+impl Default for NonScalarValueMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 /// Configuration options for the JSON streaming parser.
 ///
 /// These options control parser behavior such as whitespace handling,
@@ -50,11 +67,11 @@ impl Default for StringValueMode {
 /// # Examples
 ///
 /// ```rust
-/// use jsonmodem::{ParserOptions, StreamingParser, Value};
+/// use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingParser, Value};
 ///
 /// let mut options = ParserOptions {
 ///     allow_multiple_json_values: true,
-///     emit_non_scalar_values: true,
+///     non_scalar_values: NonScalarValueMode::All,
 ///     ..Default::default()
 /// };
 /// let mut parser = StreamingParser::new(options);
@@ -118,18 +135,18 @@ pub struct ParserOptions {
     /// `StringValueMode::None`
     pub string_value_mode: StringValueMode,
 
-    /// Whether to emit complete composite values (objects and arrays) as
-    /// `ParseEvent::Value` events.
+    /// Whether and how to emit complete composite values (objects and arrays).
     ///
-    /// When `false`, only scalar values (strings, numbers, booleans, null)
-    /// are emitted as complete events. Enabling this buffers each full object
+    /// `None` disables emitting composite values. `All` emits events for all
+    /// composite values, and `Roots` only emits events for values whose path is
+    /// empty (root values). Emitting composite values buffers each full object
     /// or array, increasing memory usage up to the size of the largest
     /// composite value.
     ///
     /// # Default
     ///
-    /// `false`
-    pub emit_non_scalar_values: bool,
+    /// `NonScalarValueMode::None`
+    pub non_scalar_values: NonScalarValueMode,
 
     #[cfg(any(test, feature = "fuzzing"))]
     /// Panic on syntax errors instead of returning them.

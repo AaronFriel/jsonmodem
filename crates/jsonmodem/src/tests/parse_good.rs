@@ -1,6 +1,10 @@
 use alloc::{string::ToString, vec, vec::Vec};
 
-use crate::{ParseEvent, StreamingParser, Value, options::ParserOptions, value::Map};
+use crate::{
+    ParseEvent, StreamingParser, Value,
+    options::{NonScalarValueMode, ParserOptions},
+    value::Map,
+};
 
 /// Helper to feed JSON chunks and return the final Value via builder-based
 /// `current_value()`. Unlike the TS parser, we do _not_ emit a complete string
@@ -8,7 +12,7 @@ use crate::{ParseEvent, StreamingParser, Value, options::ParserOptions, value::M
 /// `current_value()` directly.
 fn finish_seq(chunks: &[&str]) -> Value {
     let mut parser = StreamingParser::new(ParserOptions {
-        emit_non_scalar_values: true,
+        non_scalar_values: NonScalarValueMode::All,
         string_value_mode: crate::StringValueMode::Values,
         ..Default::default()
     });
