@@ -67,7 +67,7 @@ impl Default for NonScalarValueMode {
 /// # Examples
 ///
 /// ```rust
-/// use jsonmodem::{ParserOptions, StreamingParser, Value, NonScalarValueMode};
+/// use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingParser, Value};
 ///
 /// let mut options = ParserOptions {
 ///     allow_multiple_json_values: true,
