@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Benchmark comparison of jiter, serde_json, and jsonmodem
+//! Benchmark comparison of jiter, `serde_json`, and jsonmodem
 //!
 //! ```text
 //! running 48 tests
@@ -53,26 +53,16 @@
 //! test x100_serde_value                  ... bench:          83 ns/iter (+/- 3)
 //! ```
 
-use std::fs::File;
-use std::hint::black_box;
-use std::io::Read;
-use std::path::Path;
+use std::{fs::File, hint::black_box, io::Read, time::Duration};
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
+};
 use jiter::{Jiter, JsonValue, Peek};
 use jsonmodem::{
     NonScalarValueMode, ParserOptions, StreamingValuesParser, StringValueMode, Value as ModemValue,
 };
 use serde_json::Value as SerdeValue;
-
-fn read_title(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned()
-}
 
 fn read_file(path: &str) -> String {
     let mut file = File::open(path).unwrap();
@@ -81,12 +71,11 @@ fn read_file(path: &str) -> String {
     contents
 }
 
-fn jiter_value(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_value";
+fn jiter_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = json.as_bytes();
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_value", |b| {
         b.iter(|| {
             let v = JsonValue::parse(black_box(json_data), false).unwrap();
             black_box(v)
@@ -94,12 +83,11 @@ fn jiter_value(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_big(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_big(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             jiter.next_array().unwrap();
@@ -120,11 +108,11 @@ fn jiter_iter_big(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_pass2(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_pass2(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
+    #[allow(clippy::items_after_statements)]
     fn find_string(jiter: &mut Jiter) -> String {
         match jiter.peek().unwrap() {
             Peek::String => jiter.known_str().unwrap().to_string(),
@@ -138,7 +126,7 @@ fn jiter_iter_pass2(path: &str, c: &mut Criterion) {
         }
     }
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             let string = find_string(&mut jiter);
@@ -148,12 +136,11 @@ fn jiter_iter_pass2(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_string_array(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_string_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             jiter.next_array().unwrap();
@@ -168,12 +155,11 @@ fn jiter_iter_string_array(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_true_array(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_true_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
@@ -187,12 +173,11 @@ fn jiter_iter_true_array(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_true_object(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_true_object(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             if let Some(first_key) = jiter.next_object().unwrap() {
@@ -209,12 +194,11 @@ fn jiter_iter_true_object(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_ints_array(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_ints_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
@@ -228,12 +212,11 @@ fn jiter_iter_ints_array(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_iter_floats_array(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_iter_floats_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
@@ -247,12 +230,11 @@ fn jiter_iter_floats_array(path: &str, c: &mut Criterion) {
     });
 }
 
-fn jiter_string(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jiter_iter";
+fn jiter_string(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jiter_iter", |b| {
         b.iter(|| {
             let mut jiter = Jiter::new(json_data);
             let string = jiter.next_str().unwrap();
@@ -262,12 +244,11 @@ fn jiter_string(path: &str, c: &mut Criterion) {
     });
 }
 
-fn serde_value(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_serde_value";
+fn serde_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("serde_value", |b| {
         b.iter(|| {
             let value: SerdeValue = serde_json::from_slice(json_data).unwrap();
             black_box(value);
@@ -275,12 +256,11 @@ fn serde_value(path: &str, c: &mut Criterion) {
     });
 }
 
-fn serde_str(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_serde_iter";
+fn serde_str(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("serde_iter", |b| {
         b.iter(|| {
             let value: String = serde_json::from_slice(json_data).unwrap();
             black_box(value);
@@ -288,16 +268,11 @@ fn serde_str(path: &str, c: &mut Criterion) {
     });
 }
 
-fn x100_serde_iter(c: &mut Criterion) {
-    serde_str("./benches/jiter_data/x100.json", c);
-}
-
-fn jsonmodem_value(path: &str, c: &mut Criterion) {
-    let title = read_title(path) + "_jsonmodem_value";
+fn jsonmodem_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
-    c.bench_function(&title, |b| {
+    group.bench_function("jsonmodem_value", |b| {
         b.iter(|| {
             let mut parser = StreamingValuesParser::new(ParserOptions {
                 non_scalar_values: NonScalarValueMode::Roots,
@@ -314,121 +289,107 @@ fn jsonmodem_value(path: &str, c: &mut Criterion) {
     });
 }
 
-macro_rules! test_cases {
-    ($file_name:ident) => {
-        paste::item! {
-            fn [< $file_name _jiter_value >](c: &mut Criterion) {
-                let path = format!("./benches/jiter_data/{}.json", stringify!($file_name));
-                jiter_value(&path, c);
-            }
-            fn [< $file_name _jiter_iter >](c: &mut Criterion) {
-                let file_name = stringify!($file_name);
-                let path = format!("./benches/jiter_data/{}.json", file_name);
-                if file_name == "big" {
-                    jiter_iter_big(&path, c);
-                } else if file_name == "pass2" {
-                    jiter_iter_pass2(&path, c);
-                } else if file_name == "string_array" {
-                    jiter_iter_string_array(&path, c);
-                } else if file_name == "true_array" {
-                    jiter_iter_true_array(&path, c);
-                } else if file_name == "true_object" {
-                    jiter_iter_true_object(&path, c);
-                } else if file_name == "bigints_array" {
-                    jiter_iter_ints_array(&path, c);
-                } else if file_name == "massive_ints_array" {
-                    jiter_iter_ints_array(&path, c);
-                } else if file_name == "floats_array" {
-                    jiter_iter_floats_array(&path, c);
-                } else if file_name == "x100" || file_name == "sentence" || file_name == "unicode" {
-                    jiter_string(&path, c);
-                }
-            }
-            fn [< $file_name _serde_value >](c: &mut Criterion) {
-                let path = format!("./benches/jiter_data/{}.json", stringify!($file_name));
-                serde_value(&path, c);
-            }
-            fn [< $file_name _jsonmodem_value >](c: &mut Criterion) {
-                let path = format!("./benches/jiter_data/{}.json", stringify!($file_name));
-                jsonmodem_value(&path, c);
-            }
-        }
-    };
+struct Dataset {
+    name: &'static str,
+    jiter_iter: Option<fn(&str, &mut BenchmarkGroup<'_, WallTime>)>,
+    serde_iter: bool,
 }
 
-test_cases!(pass1);
-test_cases!(big);
-test_cases!(pass2);
-test_cases!(string_array);
-test_cases!(true_array);
-test_cases!(true_object);
-test_cases!(bigints_array);
-test_cases!(massive_ints_array);
-test_cases!(floats_array);
-test_cases!(medium_response);
-test_cases!(x100);
-test_cases!(sentence);
-test_cases!(unicode);
-test_cases!(short_numbers);
+fn bench_dataset(cfg: &Dataset, c: &mut Criterion) {
+    let path = format!("./benches/jiter_data/{}.json", cfg.name);
+    let mut group = c.benchmark_group(cfg.name);
+    group.measurement_time(Duration::from_secs(3));
+    group.warm_up_time(Duration::from_secs(1));
+    jiter_value(&path, &mut group);
+    if let Some(f) = cfg.jiter_iter {
+        f(&path, &mut group);
+    }
+    if cfg.serde_iter {
+        serde_str(&path, &mut group);
+    }
+    serde_value(&path, &mut group);
+    jsonmodem_value(&path, &mut group);
+    group.finish();
+}
 
-criterion_group!(
-    benches,
-    big_jiter_iter,
-    big_jiter_value,
-    big_serde_value,
-    big_jsonmodem_value,
-    bigints_array_jiter_iter,
-    bigints_array_jiter_value,
-    bigints_array_serde_value,
-    bigints_array_jsonmodem_value,
-    floats_array_jiter_iter,
-    floats_array_jiter_value,
-    floats_array_serde_value,
-    floats_array_jsonmodem_value,
-    massive_ints_array_jiter_iter,
-    massive_ints_array_jiter_value,
-    massive_ints_array_serde_value,
-    massive_ints_array_jsonmodem_value,
-    medium_response_jiter_iter,
-    medium_response_jiter_value,
-    medium_response_serde_value,
-    medium_response_jsonmodem_value,
-    x100_jiter_iter,
-    x100_jiter_value,
-    x100_serde_iter,
-    x100_serde_value,
-    x100_jsonmodem_value,
-    sentence_jiter_iter,
-    sentence_jiter_value,
-    sentence_serde_value,
-    sentence_jsonmodem_value,
-    unicode_jiter_iter,
-    unicode_jiter_value,
-    unicode_serde_value,
-    unicode_jsonmodem_value,
-    pass1_jiter_iter,
-    pass1_jiter_value,
-    pass1_serde_value,
-    pass1_jsonmodem_value,
-    pass2_jiter_iter,
-    pass2_jiter_value,
-    pass2_serde_value,
-    pass2_jsonmodem_value,
-    string_array_jiter_iter,
-    string_array_jiter_value,
-    string_array_serde_value,
-    string_array_jsonmodem_value,
-    true_array_jiter_iter,
-    true_array_jiter_value,
-    true_array_serde_value,
-    true_array_jsonmodem_value,
-    true_object_jiter_iter,
-    true_object_jiter_value,
-    true_object_serde_value,
-    true_object_jsonmodem_value,
-    short_numbers_jiter_iter,
-    short_numbers_jiter_value,
-    short_numbers_serde_value,
-    short_numbers_jsonmodem_value,
-);
+pub fn competitive_benches(c: &mut Criterion) {
+    let datasets = [
+        Dataset {
+            name: "pass1",
+            jiter_iter: None,
+            serde_iter: false,
+        },
+        Dataset {
+            name: "big",
+            jiter_iter: Some(jiter_iter_big),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "pass2",
+            jiter_iter: Some(jiter_iter_pass2),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "string_array",
+            jiter_iter: Some(jiter_iter_string_array),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "true_array",
+            jiter_iter: Some(jiter_iter_true_array),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "true_object",
+            jiter_iter: Some(jiter_iter_true_object),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "bigints_array",
+            jiter_iter: Some(jiter_iter_ints_array),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "massive_ints_array",
+            jiter_iter: Some(jiter_iter_ints_array),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "floats_array",
+            jiter_iter: Some(jiter_iter_floats_array),
+            serde_iter: false,
+        },
+        Dataset {
+            name: "medium_response",
+            jiter_iter: None,
+            serde_iter: false,
+        },
+        Dataset {
+            name: "x100",
+            jiter_iter: Some(jiter_string),
+            serde_iter: true,
+        },
+        Dataset {
+            name: "sentence",
+            jiter_iter: Some(jiter_string),
+            serde_iter: true,
+        },
+        Dataset {
+            name: "unicode",
+            jiter_iter: Some(jiter_string),
+            serde_iter: true,
+        },
+        Dataset {
+            name: "short_numbers",
+            jiter_iter: None,
+            serde_iter: false,
+        },
+    ];
+
+    for cfg in datasets {
+        bench_dataset(&cfg, c);
+    }
+}
+
+criterion_group!(benches, competitive_benches);
 criterion_main!(benches);
