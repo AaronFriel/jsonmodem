@@ -1,5 +1,5 @@
 #![allow(missing_docs)]
-//! Benchmark comparison of jiter, serde_json, and jsonmodem
+//! Benchmark comparison of jiter, `serde_json`, and jsonmodem
 //!
 //! ```text
 //! running 48 tests
@@ -53,10 +53,7 @@
 //! test x100_serde_value                  ... bench:          83 ns/iter (+/- 3)
 //! ```
 
-use std::fs::File;
-use std::hint::black_box;
-use std::io::Read;
-use std::path::Path;
+use std::{fs::File, hint::black_box, io::Read, time::Duration};
 
 use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
@@ -66,15 +63,6 @@ use jsonmodem::{
     NonScalarValueMode, ParserOptions, StreamingValuesParser, StringValueMode, Value as ModemValue,
 };
 use serde_json::Value as SerdeValue;
-
-fn read_title(path: &str) -> String {
-    Path::new(path)
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned()
-}
 
 fn read_file(path: &str) -> String {
     let mut file = File::open(path).unwrap();
@@ -124,6 +112,7 @@ fn jiter_iter_pass2(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
 
+    #[allow(clippy::items_after_statements)]
     fn find_string(jiter: &mut Jiter) -> String {
         match jiter.peek().unwrap() {
             Peek::String => jiter.known_str().unwrap().to_string(),
@@ -306,9 +295,11 @@ struct Dataset {
     serde_iter: bool,
 }
 
-fn bench_dataset(cfg: Dataset, c: &mut Criterion) {
+fn bench_dataset(cfg: &Dataset, c: &mut Criterion) {
     let path = format!("./benches/jiter_data/{}.json", cfg.name);
     let mut group = c.benchmark_group(cfg.name);
+    group.measurement_time(Duration::from_secs(3));
+    group.warm_up_time(Duration::from_secs(1));
     jiter_value(&path, &mut group);
     if let Some(f) = cfg.jiter_iter {
         f(&path, &mut group);
@@ -396,7 +387,7 @@ pub fn competitive_benches(c: &mut Criterion) {
     ];
 
     for cfg in datasets {
-        bench_dataset(cfg, c);
+        bench_dataset(&cfg, c);
     }
 }
 

@@ -117,6 +117,24 @@ fn run_jiter_partial(payload: &str, parts: usize) -> usize {
     calls
 }
 
+fn run_jiter_partial_owned(payload: &str, parts: usize) -> usize {
+    use jiter::{JsonValue, PartialMode};
+
+    let chunk_size = payload.len().div_ceil(parts);
+    let mut buf = String::with_capacity(payload.len());
+    let mut calls = 0usize;
+
+    for chunk in payload.as_bytes().chunks(chunk_size) {
+        buf.push_str(std::str::from_utf8(chunk).unwrap());
+        let _ = JsonValue::parse_with_config(buf.as_bytes(), false, PartialMode::TrailingStrings)
+            .unwrap()
+            .into_static();
+        calls += 1;
+    }
+
+    calls
+}
+
 fn bench_partial_json_strategies(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
@@ -175,6 +193,17 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
                 black_box(v);
             });
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("jiter_partial_owned", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_jiter_partial_owned(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
     }
 
     group.finish();
@@ -182,6 +211,7 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
 
 use criterion::BatchSize;
 
+#[allow(clippy::too_many_lines)]
 fn bench_partial_json_incremental(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
     let payload_bytes = payload.as_bytes();
@@ -311,6 +341,31 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
                             jiter::PartialMode::TrailingStrings,
                         )
                         .unwrap();
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jiter_partial_inc_owned", parts),
+            &parts,
+            |b, &_p| {
+                b.iter_batched(
+                    || {
+                        let mut buf = String::with_capacity(payload.len());
+                        buf.push_str(first_half);
+                        buf
+                    },
+                    |mut buf| {
+                        buf.push_str(incremental_part);
+                        let _ = jiter::JsonValue::parse_with_config(
+                            buf.as_bytes(),
+                            false,
+                            jiter::PartialMode::TrailingStrings,
+                        )
+                        .unwrap()
+                        .into_static();
                     },
                     BatchSize::SmallInput,
                 );

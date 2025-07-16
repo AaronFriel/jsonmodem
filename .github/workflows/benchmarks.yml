@@ -8,6 +8,13 @@ on:
 jobs:
   bench:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bench:
+          - competitive_benchmarks
+          - partial_json
+          - streaming_parser
     steps:
       - uses: actions/checkout@v4
 
@@ -16,7 +23,7 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Run benchmarks
+      - name: Run benchmark
         env:
           RUSTFLAGS: "--cfg=bench"
-        run: cargo bench --all --workspace --exclude jsonmodem-fuzz --verbose || true # allow non-zero exit due to unsupported benches on stable
+        run: cargo bench --package jsonmodem --bench ${{ matrix.bench }} --verbose || true
