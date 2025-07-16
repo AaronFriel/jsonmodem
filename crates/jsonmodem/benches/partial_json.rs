@@ -209,6 +209,80 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_partial_json_big(c: &mut Criterion) {
+    let payload = std::fs::read_to_string("./benches/jiter_data/big.json").unwrap();
+
+    let mut group = c.benchmark_group("partial_json_big");
+    group.measurement_time(Duration::from_secs(10));
+    group.warm_up_time(Duration::from_secs(5));
+
+    for &parts in &[100usize, 1_000, 5_000] {
+        group.bench_with_input(
+            BenchmarkId::new("streaming_parser", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_streaming_parser(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("streaming_values_parser", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_streaming_values_parser(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("parse_partial_json", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_parse_partial_json(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("fix_json_parse", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_fix_json_parse(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+
+        group.bench_with_input(BenchmarkId::new("jiter_partial", parts), &parts, |b, &p| {
+            b.iter(|| {
+                let v = run_jiter_partial(black_box(&payload), p);
+                black_box(v);
+            });
+        });
+
+        group.bench_with_input(
+            BenchmarkId::new("jiter_partial_owned", parts),
+            &parts,
+            |b, &p| {
+                b.iter(|| {
+                    let v = run_jiter_partial_owned(black_box(&payload), p);
+                    black_box(v);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 use criterion::BatchSize;
 
 #[allow(clippy::too_many_lines)]
@@ -379,6 +453,7 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_partial_json_strategies,
+    bench_partial_json_big,
     bench_partial_json_incremental
 );
 
