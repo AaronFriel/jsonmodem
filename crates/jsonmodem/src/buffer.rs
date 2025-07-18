@@ -1,70 +1,39 @@
 #![allow(clippy::inline_always)]
 
-use alloc::string::{String, ToString};
-use core::{iter::Peekable, str::Chars};
-
-use ouroboros::self_referencing;
-
-#[self_referencing]
-#[derive(Debug)]
-struct OwnedPeekableString {
-    buffer: alloc::string::String,
-    #[borrows(buffer)]
-    #[not_covariant]
-    peekable: Peekable<Chars<'this>>,
-}
+use alloc::string::String;
 
 #[derive(Debug)]
 pub(crate) struct Buffer {
-    tail: Option<String>,
-    head: Option<OwnedPeekableString>,
+    data: String,
+    pos: usize,
 }
 
 impl Buffer {
     pub(crate) fn new() -> Self {
         Self {
-            tail: None,
-            head: None,
+            data: String::new(),
+            pos: 0,
         }
     }
 
     pub(crate) fn push(&mut self, text: &str) {
-        match self.tail {
-            Some(ref mut tail) => {
-                tail.push_str(text);
-            }
-            None => {
-                self.tail = Some(text.to_string());
-            }
-        }
+        self.data.push_str(text);
     }
 
     #[inline(always)]
-    pub(crate) fn peek(&mut self) -> Option<char> {
-        loop {
-            match self.head {
-                Some(ref mut head) => {
-                    if let Some(c) = head.with_peekable_mut(|p| p.peek()) {
-                        return Some(*c);
-                    }
+    pub(crate) fn peek(&self) -> Option<char> {
+        self.data[self.pos..].chars().next()
+    }
 
-                    self.head = None; // Clear the head if it's exhausted
-                }
-                None => {
-                    if let Some(next) = core::mem::take(&mut self.tail) {
-                        self.head = Some(
-                            OwnedPeekableStringBuilder {
-                                buffer: next,
-                                peekable_builder: |buffer| buffer.chars().peekable(),
-                            }
-                            .build(),
-                        );
-                    } else {
-                        return None; // No more characters to peek
-                    }
-                }
-            }
+    #[inline(always)]
+    fn consume_char(&mut self) -> Option<char> {
+        let ch = self.peek()?;
+        self.pos += ch.len_utf8();
+        if self.pos > 4096 && self.pos > self.data.len() / 2 {
+            self.data.drain(..self.pos);
+            self.pos = 0;
         }
+        Some(ch)
     }
 
     /// Copy characters from the buffer into the provided `String` while the
@@ -77,20 +46,24 @@ impl Buffer {
     where
         F: FnMut(char) -> bool,
     {
-        let mut copied = 0;
-
-        loop {
-            match self.peek() {
-                Some(c) if predicate(c) => {
-                    // Safe to unwrap – we just peeked and know a character is available.
-                    dst.push(self.next().unwrap());
-                    copied += 1;
-                }
-                _ => break,
+        let start = self.pos;
+        let mut bytes_end = self.pos;
+        let mut count = 0;
+        for (offset, ch) in self.data[start..].char_indices() {
+            if predicate(ch) {
+                bytes_end = start + offset + ch.len_utf8();
+                count += 1;
+            } else {
+                break;
             }
         }
-
-        copied
+        dst.push_str(&self.data[start..bytes_end]);
+        self.pos = bytes_end;
+        if self.pos > 4096 && self.pos > self.data.len() / 2 {
+            self.data.drain(..self.pos);
+            self.pos = 0;
+        }
+        count
     }
 }
 
@@ -99,29 +72,6 @@ impl Iterator for Buffer {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.head {
-                Some(ref mut head) => {
-                    if let Some(c) = head.with_peekable_mut(|p| p.next()) {
-                        return Some(c);
-                    }
-
-                    self.head = None; // Clear the head if it's exhausted
-                }
-                None => {
-                    if let Some(next) = core::mem::take(&mut self.tail) {
-                        self.head = Some(
-                            OwnedPeekableStringBuilder {
-                                buffer: next,
-                                peekable_builder: |buffer| buffer.chars().peekable(),
-                            }
-                            .build(),
-                        );
-                    } else {
-                        return None;
-                    }
-                }
-            }
-        }
+        self.consume_char()
     }
 }
