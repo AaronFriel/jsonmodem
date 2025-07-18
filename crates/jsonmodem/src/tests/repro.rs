@@ -32,13 +32,13 @@ fn repro_multi_value_string_roots() {
         events,
         vec![
             ParseEvent::String {
-                path: vec![],
+                path: smallvec::smallvec![],
                 fragment: "a".into(),
                 is_final: true,
                 value: None,
             },
             ParseEvent::String {
-                path: vec![],
+                path: smallvec::smallvec![],
                 fragment: "b".into(),
                 value: None,
                 is_final: true,

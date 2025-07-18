@@ -230,9 +230,10 @@ impl FrameStack {
         }
     }
 
-    pub fn to_path_components(&self) -> Vec<PathComponent> {
+    pub fn to_path_components(&self) -> crate::event::Path {
         self.stack.iter().map(|(pc, _)| pc.clone()).collect()
     }
+
 
     pub fn clear(&mut self) {
         self.root = None;
@@ -428,13 +429,14 @@ impl StreamingParser {
     ///
     /// ```rust
     /// use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+    /// use smallvec::smallvec;
     /// let mut parser = StreamingParser::new(ParserOptions::default());
     /// parser.feed("true");
     /// let mut closed = parser.finish();
     /// assert_eq!(
     ///     closed.next().unwrap().unwrap(),
     ///     ParseEvent::Boolean {
-    ///         path: vec![],
+    ///         path: smallvec::smallvec![],
     ///         value: true
     ///     }
     /// );

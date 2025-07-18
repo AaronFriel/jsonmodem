@@ -41,19 +41,14 @@ pub use value::{Array, Map, Value};
 /// extern crate alloc;
 /// # use jsonmodem::{path, PathComponent};
 /// let p = path![0, "foo", 2];
-/// assert_eq!(
-///     p,
-///     vec![
-///         PathComponent::Index(0),
-///         PathComponent::Key("foo".into()),
-///         PathComponent::Index(2)
-///     ]
-/// );
+/// assert_eq!(p, path![0, "foo", 2]);
 /// ```
 #[macro_export]
 macro_rules! path {
     ( $( $elem:expr ),* $(,)? ) => {{
         use $crate::PathComponentFrom;
-        $crate::vec![$($crate::PathComponent::from_path_component($elem)),*]
+        smallvec::SmallVec::<[$crate::PathComponent; 8]>::from_iter([
+            $($crate::PathComponent::from_path_component($elem)),*
+        ])
     }};
 }
