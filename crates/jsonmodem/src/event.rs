@@ -12,6 +12,7 @@
 //! use jsonmodem::{
 //!     ParseEvent, ParserError, ParserOptions, PathComponent, StreamingParser, Value,
 //! };
+//! use smallvec::smallvec;
 //!
 //! let mut parser = StreamingParser::new(ParserOptions::default());
 //! parser.feed("[\"foo\"]");
@@ -19,15 +20,15 @@
 //! assert_eq!(
 //!     events,
 //!     vec![
-//!         Ok(ParseEvent::ArrayStart { path: vec![] }),
+//!         Ok(ParseEvent::ArrayStart { path: smallvec::smallvec![] }),
 //!         Ok(ParseEvent::String {
-//!             path: vec![PathComponent::Index(0)],
+//!             path: smallvec::smallvec![PathComponent::Index(0)],
 //!             value: None,
 //!             fragment: "foo".to_string(),
 //!             is_final: true,
 //!         }),
 //!         Ok(ParseEvent::ArrayEnd {
-//!             path: vec![],
+//!             path: smallvec::smallvec![],
 //!             value: None,
 //!         }),
 //!     ]
@@ -39,6 +40,9 @@ use alloc::{
 };
 
 use crate::value::Value;
+use smallvec::SmallVec;
+
+pub type Path = SmallVec<[PathComponent; 8]>;
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
@@ -252,8 +256,9 @@ impl PathComponent {
 /// ```
 /// use jsonmodem::{ParseEvent, PathComponent, Value};
 ///
-/// let evt = ParseEvent::Null { path: Vec::new() };
-/// assert_eq!(evt, ParseEvent::Null { path: Vec::new() });
+/// use smallvec::smallvec;
+/// let evt = ParseEvent::Null { path: smallvec![] };
+/// assert_eq!(evt, ParseEvent::Null { path: smallvec![] });
 /// ```
 #[cfg_attr(
     any(test, feature = "serde"),
@@ -265,12 +270,12 @@ pub enum ParseEvent {
     /// A JSON `null` value.
     Null {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
     },
     /// A JSON `true` or `false` value.
     Boolean {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
         /// The boolean value.
         value: bool,
     },
@@ -280,14 +285,14 @@ pub enum ParseEvent {
     /// be an arbitrarily large.
     Number {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
         /// The number value.
         value: f64,
     },
     /// A JSON string value.
     String {
         /// The path to the string value.
-        path: Vec<PathComponent>,
+        path: Path,
         /// The value of the string. The interpretation of this value depends on
         /// the `string_value_mode` used to create the parser.
         ///
@@ -310,12 +315,12 @@ pub enum ParseEvent {
     /// Marks the start of a JSON array.
     ArrayStart {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
     },
     /// Marks the end of a JSON array, optionally including its value.
     ArrayEnd {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
         /// The value of the array.
         ///
         /// This value is not set when option `non_scalar_values` is `None`.
@@ -328,12 +333,12 @@ pub enum ParseEvent {
     /// Marks the start of a JSON object.
     ObjectBegin {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
     },
     /// Marks the end of a JSON object, optionally including its value.
     ObjectEnd {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: Path,
         /// The value of the object.
         ///
         /// This value is not set when option `non_scalar_values` is `None`.
@@ -658,6 +663,6 @@ mod tests {
     #[test]
     fn size_of_parse_event() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ParseEvent>(), 80);
+        assert_eq!(size_of::<ParseEvent>(), 264);
     }
 }

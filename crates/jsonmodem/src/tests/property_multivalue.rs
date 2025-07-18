@@ -27,7 +27,7 @@ fn repro_multi_value_string_root() {
     assert_eq!(
         &events,
         &[ParseEvent::String {
-            path: vec![],
+            path: smallvec::smallvec![],
             fragment: String::from("x"),
             is_final: true,
             value: None,
