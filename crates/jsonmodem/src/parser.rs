@@ -840,6 +840,14 @@ impl StreamingParser {
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 _ => {
@@ -861,6 +869,14 @@ impl StreamingParser {
                     self.advance_char();
                     self.buffer.push(c);
                     self.lex_state = DecimalFraction;
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -877,6 +893,14 @@ impl StreamingParser {
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 _ => {
@@ -898,6 +922,14 @@ impl StreamingParser {
                     self.advance_char();
                     self.buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -909,6 +941,14 @@ impl StreamingParser {
                     self.advance_char();
                     self.buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -919,6 +959,14 @@ impl StreamingParser {
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
+
+                    let copied = self
+                        .source
+                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
+
+                    self.column += copied;
+                    self.pos += copied;
+
                     Ok(None)
                 }
                 _ => {
