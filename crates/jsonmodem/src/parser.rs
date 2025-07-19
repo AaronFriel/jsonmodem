@@ -176,7 +176,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FrameStack {
     root: Option<Frame>,
     stack: Vec<(PathComponent, Frame)>,
@@ -188,11 +188,22 @@ impl Default for FrameStack {
     }
 }
 
+impl Clone for FrameStack {
+    fn clone(&self) -> Self {
+        let mut stack = Vec::with_capacity(self.stack.len());
+        stack.extend(self.stack.iter().cloned());
+        Self {
+            root: self.root.clone(),
+            stack,
+        }
+    }
+}
+
 impl FrameStack {
     pub fn new() -> Self {
         Self {
             root: None,
-            stack: Vec::new(),
+            stack: Vec::with_capacity(16),
         }
     }
 
