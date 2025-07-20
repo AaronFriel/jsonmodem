@@ -6,4 +6,6 @@ mod property_partition;
 mod repro;
 pub mod utils;
 
+mod chunk_helpers;
+
 mod snapshot_events;

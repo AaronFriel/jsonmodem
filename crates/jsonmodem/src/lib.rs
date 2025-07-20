@@ -15,6 +15,7 @@ mod literal_buffer;
 mod value;
 mod value_zipper;
 
+mod chunk_utils;
 mod error;
 mod event_stack;
 mod options;
@@ -27,6 +28,7 @@ mod tests;
 #[doc(hidden)]
 pub use alloc::vec;
 
+pub use chunk_utils::{produce_chunks, produce_prefixes};
 pub use error::ParserError;
 pub use event::{ParseEvent, PathComponent, PathComponentFrom};
 pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};

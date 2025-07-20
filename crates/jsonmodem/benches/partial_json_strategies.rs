@@ -4,9 +4,9 @@ mod partial_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use jsonmodem::{produce_chunks, produce_prefixes};
 use partial_json_common::{
-    chunk_payload, make_json_payload, run_parse_partial_json, run_streaming_parser,
-    run_streaming_values_parser,
+    make_json_payload, run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
 };
 #[cfg(feature = "comparison")]
 use partial_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
@@ -19,7 +19,8 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(5));
 
     for &parts in &[100usize, 1_000, 5_000] {
-        let chunks = chunk_payload(&payload, parts);
+        let chunks = produce_chunks(&payload, parts);
+        let prefixes = produce_prefixes(&payload, parts);
         group.bench_with_input(
             BenchmarkId::new("streaming_parser", parts),
             &parts,
@@ -47,7 +48,7 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
             &parts,
             |b, &_p| {
                 b.iter(|| {
-                    let v = run_parse_partial_json(black_box(&chunks), payload.len());
+                    let v = run_parse_partial_json(black_box(&prefixes));
                     black_box(v);
                 });
             },
@@ -59,7 +60,7 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
             &parts,
             |b, &_p| {
                 b.iter(|| {
-                    let v = run_fix_json_parse(black_box(&chunks), payload.len());
+                    let v = run_fix_json_parse(black_box(&prefixes));
                     black_box(v);
                 });
             },
@@ -71,7 +72,7 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
             &parts,
             |b, &_p| {
                 b.iter(|| {
-                    let v = run_jiter_partial(black_box(&chunks), payload.len());
+                    let v = run_jiter_partial(black_box(&prefixes));
                     black_box(v);
                 });
             },
@@ -83,7 +84,7 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
             &parts,
             |b, &_p| {
                 b.iter(|| {
-                    let v = run_jiter_partial_owned(black_box(&chunks), payload.len());
+                    let v = run_jiter_partial_owned(black_box(&prefixes));
                     black_box(v);
                 });
             },
