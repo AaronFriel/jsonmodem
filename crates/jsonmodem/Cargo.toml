@@ -14,6 +14,7 @@ default = []
 fuzzing = []
 serde = []
 bench = []
+comparison = []
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }
@@ -63,3 +64,4 @@ harness = false
 [[bench]]
 name = "competitive_benchmarks"
 harness = false
+required-features = ["comparison"]

@@ -4,9 +4,10 @@ mod partial_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+#[cfg(feature = "comparison")]
+use partial_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
 use partial_json_common::{
-    run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned, run_parse_partial_json,
-    run_streaming_parser, run_streaming_values_parser,
+    run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
 };
 
 fn bench_partial_json_big(c: &mut Criterion) {
@@ -50,6 +51,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("fix_json_parse", parts),
             &parts,
@@ -61,6 +63,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(BenchmarkId::new("jiter_partial", parts), &parts, |b, &p| {
             b.iter(|| {
                 let v = run_jiter_partial(black_box(&payload), p);
@@ -68,6 +71,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             });
         });
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("jiter_partial_owned", parts),
             &parts,

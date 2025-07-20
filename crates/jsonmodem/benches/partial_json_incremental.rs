@@ -7,7 +7,9 @@ use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, c
 use jsonmodem::{
     NonScalarValueMode, ParserOptions, StreamingParser, StreamingValuesParser, StringValueMode,
 };
-use partial_json_common::{make_json_payload, parse_partial_json_port, partial_json_fixer};
+#[cfg(feature = "comparison")]
+use partial_json_common::partial_json_fixer;
+use partial_json_common::{make_json_payload, parse_partial_json_port};
 
 #[allow(clippy::too_many_lines)]
 fn bench_partial_json_incremental(c: &mut Criterion) {
@@ -102,6 +104,7 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("fix_json_parse_inc", parts),
             &parts,
@@ -121,6 +124,7 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("jiter_partial_inc", parts),
             &parts,
@@ -145,6 +149,7 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("jiter_partial_inc_owned", parts),
             &parts,
