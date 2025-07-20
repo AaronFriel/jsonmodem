@@ -1,16 +1,13 @@
 #![allow(missing_docs)]
 
 mod partial_json_common;
-use partial_json_common::{
-    run_streaming_parser,
-    run_streaming_values_parser,
-    run_parse_partial_json,
-    run_fix_json_parse,
-    run_jiter_partial,
-    run_jiter_partial_owned,
-};
-use criterion::{Criterion, BenchmarkId, black_box, criterion_group, criterion_main};
 use std::time::Duration;
+
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use partial_json_common::{
+    run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned, run_parse_partial_json,
+    run_streaming_parser, run_streaming_values_parser,
+};
 
 fn bench_partial_json_big(c: &mut Criterion) {
     let payload = std::fs::read_to_string("./benches/jiter_data/medium_response.json").unwrap();
