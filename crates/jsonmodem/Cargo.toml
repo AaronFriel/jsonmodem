@@ -14,6 +14,8 @@ default = []
 fuzzing = []
 serde = []
 bench = []
+vecdeque-buffer = []
+string-buffer = []
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }

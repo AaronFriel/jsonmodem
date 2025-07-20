@@ -11,15 +11,15 @@ three representative workloads. Times are the median of Criterion's output.
 
 | Benchmark | String | VecDeque<char> | Vec<char> |
 |-----------|-------:|---------------:|----------:|
-| strategies/streaming_parser/100 | 103 µs | 90 µs | 67 µs |
-| strategies/streaming_parser/1000 | 287 µs | 238 µs | 216 µs |
-| strategies/streaming_parser/5000 | 1.04 ms | 0.83 ms | 0.83 ms |
-| big/streaming_parser/100 | 66 µs | 59 µs | 56 µs |
-| big/streaming_parser/1000 | 179 µs | 140 µs | 140 µs |
-| big/streaming_parser/5000 | 417 µs | 309 µs | 309 µs |
-| incremental/streaming_parser_inc/100 | 1.02 µs | 1.07 µs | 0.81 µs |
-| incremental/streaming_parser_inc/1000 | 0.55 µs | 0.65 µs | 0.62 µs |
-| incremental/streaming_parser_inc/5000 | 0.53 µs | 0.63 µs | 0.60 µs |
+| strategies/streaming_parser/100 | 59 µs | 51 µs | 59 µs |
+| strategies/streaming_parser/1000 | 157 µs | 148 µs | 142 µs |
+| strategies/streaming_parser/5000 | 533 µs | 568 µs | 568 µs |
+| big/streaming_parser/100 | 40 µs | 38 µs | 38 µs |
+| big/streaming_parser/1000 | 93 µs | 92 µs | 93 µs |
+| big/streaming_parser/5000 | 205 µs | 208 µs | 206 µs |
+| incremental/streaming_parser_inc/100 | 1.16 µs | 1.26 µs | 1.20 µs |
+| incremental/streaming_parser_inc/1000 | 0.84 µs | 1.10 µs | 0.89 µs |
+| incremental/streaming_parser_inc/5000 | 0.74 µs | 0.70 µs | 1.44 µs |
 
 `Vec<char>` yields the largest gains on the strategies and big suites, up to
 ~35% faster than the original `String` buffer on small inputs and around 25% on
