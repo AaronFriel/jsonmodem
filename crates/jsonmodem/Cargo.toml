@@ -14,6 +14,7 @@ default = []
 fuzzing = []
 serde = []
 bench = []
+comparison = []
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }
@@ -47,14 +48,17 @@ suspicious = "deny"
 [[bench]]
 name = "partial_json_strategies"
 harness = false
+required-features = ["comparison"]
 
 [[bench]]
 name = "partial_json_big"
 harness = false
+required-features = ["comparison"]
 
 [[bench]]
 name = "partial_json_incremental"
 harness = false
+required-features = ["comparison"]
 
 [[bench]]
 name = "streaming_parser"
@@ -63,3 +67,4 @@ harness = false
 [[bench]]
 name = "competitive_benchmarks"
 harness = false
+required-features = ["comparison"]

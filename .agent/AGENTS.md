@@ -27,3 +27,17 @@ bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/down
 The `setup.sh` script installs the stable and nightly toolchains as well as
 Clang 19 and the `llvm-tools-preview` component, which provide `llvm-nm` and
 other utilities required to build the fuzz crate.
+
+## Benchmarks
+
+The default `cargo bench` command runs only jsonmodem's own benchmarks. To run
+the comparative suites as well, enable the optional `comparison` feature. The
+following commands produce concise timings suitable for copy‑pasting:
+
+```bash
+# jsonmodem benchmarks
+cargo bench --bench streaming_parser -- --output-format bencher | rg '^test'
+
+# include external implementations
+cargo bench --features comparison --bench partial_json_big -- --output-format bencher | rg '^test'
+```

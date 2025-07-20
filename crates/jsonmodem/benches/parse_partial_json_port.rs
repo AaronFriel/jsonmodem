@@ -6,6 +6,7 @@
 #![allow(clippy::enum_glob_use)]
 #![allow(clippy::items_after_statements)]
 #![allow(clippy::cast_possible_wrap)]
+#![cfg(feature = "comparison")]
 
 use serde_json::Value as JsonValue;
 

@@ -1,5 +1,6 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
+#![cfg(feature = "comparison")]
 
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;

@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![cfg(feature = "comparison")]
 
 mod partial_json_common;
 use std::time::Duration;

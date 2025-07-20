@@ -1,4 +1,5 @@
 #![allow(missing_docs)]
+#![cfg(feature = "comparison")]
 //! Benchmark comparison of jiter, `serde_json`, and jsonmodem
 //!
 //! ```text
