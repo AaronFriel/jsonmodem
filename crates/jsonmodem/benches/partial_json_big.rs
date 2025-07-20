@@ -4,11 +4,11 @@ mod partial_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use partial_json_common::{
+    chunk_payload, run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
+};
 #[cfg(feature = "comparison")]
 use partial_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
-use partial_json_common::{
-    run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
-};
 
 fn bench_partial_json_big(c: &mut Criterion) {
     let payload = std::fs::read_to_string("./benches/jiter_data/medium_response.json").unwrap();
@@ -18,12 +18,13 @@ fn bench_partial_json_big(c: &mut Criterion) {
     group.warm_up_time(Duration::from_secs(5));
 
     for &parts in &[100usize, 1_000, 5_000] {
+        let chunks = chunk_payload(&payload, parts);
         group.bench_with_input(
             BenchmarkId::new("streaming_parser", parts),
             &parts,
-            |b, &p| {
+            |b, &_p| {
                 b.iter(|| {
-                    let v = run_streaming_parser(black_box(&payload), p);
+                    let v = run_streaming_parser(black_box(&chunks));
                     black_box(v);
                 });
             },
@@ -32,9 +33,9 @@ fn bench_partial_json_big(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("streaming_values_parser", parts),
             &parts,
-            |b, &p| {
+            |b, &_p| {
                 b.iter(|| {
-                    let v = run_streaming_values_parser(black_box(&payload), p);
+                    let v = run_streaming_values_parser(black_box(&chunks));
                     black_box(v);
                 });
             },
@@ -43,9 +44,9 @@ fn bench_partial_json_big(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("parse_partial_json", parts),
             &parts,
-            |b, &p| {
+            |b, &_p| {
                 b.iter(|| {
-                    let v = run_parse_partial_json(black_box(&payload), p);
+                    let v = run_parse_partial_json(black_box(&chunks), payload.len());
                     black_box(v);
                 });
             },
@@ -55,29 +56,33 @@ fn bench_partial_json_big(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("fix_json_parse", parts),
             &parts,
-            |b, &p| {
+            |b, &_p| {
                 b.iter(|| {
-                    let v = run_fix_json_parse(black_box(&payload), p);
+                    let v = run_fix_json_parse(black_box(&chunks), payload.len());
                     black_box(v);
                 });
             },
         );
 
         #[cfg(feature = "comparison")]
-        group.bench_with_input(BenchmarkId::new("jiter_partial", parts), &parts, |b, &p| {
-            b.iter(|| {
-                let v = run_jiter_partial(black_box(&payload), p);
-                black_box(v);
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("jiter_partial", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| {
+                    let v = run_jiter_partial(black_box(&chunks), payload.len());
+                    black_box(v);
+                });
+            },
+        );
 
         #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("jiter_partial_owned", parts),
             &parts,
-            |b, &p| {
+            |b, &_p| {
                 b.iter(|| {
-                    let v = run_jiter_partial_owned(black_box(&payload), p);
+                    let v = run_jiter_partial_owned(black_box(&chunks), payload.len());
                     black_box(v);
                 });
             },

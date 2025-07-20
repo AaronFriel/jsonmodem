@@ -20,13 +20,21 @@ pub fn make_json_payload(target_len: usize) -> String {
     s
 }
 
-pub fn run_streaming_parser(payload: &str, parts: usize) -> usize {
+pub fn chunk_payload(payload: &str, parts: usize) -> Vec<&str> {
     let chunk_size = payload.len().div_ceil(parts);
+    payload
+        .as_bytes()
+        .chunks(chunk_size)
+        .map(|c| unsafe { std::str::from_utf8_unchecked(c) })
+        .collect()
+}
+
+pub fn run_streaming_parser(chunks: &[&str]) -> usize {
     let mut parser = StreamingParser::new(ParserOptions::default());
     let mut events = 0usize;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        parser.feed(std::str::from_utf8(chunk).unwrap());
+    for &chunk in chunks {
+        parser.feed(chunk);
         for _ in &mut parser {
             events += 1;
         }
@@ -40,8 +48,7 @@ pub fn run_streaming_parser(payload: &str, parts: usize) -> usize {
     events
 }
 
-pub fn run_streaming_values_parser(payload: &str, parts: usize) -> usize {
-    let chunk_size = payload.len().div_ceil(parts);
+pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
     let mut parser = StreamingValuesParser::new(ParserOptions {
         non_scalar_values: NonScalarValueMode::Roots,
         string_value_mode: StringValueMode::Values,
@@ -49,8 +56,8 @@ pub fn run_streaming_values_parser(payload: &str, parts: usize) -> usize {
     });
     let mut produced = 0usize;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        let values = parser.feed(std::str::from_utf8(chunk).unwrap()).unwrap();
+    for &chunk in chunks {
+        let values = parser.feed(chunk).unwrap();
         produced += values.iter().filter(|v| v.is_final).count();
     }
 
@@ -58,13 +65,12 @@ pub fn run_streaming_values_parser(payload: &str, parts: usize) -> usize {
     produced + values.iter().filter(|v| v.is_final).count()
 }
 
-pub fn run_parse_partial_json(payload: &str, parts: usize) -> usize {
-    let chunk_size = payload.len().div_ceil(parts);
-    let mut buf = String::with_capacity(payload.len());
+pub fn run_parse_partial_json(chunks: &[&str], total_len: usize) -> usize {
+    let mut buf = String::with_capacity(total_len);
     let mut calls = 0;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        buf.push_str(std::str::from_utf8(chunk).unwrap());
+    for &chunk in chunks {
+        buf.push_str(chunk);
         let _ = parse_partial_json_port::parse_partial_json(Some(&buf));
         calls += 1;
     }
@@ -86,13 +92,12 @@ pub mod partial_json_fixer {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_fix_json_parse(payload: &str, parts: usize) -> usize {
-    let chunk_size = payload.len().div_ceil(parts);
-    let mut buf = String::with_capacity(payload.len());
+pub fn run_fix_json_parse(chunks: &[&str], total_len: usize) -> usize {
+    let mut buf = String::with_capacity(total_len);
     let mut calls = 0;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        buf.push_str(std::str::from_utf8(chunk).unwrap());
+    for &chunk in chunks {
+        buf.push_str(chunk);
         let _ = partial_json_fixer::fix_json_parse(&buf);
         calls += 1;
     }
@@ -101,15 +106,14 @@ pub fn run_fix_json_parse(payload: &str, parts: usize) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_jiter_partial(payload: &str, parts: usize) -> usize {
+pub fn run_jiter_partial(chunks: &[&str], total_len: usize) -> usize {
     use jiter::{JsonValue, PartialMode};
 
-    let chunk_size = payload.len().div_ceil(parts);
-    let mut buf = String::with_capacity(payload.len());
+    let mut buf = String::with_capacity(total_len);
     let mut calls = 0usize;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        buf.push_str(std::str::from_utf8(chunk).unwrap());
+    for &chunk in chunks {
+        buf.push_str(chunk);
         let _ = JsonValue::parse_with_config(buf.as_bytes(), false, PartialMode::TrailingStrings)
             .unwrap();
         calls += 1;
@@ -119,15 +123,14 @@ pub fn run_jiter_partial(payload: &str, parts: usize) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_jiter_partial_owned(payload: &str, parts: usize) -> usize {
+pub fn run_jiter_partial_owned(chunks: &[&str], total_len: usize) -> usize {
     use jiter::{JsonValue, PartialMode};
 
-    let chunk_size = payload.len().div_ceil(parts);
-    let mut buf = String::with_capacity(payload.len());
+    let mut buf = String::with_capacity(total_len);
     let mut calls = 0usize;
 
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        buf.push_str(std::str::from_utf8(chunk).unwrap());
+    for &chunk in chunks {
+        buf.push_str(chunk);
         let _ = JsonValue::parse_with_config(buf.as_bytes(), false, PartialMode::TrailingStrings)
             .unwrap()
             .into_static();
