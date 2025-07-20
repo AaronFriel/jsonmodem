@@ -1,5 +1,4 @@
 #![allow(missing_docs)]
-#![cfg(feature = "comparison")]
 
 mod partial_json_common;
 use std::time::Duration;
@@ -51,6 +50,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("fix_json_parse", parts),
             &parts,
@@ -62,6 +62,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             },
         );
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(BenchmarkId::new("jiter_partial", parts), &parts, |b, &p| {
             b.iter(|| {
                 let v = run_jiter_partial(black_box(&payload), p);
@@ -69,6 +70,7 @@ fn bench_partial_json_big(c: &mut Criterion) {
             });
         });
 
+        #[cfg(feature = "comparison")]
         group.bench_with_input(
             BenchmarkId::new("jiter_partial_owned", parts),
             &parts,

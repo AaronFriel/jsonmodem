@@ -1,6 +1,5 @@
 #![allow(missing_docs)]
 #![allow(dead_code)]
-#![cfg(feature = "comparison")]
 
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;
@@ -73,6 +72,7 @@ pub fn run_parse_partial_json(payload: &str, parts: usize) -> usize {
     calls
 }
 
+#[cfg(feature = "comparison")]
 pub mod partial_json_fixer {
     use serde_json::Value;
 
@@ -85,6 +85,7 @@ pub mod partial_json_fixer {
     }
 }
 
+#[cfg(feature = "comparison")]
 pub fn run_fix_json_parse(payload: &str, parts: usize) -> usize {
     let chunk_size = payload.len().div_ceil(parts);
     let mut buf = String::with_capacity(payload.len());
@@ -99,6 +100,7 @@ pub fn run_fix_json_parse(payload: &str, parts: usize) -> usize {
     calls
 }
 
+#[cfg(feature = "comparison")]
 pub fn run_jiter_partial(payload: &str, parts: usize) -> usize {
     use jiter::{JsonValue, PartialMode};
 
@@ -116,6 +118,7 @@ pub fn run_jiter_partial(payload: &str, parts: usize) -> usize {
     calls
 }
 
+#[cfg(feature = "comparison")]
 pub fn run_jiter_partial_owned(payload: &str, parts: usize) -> usize {
     use jiter::{JsonValue, PartialMode};
 

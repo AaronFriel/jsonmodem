@@ -48,17 +48,14 @@ suspicious = "deny"
 [[bench]]
 name = "partial_json_strategies"
 harness = false
-required-features = ["comparison"]
 
 [[bench]]
 name = "partial_json_big"
 harness = false
-required-features = ["comparison"]
 
 [[bench]]
 name = "partial_json_incremental"
 harness = false
-required-features = ["comparison"]
 
 [[bench]]
 name = "streaming_parser"

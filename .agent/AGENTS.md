@@ -30,13 +30,19 @@ other utilities required to build the fuzz crate.
 
 ## Benchmarks
 
-The default `cargo bench` command runs only jsonmodem's own benchmarks. To run
-the comparative suites as well, enable the optional `comparison` feature. The
-following commands produce concise timings suitable for copy‑pasting:
+The default `cargo bench` command runs only jsonmodem's own benchmarks. The
+partial JSON benchmarks skip the `serde`, `jiter`, and fix‑JSON variants unless
+the optional `comparison` feature is enabled. The following commands produce
+concise timings suitable for copy‑pasting:
 
 ```bash
 # jsonmodem benchmarks
 cargo bench --bench streaming_parser -- --output-format bencher | rg '^test'
+
+# sample output
+# test streaming_parser_split/100  ... bench:   48241 ns/iter (+/- 1145)
+# test streaming_parser_split/1000 ... bench:  161009 ns/iter (+/- 4103)
+# test streaming_parser_split/5000 ... bench:  604477 ns/iter (+/- 8785)
 
 # include external implementations
 cargo bench --features comparison --bench partial_json_big -- --output-format bencher | rg '^test'
