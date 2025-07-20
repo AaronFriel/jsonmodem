@@ -6,7 +6,7 @@ This document compares three buffer representations used by `StreamingParser`:
 - `VecDeque<char>` (current)
 - `Vec<char>`
 
-Benchmarks were run with `cargo bench --bench partial_json streaming_parser` on
+Benchmarks were run with `cargo bench --bench partial_json_strategies --bench partial_json_big --bench partial_json_incremental --bench streaming_parser` on
 three representative workloads. Times are the median of Criterion's output.
 
 | Benchmark | String | VecDeque<char> | Vec<char> |
