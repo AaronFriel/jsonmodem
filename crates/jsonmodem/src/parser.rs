@@ -1466,12 +1466,12 @@ mod tests {
     #[test]
     fn size_of_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<StreamingParser>(), 312);
+        assert_eq!(size_of::<StreamingParser>(), 280);
     }
 
     #[test]
     fn size_of_closed_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser>(), 312);
+        assert_eq!(size_of::<ClosedStreamingParser>(), 280);
     }
 }
