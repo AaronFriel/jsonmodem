@@ -11,10 +11,14 @@ mod imp {
 
     impl Buffer {
         pub(crate) fn new() -> Self {
-            Self { data: VecDeque::new() }
+            Self {
+                data: VecDeque::new(),
+            }
         }
 
         pub(crate) fn push(&mut self, text: &str) {
+            // Reserve the byte length as an upper bound on additional chars
+            self.data.reserve(text.len());
             self.data.extend(text.chars());
         }
 
@@ -33,12 +37,22 @@ mod imp {
             F: FnMut(char) -> bool,
         {
             let mut copied = 0;
-            while let Some(&ch) = self.data.front() {
-                if predicate(ch) {
-                    self.data.pop_front();
-                    dst.push(ch);
-                    copied += 1;
-                } else {
+            loop {
+                let (front, _) = self.data.as_slices();
+                if front.is_empty() {
+                    break;
+                }
+
+                let front_len = front.len();
+                let prefix = front.iter().take_while(|&&ch| predicate(ch)).count();
+                if prefix == 0 {
+                    break;
+                }
+
+                dst.extend(self.data.drain(..prefix));
+                copied += prefix;
+
+                if prefix < front_len {
                     break;
                 }
             }
@@ -70,7 +84,10 @@ mod imp {
 
     impl Buffer {
         pub(crate) fn new() -> Self {
-            Self { data: String::new(), pos: 0 }
+            Self {
+                data: String::new(),
+                pos: 0,
+            }
         }
 
         pub(crate) fn push(&mut self, text: &str) {
@@ -135,7 +152,10 @@ mod imp {
 
     impl Buffer {
         pub(crate) fn new() -> Self {
-            Self { data: Vec::new(), pos: 0 }
+            Self {
+                data: Vec::new(),
+                pos: 0,
+            }
         }
 
         pub(crate) fn push(&mut self, text: &str) {

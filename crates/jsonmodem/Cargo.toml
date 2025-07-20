@@ -10,7 +10,7 @@ autobenches = false
 rust-version = "1.85"
 
 [features]
-default = []
+default = ["vecdeque-buffer"]
 fuzzing = []
 serde = []
 bench = []
