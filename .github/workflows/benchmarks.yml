@@ -28,4 +28,4 @@ jobs:
       - name: Run benchmark
         env:
           RUSTFLAGS: "--cfg=bench"
-        run: cargo bench --package jsonmodem --bench ${{ matrix.bench }} --verbose || true
+        run: cargo bench --package jsonmodem --features comparison --bench ${{ matrix.bench }} --verbose || true
