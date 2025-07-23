@@ -56,11 +56,13 @@ pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
     produced + values.iter().filter(|v| v.is_final).count()
 }
 
-pub fn run_parse_partial_json(prefixes: &[&str]) -> usize {
-    let mut calls = 0;
+pub fn run_parse_partial_json(chunks: &[&str]) -> usize {
+    let mut calls = 0usize;
+    let mut prefix = String::new();
 
-    for &prefix in prefixes {
-        let _ = parse_partial_json_port::parse_partial_json(Some(prefix));
+    for &chunk in chunks {
+        prefix.push_str(chunk);
+        let _ = parse_partial_json_port::parse_partial_json(Some(&prefix));
         calls += 1;
     }
 
@@ -81,11 +83,13 @@ pub mod partial_json_fixer {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_fix_json_parse(prefixes: &[&str]) -> usize {
-    let mut calls = 0;
+pub fn run_fix_json_parse(chunks: &[&str]) -> usize {
+    let mut calls = 0usize;
+    let mut prefix = String::new();
 
-    for &prefix in prefixes {
-        let _ = partial_json_fixer::fix_json_parse(prefix);
+    for &chunk in chunks {
+        prefix.push_str(chunk);
+        let _ = partial_json_fixer::fix_json_parse(&prefix);
         calls += 1;
     }
 
@@ -93,11 +97,13 @@ pub fn run_fix_json_parse(prefixes: &[&str]) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_jiter_partial(prefixes: &[&str]) -> usize {
+pub fn run_jiter_partial(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;
+    let mut prefix = String::new();
 
-    for &prefix in prefixes {
+    for &chunk in chunks {
+        prefix.push_str(chunk);
         let _ =
             JsonValue::parse_with_config(prefix.as_bytes(), false, PartialMode::TrailingStrings)
                 .unwrap();
@@ -108,11 +114,13 @@ pub fn run_jiter_partial(prefixes: &[&str]) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-pub fn run_jiter_partial_owned(prefixes: &[&str]) -> usize {
+pub fn run_jiter_partial_owned(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;
+    let mut prefix = String::new();
 
-    for &prefix in prefixes {
+    for &chunk in chunks {
+        prefix.push_str(chunk);
         let _ =
             JsonValue::parse_with_config(prefix.as_bytes(), false, PartialMode::TrailingStrings)
                 .unwrap()
