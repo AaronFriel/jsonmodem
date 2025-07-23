@@ -50,3 +50,42 @@ cargo bench --bench partial_json_big -- --output-format bencher | rg '^test'
 # include external implementations
 cargo bench --features comparison --bench partial_json_big -- --output-format bencher | rg '^test'
 ```
+
+## Flamegraphs and line-level profiling
+
+This repository ships a GitHub Action that runs
+`cargo flamegraph --bench partial_json_big -- --bench` and uploads
+`flamegraph.svg`.  The `setup.sh` script installs `perf` so the same
+command can be run locally:
+
+```bash
+cargo install flamegraph --locked
+sudo apt-get install -y linux-tools-common linux-tools-generic
+sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
+cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
+
+# Finished release [optimized] target(s) in 0.23s
+# Flamegraph written to flamegraph.svg
+```
+
+To attribute samples to individual lines, compile with frame pointers and
+line-tables debug info and record with `perf`:
+
+```toml
+[profile.release]
+debug = "line-tables-only"
+```
+
+```bash
+RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench partial_json_big
+sudo perf record -F 999 --call-graph dwarf ./target/release/partial_json_big
+sudo perf report -g fractal -F+srcline | head
+
+# Example output
+# 40.0% crates/jsonmodem/src/parser.rs:123
+# 25.0% crates/jsonmodem/src/lexer.rs:87
+```
+
+For deterministic instruction counts, `cargo profiler callgrind --release --bench partial_json_big` will emit
+`callgrind.out.*` which can be viewed with `kcachegrind` and also prints the hottest lines directly in the
+terminal.

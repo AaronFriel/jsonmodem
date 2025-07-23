@@ -12,7 +12,11 @@ use partial_json_common::{
 };
 
 fn bench_partial_json_big(c: &mut Criterion) {
-    let payload = std::fs::read_to_string("./benches/jiter_data/medium_response.json").unwrap();
+    let payload = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/benches/jiter_data/medium_response.json"
+    ))
+    .unwrap();
 
     let mut group = c.benchmark_group("partial_json_big");
     group.measurement_time(Duration::from_secs(10));

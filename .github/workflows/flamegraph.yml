@@ -1,0 +1,36 @@
+name: Flamegraph
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  flamegraph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-flamegraph
+        run: cargo install flamegraph --locked
+
+      - name: Install perf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-tools-common linux-tools-generic
+          sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
+
+      - name: Generate flamegraph
+        run: cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
+
+      - name: Upload flamegraph
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming-parser-flamegraph
+          path: flamegraph.svg

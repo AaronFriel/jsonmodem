@@ -2,5 +2,8 @@
 resolver = "3"
 members = ["crates/*", "fuzz"]
 
+[profile.release]
+debug = "line-tables-only"
+
 [profile.bench]
 debug = true
