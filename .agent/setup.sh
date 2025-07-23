@@ -23,3 +23,7 @@ sudo apt-get update
 sudo apt-get install -y clang-19 lldb-19 lld-19 llvm-19-dev
 sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100
 sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100
+
+# Install perf for profiling
+sudo apt-get install -y linux-tools-common linux-tools-generic
+sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
