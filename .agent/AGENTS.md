@@ -78,7 +78,7 @@ debug = "line-tables-only"
 
 ```bash
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench partial_json_big
-sudo perf record -F 999 --call-graph dwarf ./target/release/streaming_parser
+sudo perf record -F 999 --call-graph dwarf ./target/release/partial_json_big
 sudo perf report -g fractal -F+srcline | head
 
 # Example output
