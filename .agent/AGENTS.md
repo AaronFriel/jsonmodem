@@ -54,7 +54,7 @@ cargo bench --features comparison --bench partial_json_big -- --output-format be
 ## Flamegraphs and line-level profiling
 
 This repository ships a GitHub Action that runs
-`cargo flamegraph --bench partial_json_big` and uploads
+`cargo flamegraph --bench partial_json_big -- --bench` and uploads
 `flamegraph.svg`.  The `setup.sh` script installs `perf` so the same
 command can be run locally:
 
@@ -62,7 +62,7 @@ command can be run locally:
 cargo install flamegraph --locked
 sudo apt-get install -y linux-tools-common linux-tools-generic
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
-cargo flamegraph --package jsonmodem --bench partial_json_big
+cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
 
 # Finished release [optimized] target(s) in 0.23s
 # Flamegraph written to flamegraph.svg

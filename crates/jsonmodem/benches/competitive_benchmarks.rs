@@ -297,7 +297,11 @@ struct Dataset {
 }
 
 fn bench_dataset(cfg: &Dataset, c: &mut Criterion) {
-    let path = format!("./benches/jiter_data/{}.json", cfg.name);
+    let path = format!(
+        "{}/benches/jiter_data/{}.json",
+        env!("CARGO_MANIFEST_DIR"),
+        cfg.name
+    );
     let mut group = c.benchmark_group(cfg.name);
     group.measurement_time(Duration::from_secs(3));
     group.warm_up_time(Duration::from_secs(1));
