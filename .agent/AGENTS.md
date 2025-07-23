@@ -86,6 +86,6 @@ sudo perf report -g fractal -F+srcline | head
 # 25.0% crates/jsonmodem/src/lexer.rs:87
 ```
 
-For deterministic instruction counts, `cargo profiler callgrind --release --bench streaming_parser` will emit
+For deterministic instruction counts, `cargo profiler callgrind --release --bench partial_json_big` will emit
 `callgrind.out.*` which can be viewed with `kcachegrind` and also prints the hottest lines directly in the
 terminal.
