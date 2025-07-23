@@ -23,7 +23,9 @@ jobs:
       - name: Install perf
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-tools-common linux-tools-generic
+          sudo apt-get install -y linux-tools-common
+          sudo apt-get install -y "linux-tools-$(uname -r)" || \
+            sudo apt-get install -y linux-tools-generic
           sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
 
       - name: Generate flamegraph

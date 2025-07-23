@@ -60,8 +60,13 @@ command can be run locally:
 
 ```bash
 cargo install flamegraph --locked
-sudo apt-get install -y linux-tools-common linux-tools-generic
-sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
+# `perf` must match the running kernel.  Try to install the
+# version for the current kernel and fall back to the generic
+# tools package if it does not exist.
+sudo apt-get install -y linux-tools-common
+sudo apt-get install -y "linux-tools-$(uname -r)" || \
+  sudo apt-get install -y linux-tools-generic
+sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid' || true
 cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
 
 # Finished release [optimized] target(s) in 0.23s
@@ -90,6 +95,9 @@ want to save it:
 
 ```bash
 python3 scripts/perf_snippet.py > perf_with_code.txt
+
+# Use a custom report path or number of lines by passing arguments
+python3 scripts/perf_snippet.py perf_report.txt 15 > perf_with_code.txt
 ```
 
 # Example output
