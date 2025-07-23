@@ -54,7 +54,7 @@ cargo bench --features comparison --bench partial_json_big -- --output-format be
 ## Flamegraphs and line-level profiling
 
 This repository ships a GitHub Action that runs
-`cargo flamegraph --bench streaming_parser` and uploads
+`cargo flamegraph --bench partial_json_big` and uploads
 `flamegraph.svg`.  The `setup.sh` script installs `perf` so the same
 command can be run locally:
 
