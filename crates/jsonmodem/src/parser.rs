@@ -338,8 +338,8 @@ impl ClosedStreamingParser {
         self.parser.get_lexed_tokens()
     }
 
-    pub(crate) fn unstable_get_current_value(&self) -> Option<crate::value::Value> {
-        self.parser.unstable_get_current_value()
+    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&crate::value::Value> {
+        self.parser.unstable_get_current_value_ref()
     }
 }
 
@@ -461,14 +461,15 @@ impl StreamingParser {
     /// ⚠️ **Unstable API** – exposed solely for benchmarking and may change or
     /// disappear without notice.
     #[doc(hidden)]
+    #[doc(hidden)]
     #[must_use]
-    pub fn unstable_get_current_value(&self) -> Option<crate::value::Value> {
-        self.events.read_root().cloned()
+    pub fn unstable_get_current_value_ref(&self) -> Option<&crate::value::Value> {
+        self.events.read_root()
     }
 
     #[cfg(test)]
     pub(crate) fn current_value(&self) -> Option<crate::value::Value> {
-        self.unstable_get_current_value()
+        self.unstable_get_current_value_ref().cloned()
     }
 
     /// Drive the parser until we either

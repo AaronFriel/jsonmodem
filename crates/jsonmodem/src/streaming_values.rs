@@ -55,35 +55,72 @@ impl StreamingValuesParser {
         let mut closed = self.parser.finish();
         let mut out = Vec::new();
         let mut index = self.next_index;
-        while let Some(evt) = closed.next() {
+        for evt in closed.by_ref() {
             let ev = evt?;
-            let (value, is_final) = match &ev {
-                ParseEvent::Null { .. } => (Value::Null, true),
-                ParseEvent::Boolean { value, .. } => (Value::Boolean(*value), true),
-                ParseEvent::Number { value, .. } => (Value::Number(*value), true),
+            match ev {
+                ParseEvent::Null { .. } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::Null,
+                        is_final: true,
+                    });
+                    index += 1;
+                }
+                ParseEvent::Boolean { value, .. } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::Boolean(value),
+                        is_final: true,
+                    });
+                    index += 1;
+                }
+                ParseEvent::Number { value, .. } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::Number(value),
+                        is_final: true,
+                    });
+                    index += 1;
+                }
                 ParseEvent::String {
                     value: Some(v),
                     is_final,
                     ..
-                } => (Value::String(v.clone()), *is_final),
-                ParseEvent::String { value: None, .. }
-                | ParseEvent::ArrayStart { .. }
-                | ParseEvent::ObjectBegin { .. } => (
-                    closed.unstable_get_current_value().unwrap_or(Value::Null),
-                    false,
-                ),
-                ParseEvent::ArrayEnd { value: Some(v), .. } => (Value::Array(v.clone()), true),
-                ParseEvent::ObjectEnd { value: Some(v), .. } => (Value::Object(v.clone()), true),
-                _ => continue,
-            };
+                } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::String(v),
+                        is_final,
+                    });
+                    if is_final {
+                        index += 1;
+                    }
+                }
+                ParseEvent::ArrayEnd { value: Some(v), .. } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::Array(v),
+                        is_final: true,
+                    });
+                    index += 1;
+                }
+                ParseEvent::ObjectEnd { value: Some(v), .. } => {
+                    out.push(StreamingValue {
+                        index,
+                        value: Value::Object(v),
+                        is_final: true,
+                    });
+                    index += 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(val) = closed.unstable_get_current_value_ref() {
             out.push(StreamingValue {
                 index,
-                value,
-                is_final,
+                value: val.clone(),
+                is_final: false,
             });
-            if is_final {
-                index += 1;
-            }
         }
         Ok(out)
     }
@@ -91,54 +128,73 @@ impl StreamingValuesParser {
     #[inline]
     fn collect_from_parser(&mut self) -> Result<Vec<StreamingValue>, ParserError> {
         let mut out = Vec::new();
-        let mut had_event = false;
-        while let Some(evt) = self.parser.next() {
+        for evt in self.parser.by_ref() {
             let ev = evt?;
-            had_event = true;
-            self.push_from_event(&ev, &mut out);
-        }
-        if !had_event {
-            if let Some(val) = self.parser.unstable_get_current_value() {
-                out.push(StreamingValue {
-                    index: self.next_index,
-                    value: val,
-                    is_final: false,
-                });
+            match ev {
+                ParseEvent::Null { .. } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::Null,
+                        is_final: true,
+                    });
+                    self.next_index += 1;
+                }
+                ParseEvent::Boolean { value, .. } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::Boolean(value),
+                        is_final: true,
+                    });
+                    self.next_index += 1;
+                }
+                ParseEvent::Number { value, .. } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::Number(value),
+                        is_final: true,
+                    });
+                    self.next_index += 1;
+                }
+                ParseEvent::String {
+                    value: Some(v),
+                    is_final,
+                    ..
+                } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::String(v),
+                        is_final,
+                    });
+                    if is_final {
+                        self.next_index += 1;
+                    }
+                }
+                ParseEvent::ArrayEnd { value: Some(v), .. } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::Array(v),
+                        is_final: true,
+                    });
+                    self.next_index += 1;
+                }
+                ParseEvent::ObjectEnd { value: Some(v), .. } => {
+                    out.push(StreamingValue {
+                        index: self.next_index,
+                        value: Value::Object(v),
+                        is_final: true,
+                    });
+                    self.next_index += 1;
+                }
+                _ => {}
             }
         }
-        Ok(out)
-    }
-
-    #[inline]
-    fn push_from_event(&mut self, event: &ParseEvent, out: &mut Vec<StreamingValue>) {
-        let (value, is_final) = match event {
-            ParseEvent::Null { .. } => (Value::Null, true),
-            ParseEvent::Boolean { value, .. } => (Value::Boolean(*value), true),
-            ParseEvent::Number { value, .. } => (Value::Number(*value), true),
-            ParseEvent::String {
-                value: Some(v),
-                is_final,
-                ..
-            } => (Value::String(v.clone()), *is_final),
-            ParseEvent::String { value: None, .. }
-            | ParseEvent::ArrayStart { .. }
-            | ParseEvent::ObjectBegin { .. } => (
-                self.parser
-                    .unstable_get_current_value()
-                    .unwrap_or(Value::Null),
-                false,
-            ),
-            ParseEvent::ArrayEnd { value: Some(v), .. } => (Value::Array(v.clone()), true),
-            ParseEvent::ObjectEnd { value: Some(v), .. } => (Value::Object(v.clone()), true),
-            _ => return,
-        };
-        out.push(StreamingValue {
-            index: self.next_index,
-            value,
-            is_final,
-        });
-        if is_final {
-            self.next_index += 1;
+        if let Some(val) = self.parser.unstable_get_current_value_ref() {
+            out.push(StreamingValue {
+                index: self.next_index,
+                value: val.clone(),
+                is_final: false,
+            });
         }
+        Ok(out)
     }
 }
