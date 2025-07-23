@@ -79,11 +79,27 @@ debug = "line-tables-only"
 ```bash
 RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench partial_json_big
 sudo perf record -F 999 --call-graph dwarf ./target/release/partial_json_big
-sudo perf report -g fractal -F+srcline | head
+sudo perf report -g fractal -F+srcline --stdio > perf_report.txt
+python3 scripts/perf_snippet.py | tee perf_snippet.log
+
+The helper script reads `perf_report.txt`, extracts the hottest lines,
+and prints them with short code snippets. Redirect the output if you
+want to save it:
+
+```bash
+python3 scripts/perf_snippet.py > perf_with_code.txt
+```
 
 # Example output
 # 40.0% crates/jsonmodem/src/parser.rs:123
-# 25.0% crates/jsonmodem/src/lexer.rs:87
+#    122:     StringEscapeUnicode,
+#    123:     BeforePropertyName,
+#    124:     AfterPropertyName,
+#
+# 25.0% crates/jsonmodem/src/event.rs:87
+#     86:     };
+#     87: }
+#     88:
 ```
 
 For deterministic instruction counts, `cargo profiler callgrind --release --bench partial_json_big` will emit

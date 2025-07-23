@@ -29,8 +29,18 @@ jobs:
       - name: Generate flamegraph
         run: cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
 
+      - name: Collect line-level perf information
+        run: |
+          RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench partial_json_big
+          sudo perf record -F 999 --call-graph dwarf ./target/release/partial_json_big
+          sudo perf report -g fractal -F+srcline --stdio > perf_report.txt
+          python3 scripts/perf_snippet.py | tee perf_with_code.txt
+
       - name: Upload flamegraph
         uses: actions/upload-artifact@v4
         with:
           name: streaming-parser-flamegraph
-          path: flamegraph.svg
+          path: |
+            flamegraph.svg
+            perf_report.txt
+            perf_with_code.txt
