@@ -77,8 +77,10 @@ debug = "line-tables-only"
 ```
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench partial_json_big
-sudo perf record -F 999 --call-graph dwarf ./target/release/partial_json_big
+RUSTFLAGS="-C force-frame-pointers=yes" \
+  cargo bench --bench partial_json_big --no-run
+BIN=$(find target/release/deps -maxdepth 1 -executable -name 'partial_json_big-*' | head -n 1)
+sudo perf record -F 999 --call-graph dwarf "$BIN"
 sudo perf report -g fractal -F+srcline --stdio > perf_report.txt
 python3 scripts/perf_snippet.py | tee perf_snippet.log
 
