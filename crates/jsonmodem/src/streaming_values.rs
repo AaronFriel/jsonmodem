@@ -28,6 +28,7 @@ pub struct StreamingValuesParser {
 impl StreamingValuesParser {
     /// Create a new parser. `non_scalar_values` must not be `None`.
     #[must_use]
+    #[inline]
     pub fn new(mut options: ParserOptions) -> Self {
         assert!(
             !matches!(options.non_scalar_values, NonScalarValueMode::None),
@@ -42,12 +43,14 @@ impl StreamingValuesParser {
     }
 
     /// Feed a chunk of input and collect streaming values.
+    #[inline]
     pub fn feed(&mut self, chunk: &str) -> Result<Vec<StreamingValue>, ParserError> {
         self.parser.feed(chunk);
         self.collect_from_parser()
     }
 
     /// Signal end of input and collect remaining values.
+    #[inline]
     pub fn finish(self) -> Result<Vec<StreamingValue>, ParserError> {
         let mut closed = self.parser.finish();
         let mut out = Vec::new();
@@ -85,6 +88,7 @@ impl StreamingValuesParser {
         Ok(out)
     }
 
+    #[inline]
     fn collect_from_parser(&mut self) -> Result<Vec<StreamingValue>, ParserError> {
         let mut out = Vec::new();
         let mut had_event = false;
@@ -105,6 +109,7 @@ impl StreamingValuesParser {
         Ok(out)
     }
 
+    #[inline]
     fn push_from_event(&mut self, event: &ParseEvent, out: &mut Vec<StreamingValue>) {
         let (value, is_final) = match event {
             ParseEvent::Null { .. } => (Value::Null, true),

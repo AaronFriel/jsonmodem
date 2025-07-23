@@ -16,10 +16,11 @@ pub struct ValueZipper {
 }
 
 impl ValueZipper {
+    #[inline]
     pub fn new(value: Value) -> Self {
         Self {
             root: Box::new(value),
-            path: Vec::new(),
+            path: Vec::with_capacity(8),
             #[cfg(test)]
             path_components: Vec::new(),
         }
@@ -45,6 +46,7 @@ impl ValueZipper {
 
     // ─── public clone‑free operations ──────────────────────────────────────
 
+    #[inline]
     pub fn enter_lazy<F>(&mut self, pc: PathComponent, make_child: F) -> Result<(), ZipperError>
     where
         F: FnOnce() -> Value,
@@ -55,6 +57,7 @@ impl ValueZipper {
         }
     }
 
+    #[inline]
     pub fn set_at(&mut self, pc: PathComponent, value: Value) -> Result<(), ZipperError> {
         match pc {
             PathComponent::Key(k) => self.modify_or_insert_key(
@@ -86,6 +89,7 @@ impl ValueZipper {
         }
     }
 
+    #[inline]
     pub fn mutate_lazy<D, M>(
         &mut self,
         pc: PathComponent,
@@ -122,6 +126,7 @@ impl ValueZipper {
         }
     }
 
+    #[inline]
     pub fn pop(&mut self) -> &mut Value {
         let leaf = match self.path.pop().as_mut() {
             // SAFETY: identical reasoning as in `current_mut`:
@@ -156,6 +161,7 @@ impl ValueZipper {
 
     // ─── internal helpers (key / index) ────────────────────────────────────
 
+    #[inline]
     fn modify_or_insert_key<T, F, G>(
         &mut self,
         k: String,
@@ -195,6 +201,7 @@ impl ValueZipper {
         Ok(())
     }
 
+    #[inline]
     fn modify_or_insert_index<T, F, G>(
         &mut self,
         index: usize,
@@ -235,6 +242,7 @@ impl ValueZipper {
         Ok(())
     }
 
+    #[inline]
     fn enter_key_lazy<F>(&mut self, k: String, make_child: F) -> Result<(), ZipperError>
     where
         F: FnOnce() -> Value,
@@ -257,6 +265,7 @@ impl ValueZipper {
         Ok(())
     }
 
+    #[inline]
     fn enter_index_lazy<F>(&mut self, index: usize, make_child: F) -> Result<(), ZipperError>
     where
         F: FnOnce() -> Value,
@@ -349,6 +358,7 @@ macro_rules! raise {
 
 impl ValueBuilder {
     // façade – these rely on the fact that root already exists; no clone needed
+    #[inline]
     pub fn enter_with<F>(
         &mut self,
         pc: Option<&PathComponent>,
@@ -372,6 +382,7 @@ impl ValueBuilder {
         }
     }
 
+    #[inline]
     pub fn set(&mut self, pc: Option<&PathComponent>, value: Value) -> Result<(), ZipperError> {
         match pc {
             None => {
@@ -386,6 +397,7 @@ impl ValueBuilder {
         }
     }
 
+    #[inline]
     pub fn mutate_with<D, M>(
         &mut self,
         pc: Option<&PathComponent>,
@@ -417,6 +429,7 @@ impl ValueBuilder {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[inline]
     pub fn pop(&mut self) -> Result<&mut Value, ZipperError> {
         match self {
             ValueBuilder::Ready(z) => Ok(z.pop()),
