@@ -28,6 +28,11 @@ The `setup.sh` script installs the stable and nightly toolchains as well as
 Clang 19 and the `llvm-tools-preview` component, which provide `llvm-nm` and
 other utilities required to build the fuzz crate.
 
+If any of the instructions in this file become inaccurate—for example, if a
+benchmark or `perf` invocation no longer works—address the issue first and then
+record the correction here. Add a brief addendum or note describing the
+workaround so future contributors can rely on up‑to‑date guidance.
+
 ## Benchmarks
 
 The default `cargo bench` command runs only jsonmodem's own benchmarks. The
