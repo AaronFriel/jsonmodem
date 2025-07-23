@@ -89,3 +89,11 @@ sudo perf report -g fractal -F+srcline | head
 For deterministic instruction counts, `cargo profiler callgrind --release --bench partial_json_big` will emit
 `callgrind.out.*` which can be viewed with `kcachegrind` and also prints the hottest lines directly in the
 terminal.
+
+## Handling inaccurate instructions
+
+If any of the steps in this document fail or are outdated, address the issue
+first before proceeding. Document fixes or workarounds by appending a note or
+addenda to the affected instruction so future contributors can reproduce the
+result. For example, if the benchmarking commands no longer work, record the
+necessary adjustments here alongside the original instructions.
