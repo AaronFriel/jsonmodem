@@ -62,7 +62,7 @@ command can be run locally:
 cargo install flamegraph --locked
 sudo apt-get install -y linux-tools-common linux-tools-generic
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
-cargo flamegraph --package jsonmodem --bench streaming_parser
+cargo flamegraph --package jsonmodem --bench partial_json_big
 
 # Finished release [optimized] target(s) in 0.23s
 # Flamegraph written to flamegraph.svg
