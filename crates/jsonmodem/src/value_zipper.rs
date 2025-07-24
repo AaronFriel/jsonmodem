@@ -234,8 +234,8 @@ impl ValueZipper {
                 // `initializer` and once for the caller-supplied closure.
                 let cloned_default = default.clone();
                 arr.push(initializer(default));
-                let len = arr.len();
-                f(cloned_default, Some(&mut arr[len - 1]))?;
+                let last = arr.last_mut().expect("just pushed");
+                f(cloned_default, Some(last))?;
             }
             Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
         }
@@ -281,7 +281,7 @@ impl ValueZipper {
                 Ordering::Less => NonNull::from(&mut arr[index]),
                 Ordering::Equal => {
                     arr.push(make_child());
-                    NonNull::from(&mut arr[index])
+                    NonNull::from(arr.last_mut().expect("just pushed"))
                 }
                 Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
             }
