@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{ParserOptions, StreamingParser};
+use jsonmodem::{ParserOptions, StreamingParser, NonScalarValueMode};
 
 /// Produce a *deterministic* JSON document whose textual representation is at
 /// least `target_len` bytes (UTF-8 code units). The resulting string is
@@ -32,11 +32,14 @@ fn make_json_payload(target_len: usize) -> String {
 /// `payload`.  The function returns the number of `ParseEvent`s that the
 /// parser produced so that the result can be black-boxed by Criterion (to
 /// prevent the compiler from optimising the 'work' away).
-fn run_streaming_parser(payload: &str, parts: usize) -> usize {
+fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarValueMode) -> usize {
     assert!(parts > 0);
     let chunk_size = payload.len().div_ceil(parts); // ceiling division
 
-    let mut parser = StreamingParser::new(ParserOptions::default());
+    let mut parser = StreamingParser::new(ParserOptions {
+        non_scalar_values: mode,
+        ..Default::default()
+    });
     let mut produced = 0usize;
 
     for chunk in payload.as_bytes().chunks(chunk_size) {
@@ -62,13 +65,16 @@ fn bench_streaming_parser(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(5));
 
-    for &parts in &[100usize, 1_000, 5_000] {
-        group.bench_with_input(BenchmarkId::from_parameter(parts), &parts, |b, &p| {
-            b.iter(|| {
-                let count = run_streaming_parser(black_box(&payload), p);
-                black_box(count);
+    for &mode in &[NonScalarValueMode::None, NonScalarValueMode::Roots, NonScalarValueMode::All] {
+        for &parts in &[100usize, 1_000, 5_000] {
+            let name = format!("{mode:?}").to_lowercase();
+            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &p| {
+                b.iter(|| {
+                    let count = run_streaming_parser(black_box(&payload), p, mode);
+                    black_box(count);
+                });
             });
-        });
+        }
     }
     group.finish();
 }

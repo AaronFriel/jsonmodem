@@ -27,7 +27,7 @@ jobs:
           sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
 
       - name: Generate flamegraph
-        run: cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
+        run: cargo flamegraph --package jsonmodem --bench streaming_json_medium -- --bench
 
       - name: Upload flamegraph
         uses: actions/upload-artifact@v4

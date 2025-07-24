@@ -1,20 +1,20 @@
 #![allow(missing_docs)]
 
-mod partial_json_common;
+mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::produce_chunks;
-use partial_json_common::{
+use streaming_json_common::{
     make_json_payload, run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
 };
 #[cfg(feature = "comparison")]
-use partial_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
+use streaming_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
 
-fn bench_partial_json_strategies(c: &mut Criterion) {
+fn bench_streaming_json_strategies(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
-    let mut group = c.benchmark_group("partial_json_strategies");
+    let mut group = c.benchmark_group("streaming_json_strategies");
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(5));
 
@@ -93,5 +93,5 @@ fn bench_partial_json_strategies(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_partial_json_strategies);
+criterion_group!(benches, bench_streaming_json_strategies);
 criterion_main!(benches);

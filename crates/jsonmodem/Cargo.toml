@@ -46,15 +46,15 @@ perf = "deny"
 suspicious = "deny"
 
 [[bench]]
-name = "partial_json_strategies"
+name = "streaming_json_strategies"
 harness = false
 
 [[bench]]
-name = "partial_json_big"
+name = "streaming_json_medium"
 harness = false
 
 [[bench]]
-name = "partial_json_incremental"
+name = "streaming_json_incremental"
 harness = false
 
 [[bench]]

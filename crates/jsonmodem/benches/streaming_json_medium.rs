@@ -1,24 +1,24 @@
 #![allow(missing_docs)]
 
-mod partial_json_common;
+mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::produce_chunks;
 #[cfg(feature = "comparison")]
-use partial_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
-use partial_json_common::{
+use streaming_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
+use streaming_json_common::{
     run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
 };
 
-fn bench_partial_json_big(c: &mut Criterion) {
+fn bench_streaming_json_medium(c: &mut Criterion) {
     let payload = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/benches/jiter_data/medium_response.json"
     ))
     .unwrap();
 
-    let mut group = c.benchmark_group("partial_json_big");
+    let mut group = c.benchmark_group("streaming_json_medium");
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(5));
 
@@ -97,5 +97,5 @@ fn bench_partial_json_big(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_partial_json_big);
+criterion_group!(benches, bench_streaming_json_medium);
 criterion_main!(benches);

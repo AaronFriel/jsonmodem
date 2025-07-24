@@ -13,9 +13,9 @@ jobs:
       matrix:
         bench:
           - competitive_benchmarks
-          - partial_json_strategies
-          - partial_json_big
-          - partial_json_incremental
+          - streaming_json_strategies
+          - streaming_json_medium
+          - streaming_json_incremental
           - streaming_parser
     steps:
       - uses: actions/checkout@v4
