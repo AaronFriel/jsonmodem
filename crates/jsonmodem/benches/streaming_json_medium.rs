@@ -4,7 +4,7 @@ mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::produce_chunks;
+use jsonmodem::{NonScalarValueMode, produce_chunks};
 #[cfg(feature = "comparison")]
 use streaming_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
 use streaming_json_common::{
@@ -24,16 +24,19 @@ fn bench_streaming_json_medium(c: &mut Criterion) {
 
     for &parts in &[100usize, 1_000, 5_000] {
         let chunks = produce_chunks(&payload, parts);
-        group.bench_with_input(
-            BenchmarkId::new("streaming_parser", parts),
-            &parts,
-            |b, &_p| {
+        for &mode in &[
+            NonScalarValueMode::None,
+            NonScalarValueMode::Roots,
+            NonScalarValueMode::All,
+        ] {
+            let name = format!("streaming_parser_{mode:?}").to_lowercase();
+            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
                 b.iter(|| {
-                    let v = run_streaming_parser(black_box(&chunks));
+                    let v = run_streaming_parser(black_box(&chunks), mode);
                     black_box(v);
                 });
-            },
-        );
+            });
+        }
 
         group.bench_with_input(
             BenchmarkId::new("streaming_values_parser", parts),

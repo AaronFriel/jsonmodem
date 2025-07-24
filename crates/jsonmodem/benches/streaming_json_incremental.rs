@@ -34,14 +34,20 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
         let chunk_size = second_half.len().div_ceil(parts);
         let incremental_part = &second_half[..chunk_size];
 
-        group.bench_with_input(
-            BenchmarkId::new("streaming_parser_inc", parts),
-            &parts,
-            |b, &_p| {
+        for &mode in &[
+            NonScalarValueMode::None,
+            NonScalarValueMode::Roots,
+            NonScalarValueMode::All,
+        ] {
+            let name = format!("streaming_parser_inc_{mode:?}").to_lowercase();
+            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
                 b.iter_batched(
                     || {
                         // setup – not measured
-                        let mut parser = StreamingParser::new(ParserOptions::default());
+                        let mut parser = StreamingParser::new(ParserOptions {
+                            non_scalar_values: mode,
+                            ..Default::default()
+                        });
                         parser.feed(first_half);
                         // Drain all events produced so far so that the parser
                         // is ready for the next chunk.
@@ -59,8 +65,8 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                     },
                     BatchSize::SmallInput,
                 );
-            },
-        );
+            });
+        }
 
         group.bench_with_input(
             BenchmarkId::new("streaming_values_parser_inc", parts),

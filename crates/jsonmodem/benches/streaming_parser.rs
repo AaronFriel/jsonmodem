@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{ParserOptions, StreamingParser, NonScalarValueMode};
+use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingParser};
 
 /// Produce a *deterministic* JSON document whose textual representation is at
 /// least `target_len` bytes (UTF-8 code units). The resulting string is
@@ -65,12 +65,16 @@ fn bench_streaming_parser(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(5));
 
-    for &mode in &[NonScalarValueMode::None, NonScalarValueMode::Roots, NonScalarValueMode::All] {
-        for &parts in &[100usize, 1_000, 5_000] {
+    for &parts in &[100usize, 1_000, 5_000] {
+        for &mode in &[
+            NonScalarValueMode::None,
+            NonScalarValueMode::Roots,
+            NonScalarValueMode::All,
+        ] {
             let name = format!("{mode:?}").to_lowercase();
-            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &p| {
+            group.bench_with_input(BenchmarkId::new(parts.to_string(), name), &mode, |b, &m| {
                 b.iter(|| {
-                    let count = run_streaming_parser(black_box(&payload), p, mode);
+                    let count = run_streaming_parser(black_box(&payload), parts, m);
                     black_box(count);
                 });
             });
