@@ -20,8 +20,11 @@ pub fn make_json_payload(target_len: usize) -> String {
     s
 }
 
-pub fn run_streaming_parser(chunks: &[&str]) -> usize {
-    let mut parser = StreamingParser::new(ParserOptions::default());
+pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize {
+    let mut parser = StreamingParser::new(ParserOptions {
+        non_scalar_values: mode,
+        ..Default::default()
+    });
     let mut events = 0usize;
 
     for &chunk in chunks {

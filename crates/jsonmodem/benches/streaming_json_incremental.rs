@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-mod partial_json_common;
+mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -8,11 +8,11 @@ use jsonmodem::{
     NonScalarValueMode, ParserOptions, StreamingParser, StreamingValuesParser, StringValueMode,
 };
 #[cfg(feature = "comparison")]
-use partial_json_common::partial_json_fixer;
-use partial_json_common::{make_json_payload, parse_partial_json_port};
+use streaming_json_common::partial_json_fixer;
+use streaming_json_common::{make_json_payload, parse_partial_json_port};
 
 #[allow(clippy::too_many_lines)]
-fn bench_partial_json_incremental(c: &mut Criterion) {
+fn bench_streaming_json_incremental(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
     let payload_bytes = payload.as_bytes();
 
@@ -25,7 +25,7 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
     let first_half = &payload[..midpoint];
     let second_half = &payload[midpoint..];
 
-    let mut group = c.benchmark_group("partial_json_incremental");
+    let mut group = c.benchmark_group("streaming_json_incremental");
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(5));
 
@@ -34,14 +34,20 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
         let chunk_size = second_half.len().div_ceil(parts);
         let incremental_part = &second_half[..chunk_size];
 
-        group.bench_with_input(
-            BenchmarkId::new("streaming_parser_inc", parts),
-            &parts,
-            |b, &_p| {
+        for &mode in &[
+            NonScalarValueMode::None,
+            NonScalarValueMode::Roots,
+            NonScalarValueMode::All,
+        ] {
+            let name = format!("streaming_parser_inc_{mode:?}").to_lowercase();
+            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
                 b.iter_batched(
                     || {
                         // setup – not measured
-                        let mut parser = StreamingParser::new(ParserOptions::default());
+                        let mut parser = StreamingParser::new(ParserOptions {
+                            non_scalar_values: mode,
+                            ..Default::default()
+                        });
                         parser.feed(first_half);
                         // Drain all events produced so far so that the parser
                         // is ready for the next chunk.
@@ -59,8 +65,8 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
                     },
                     BatchSize::SmallInput,
                 );
-            },
-        );
+            });
+        }
 
         group.bench_with_input(
             BenchmarkId::new("streaming_values_parser_inc", parts),
@@ -179,5 +185,5 @@ fn bench_partial_json_incremental(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_partial_json_incremental);
+criterion_group!(benches, bench_streaming_json_incremental);
 criterion_main!(benches);
