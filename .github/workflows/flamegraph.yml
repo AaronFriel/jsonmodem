@@ -23,14 +23,37 @@ jobs:
       - name: Install perf
         run: |
           sudo apt-get update
-          sudo apt-get install -y linux-tools-common linux-tools-generic
+          sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" || \
+            sudo apt-get install -y linux-tools-generic
           sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
 
       - name: Generate flamegraph
         run: cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
 
+      - name: Collect line-level perf information
+        run: |
+          set -euo pipefail
+          # Build the benchmark with frame pointers enabled but don't run it yet
+          RUSTFLAGS="-C force-frame-pointers=yes" \
+            cargo bench --bench partial_json_big --no-run
+          BIN=$(find target/release/deps -maxdepth 1 -executable -name 'partial_json_big-*' | head -n 1)
+          # Locate the perf binary even if /usr/bin/perf is missing for this kernel
+          PERF_BIN=$(command -v perf || true)
+          if [ ! -x "$PERF_BIN" ]; then
+            PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+          fi
+          # Record samples into perf.data while suppressing progress output
+          sudo "$PERF_BIN" record -F 999 --call-graph dwarf -o perf.data -- "$BIN" --bench >/dev/null 2>&1
+          # Generate a text report with file and line numbers
+          "$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt 2>&1
+          # Extract the hottest lines and print small code snippets
+          python3 scripts/perf_snippet.py perf_report.txt | tee perf_with_code.txt
+
       - name: Upload flamegraph
         uses: actions/upload-artifact@v4
         with:
           name: streaming-parser-flamegraph
-          path: flamegraph.svg
+          path: |
+            flamegraph.svg
+            perf_report.txt
+            perf_with_code.txt
