@@ -65,7 +65,8 @@ command can be run locally:
 
 ```bash
 cargo install flamegraph --locked
-sudo apt-get install -y linux-tools-common linux-tools-generic
+sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" || \
+  sudo apt-get install -y linux-tools-generic
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
 cargo flamegraph --package jsonmodem --bench streaming_json_medium -- --bench
 
@@ -82,13 +83,46 @@ debug = "line-tables-only"
 ```
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench streaming_json_medium
-sudo perf record -F 999 --call-graph dwarf ./target/release/streaming_json_medium
-sudo perf report -g fractal -F+srcline | head
+RUSTFLAGS="-C force-frame-pointers=yes" \
+  cargo bench --bench streaming_json_medium --no-run
+BIN=$(find target/release/deps -maxdepth 1 -executable -name 'streaming_json_medium-*' | head -n 1)
+# Locate the perf binary in case the wrapper doesn't match the running kernel
+# Use the real perf binary instead of the wrapper which may fail when the
+# kernel version doesn't match an installed package.
+PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+if [ -z "$PERF_BIN" ]; then
+  PERF_BIN=$(command -v perf)
+fi
+echo "Using $PERF_BIN"
+# Record a short run of the parse_partial_json benchmark to keep the report small
+sudo "$PERF_BIN" record -F 200 --call-graph fp -o perf.data -- \
+  "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1 >/dev/null 2>&1
+# Change ownership so perf_report can read the file
+sudo chown "$(id -u):$(id -g)" perf.data
+# Generate a report showing file and line numbers
+"$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt 2>&1
+# Extract the hottest lines with surrounding code
+python3 scripts/perf_snippet.py perf_report.txt | tee perf_snippet.log
+
+The helper script reads `perf_report.txt`, extracts the hottest lines,
+and prints them with short code snippets. Redirect the output if you
+want to save it:
+
+```bash
+python3 scripts/perf_snippet.py | tee perf_with_code.txt
+```
 
 # Example output
-# 40.0% crates/jsonmodem/src/parser.rs:123
-# 25.0% crates/jsonmodem/src/lexer.rs:87
+```text
+40.0% crates/jsonmodem/src/parser.rs:123
+   122:     StringEscapeUnicode,
+   123:     BeforePropertyName,
+   124:     AfterPropertyName,
+
+25.0% crates/jsonmodem/src/lexer.rs:87
+    86:     };
+    87: }
+    88:
 ```
 
 For deterministic instruction counts, `cargo profiler callgrind --release --bench streaming_json_medium` will emit

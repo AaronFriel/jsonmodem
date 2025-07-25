@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -euxo pipefail
 
 # Install stable Rust toolchain matching CI
 rustup toolchain install 1.87.0 || true
@@ -24,8 +24,10 @@ sudo apt-get install -y clang-19 lldb-19 lld-19 llvm-19-dev
 sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100
 sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100
 
-# Install perf for profiling
-sudo apt-get install -y linux-tools-common linux-tools-generic
+# Install perf for profiling. Prefer the tools matching the current kernel and
+# fall back to the generic package when unavailable.
+sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" \
+  || sudo apt-get install -y linux-tools-generic
 # Attempt to enable perf events for the current user. This can fail if
 # /proc/sys is read-only, such as in CI containers, so ignore errors.
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid' || true
