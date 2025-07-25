@@ -47,6 +47,7 @@ jobs:
           # Record a short parse_partial_json run to keep the report small
           sudo "$PERF_BIN" record -F 200 --call-graph fp -o perf.data -- \
             "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1
+          sudo chown "$(id -u):$(id -g)" perf.data
           # Generate a text report with file and line numbers
           "$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt
           # Extract the hottest lines and print small code snippets
