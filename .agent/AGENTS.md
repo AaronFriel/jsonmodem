@@ -87,10 +87,13 @@ RUSTFLAGS="-C force-frame-pointers=yes" \
   cargo bench --bench streaming_json_medium --no-run
 BIN=$(find target/release/deps -maxdepth 1 -executable -name 'streaming_json_medium-*' | head -n 1)
 # Locate the perf binary in case the wrapper doesn't match the running kernel
-PERF_BIN=$(command -v perf || true)
-if [ ! -x "$PERF_BIN" ]; then
-  PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+# Use the real perf binary instead of the wrapper which may fail when the
+# kernel version doesn't match an installed package.
+PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+if [ -z "$PERF_BIN" ]; then
+  PERF_BIN=$(command -v perf)
 fi
+echo "Using $PERF_BIN"
 # Record a short run of the parse_partial_json benchmark to keep the report small
 sudo "$PERF_BIN" record -F 200 --call-graph fp -o perf.data -- \
   "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1 >/dev/null 2>&1

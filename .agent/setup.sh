@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -euxo pipefail
 
 # Install stable Rust toolchain matching CI
 rustup toolchain install 1.87.0 || true

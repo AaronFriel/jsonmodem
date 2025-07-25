@@ -32,21 +32,23 @@ jobs:
 
       - name: Collect line-level perf information
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           # Build the benchmark with frame pointers enabled but don't run it yet
           RUSTFLAGS="-C force-frame-pointers=yes" \
             cargo bench --bench streaming_json_medium --no-run
           BIN=$(find target/release/deps -maxdepth 1 -executable -name 'streaming_json_medium-*' | head -n 1)
-          # Locate the perf binary even if /usr/bin/perf is missing for this kernel
-          PERF_BIN=$(command -v perf || true)
-          if [ ! -x "$PERF_BIN" ]; then
-            PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+          echo "Benchmark binary: $BIN"
+          # Locate a usable perf binary. The wrapper at /usr/bin/perf often fails
+          PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+          if [ -z "$PERF_BIN" ]; then
+            PERF_BIN=$(command -v perf)
           fi
+          echo "Using perf from $PERF_BIN"
           # Record a short parse_partial_json run to keep the report small
           sudo "$PERF_BIN" record -F 200 --call-graph fp -o perf.data -- \
-            "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1 >/dev/null 2>&1
+            "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1
           # Generate a text report with file and line numbers
-          "$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt 2>&1
+          "$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt
           # Extract the hottest lines and print small code snippets
           python3 scripts/perf_snippet.py perf_report.txt | tee perf_with_code.txt
 
