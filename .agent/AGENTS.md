@@ -91,8 +91,9 @@ PERF_BIN=$(command -v perf || true)
 if [ ! -x "$PERF_BIN" ]; then
   PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
 fi
-# Record samples into perf.data while suppressing progress output
-sudo "$PERF_BIN" record -F 999 --call-graph dwarf -o perf.data -- "$BIN" --bench >/dev/null 2>&1
+# Record a short run of the parse_partial_json benchmark to keep the report small
+sudo "$PERF_BIN" record -F 200 --call-graph fp -o perf.data -- \
+  "$BIN" --bench parse_partial_json --sample-size 10 --measurement-time 1 >/dev/null 2>&1
 # Generate a report showing file and line numbers
 "$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt 2>&1
 # Extract the hottest lines with surrounding code
