@@ -50,24 +50,25 @@ cargo bench --bench streaming_parser -- --output-format bencher | rg '^test'
 # test streaming_parser_split/5000 ... bench:  604477 ns/iter (+/- 8785)
 
 # partial JSON benchmarks
-cargo bench --bench streaming_json_medium -- --output-format bencher | rg '^test'
+cargo bench --bench partial_json_big -- --output-format bencher | rg '^test'
 
 # include external implementations
-cargo bench --features comparison --bench streaming_json_medium -- --output-format bencher | rg '^test'
+cargo bench --features comparison --bench partial_json_big -- --output-format bencher | rg '^test'
 ```
 
 ## Flamegraphs and line-level profiling
 
 This repository ships a GitHub Action that runs
-`cargo flamegraph --bench streaming_json_medium -- --bench` and uploads
+`cargo flamegraph --bench partial_json_big -- --bench` and uploads
 `flamegraph.svg`.  The `setup.sh` script installs `perf` so the same
 command can be run locally:
 
 ```bash
 cargo install flamegraph --locked
-sudo apt-get install -y linux-tools-common linux-tools-generic
+sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" || \
+  sudo apt-get install -y linux-tools-generic
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid'
-cargo flamegraph --package jsonmodem --bench streaming_json_medium -- --bench
+cargo flamegraph --package jsonmodem --bench partial_json_big -- --bench
 
 # Finished release [optimized] target(s) in 0.23s
 # Flamegraph written to flamegraph.svg
@@ -82,15 +83,42 @@ debug = "line-tables-only"
 ```
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release --bench streaming_json_medium
-sudo perf record -F 999 --call-graph dwarf ./target/release/streaming_json_medium
-sudo perf report -g fractal -F+srcline | head
+RUSTFLAGS="-C force-frame-pointers=yes" \
+  cargo bench --bench partial_json_big --no-run
+BIN=$(find target/release/deps -maxdepth 1 -executable -name 'partial_json_big-*' | head -n 1)
+# Locate the perf binary in case the wrapper doesn't match the running kernel
+PERF_BIN=$(command -v perf || true)
+if [ ! -x "$PERF_BIN" ]; then
+  PERF_BIN=$(find /usr/lib/linux-tools* -maxdepth 2 -name perf | sort -V | tail -n 1)
+fi
+# Record samples into perf.data while suppressing progress output
+sudo "$PERF_BIN" record -F 999 --call-graph dwarf -o perf.data -- "$BIN" --bench >/dev/null 2>&1
+# Generate a report showing file and line numbers
+"$PERF_BIN" report -i perf.data -g fractal -F+srcline --stdio > perf_report.txt 2>&1
+# Extract the hottest lines with surrounding code
+python3 scripts/perf_snippet.py perf_report.txt | tee perf_snippet.log
 
-# Example output
-# 40.0% crates/jsonmodem/src/parser.rs:123
-# 25.0% crates/jsonmodem/src/lexer.rs:87
+The helper script reads `perf_report.txt`, extracts the hottest lines,
+and prints them with short code snippets. Redirect the output if you
+want to save it:
+
+```bash
+python3 scripts/perf_snippet.py | tee perf_with_code.txt
 ```
 
-For deterministic instruction counts, `cargo profiler callgrind --release --bench streaming_json_medium` will emit
+# Example output
+```text
+40.0% crates/jsonmodem/src/parser.rs:123
+   122:     StringEscapeUnicode,
+   123:     BeforePropertyName,
+   124:     AfterPropertyName,
+
+25.0% crates/jsonmodem/src/event.rs:87
+    86:     };
+    87: }
+    88:
+```
+
+For deterministic instruction counts, `cargo profiler callgrind --release --bench partial_json_big` will emit
 `callgrind.out.*` which can be viewed with `kcachegrind` and also prints the hottest lines directly in the
 terminal.
