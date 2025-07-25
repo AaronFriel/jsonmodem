@@ -30,22 +30,34 @@ impl Buffer {
         self.data.pop_front()
     }
 
+    #[inline]
     pub(crate) fn copy_while<F>(&mut self, dst: &mut String, mut predicate: F) -> usize
     where
         F: FnMut(char) -> bool,
     {
         let mut copied = 0;
         loop {
-            let (front, _) = self.data.as_slices();
-            if front.is_empty() {
-                break;
-            }
+            let (front_len, prefix) = {
+                let (front, _) = self.data.as_slices();
+                if front.is_empty() {
+                    break;
+                }
 
-            let front_len = front.len();
-            let prefix = front.iter().take_while(|&&ch| predicate(ch)).count();
-            if prefix == 0 {
-                break;
-            }
+                let mut prefix = 0;
+                for &ch in front {
+                    if predicate(ch) {
+                        prefix += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                if prefix == 0 {
+                    break;
+                }
+
+                (front.len(), prefix)
+            };
 
             dst.extend(self.data.drain(..prefix));
             copied += prefix;
