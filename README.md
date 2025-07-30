@@ -87,26 +87,26 @@ the user with minimal latency.
 
 **Streaming‑JSON benchmark (time *per chunk*)**
 
-* 10 kB JSON streamed in 100 / 1 000 / 5 000 pieces.
+* ~16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces from `response_large.json`.
 * **Implementations**
 
   * `jsonmodem::StreamingParser` – single‑pass state machine
   * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with
     `serde_json`
-  * [`partial_json_fixer`](https://crates.io/crates/partial-json-fixer) - Rust crate
+  * `fix_json_parse` – helper from Vercel AI
+  * [`jiter`](https://crates.io/crates/jiter) – partial JSON parser
 
-**Result:** `jsonmodem::StreamingParser` is nearly 100 times faster because it never rebuilds or
-  re‑parses the buffer, with greater performance improvements as documents grow longer or are
-  streamed as more pieces.
+**Result:** `jsonmodem::StreamingParser` never rebuilds or re-parses the buffer. When competing tools must materialize every chunk as an owned string, jsonmodem is 15×–114× faster.
 
-| chunks |     jsonmodem   |  parse_partial_json  |  partial_json_fixer  | speed-up\* |
-| -----: | --------------: | -------------------: | -------------------: | ---------: |
-|    100 |      **75 µs** |             1 627 µs |             1 552 µs |  **20.8×** |
-|  1 000 |      **196 µs** |            16 347 µs |            15 339 µs |  **78.1×** |
-|  5 000 |      **730 µs** |            81 673 µs |            76 610 µs | **105.0×** |
+| chunks |     jsonmodem   | jiter *(owned)* | fix_json_parse | parse_partial_json | speed-up* |
+| -----: | --------------: | --------------: | -------------: | -----------------: | ---------: |
+|    100 |      **115 µs** |         1.75 ms |        3.92 ms |             5.35 ms |  **15×** |
+|  1 000 |      **211 µs** |        16.0 ms |       36.9 ms |            50.4 ms |  **76×** |
+|  5 000 |      **589 µs** |        67.1 ms |      164.3 ms |           221.9 ms | **114×** |
 
-\* Versus the fastest helper (`partial_json_fixer`). Benchmarked with Criterion.
+* Versus the fastest helper (jiter with owned values). Benchmarked with Criterion.
 
+`StreamingParser` exposes three memory profiles. `None` retains only the in-flight string fragment; `Roots` additionally buffers each top-level object or array; `All` keeps every composite value. Higher settings increase peak memory usage but let [`StreamingValuesParser`] return full values for each chunk. `parse_partial_json`, `fix_json_parse`, `jiter`, and `StreamingValuesParser` all emit a value per chunk.
 ---
 
 ## 🔭 Roadmap
