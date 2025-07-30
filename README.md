@@ -84,30 +84,30 @@ the user with minimal latency.
 ---
 
 ## 📊 Performance
-
+---
 **Streaming‑JSON benchmark (time *per chunk*)**
 
-* 10 kB JSON streamed in 100 / 1 000 / 5 000 pieces.
+* 16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces (the `response_large.json` file).
 * **Implementations**
 
-  * `jsonmodem::StreamingParser` – single‑pass state machine
-  * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with
-    `serde_json`
-  * [`partial_json_fixer`](https://crates.io/crates/partial-json-fixer) - Rust crate
+  * `jsonmodem::StreamingParser` – single-pass state machine. `NonScalarValueMode` controls memory usage:
+    * `None` – no objects or arrays are buffered.
+    * `Roots` – root objects and arrays are buffered.
+    * `All` – every object and array is buffered.
+  * `jsonmodem::StreamingValuesParser` – yields a collection of parsed values each call.
+  * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with `serde_json`.
+  * `fix_json_parse` – helper from Vercel AI's library.
+  * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
 
-**Result:** `jsonmodem::StreamingParser` is nearly 100 times faster because it never rebuilds or
-  re‑parses the buffer, with greater performance improvements as documents grow longer or are
-  streamed as more pieces.
+These implementations produce different outputs: `StreamingValuesParser`, `parse_partial_json`, `fix_json_parse`, and `jiter` emit a value for each chunk, while `StreamingParser` yields discrete parse events that may be combined later.
 
-| chunks |     jsonmodem   |  parse_partial_json  |  partial_json_fixer  | speed-up\* |
-| -----: | --------------: | -------------------: | -------------------: | ---------: |
-|    100 |      **75 µs** |             1 627 µs |             1 552 µs |  **20.8×** |
-|  1 000 |      **196 µs** |            16 347 µs |            15 339 µs |  **78.1×** |
-|  5 000 |      **730 µs** |            81 673 µs |            76 610 µs | **105.0×** |
+| chunks | parser_none | parser_roots | parser_all | values_parser | parse_partial_json | fix_json_parse | jiter_partial | jiter_partial_owned |
+| -----: | ----------: | -----------: | ---------: | -------------: | -----------------: | -------------: | ------------: | -------------------: |
+|    100 |     115 μs |      141 μs |     144 μs |        673 μs |            5.35 ms |         3.92 ms |      1.05 ms |              1.75 ms |
+|  1 000 |     211 μs |      257 μs |     271 μs |        5.16 ms |            50.4 ms |         36.9 ms |      9.93 ms |              15.9 ms |
+|  5 000 |     589 μs |      667 μs |     730 μs |        22.9 ms |             222 ms |          164 ms |       42.3 ms |              67.1 ms |
 
-\* Versus the fastest helper (`partial_json_fixer`). Benchmarked with Criterion.
-
----
+Benchmarked with Criterion. Lower is faster.
 
 ## 🔭 Roadmap
 
