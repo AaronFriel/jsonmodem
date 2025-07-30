@@ -104,8 +104,6 @@ the user with minimal latency.
 |  1 000 |           211 μs|              5,160 μs |            50,400 μs |        36,900 μs |   15,900 μs |
 |  5 000 |           589 μs|             22,900 μs |           222,000 μs |       164,000 μs |   67,100 μs |
 
-Benchmarked with Criterion. Lower is faster.
-
 ## 🔭 Roadmap
 
 | Target              | Status      | Notes                       |
