@@ -84,7 +84,6 @@ the user with minimal latency.
 ---
 
 ## 📊 Performance
----
 **Streaming‑JSON benchmark (time *per chunk*)**
 
 * 16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces (the `response_large.json` file).
