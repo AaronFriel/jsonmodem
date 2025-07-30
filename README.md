@@ -101,7 +101,6 @@ the user with minimal latency.
 These implementations produce different outputs: `jsonmodem::StreamingValuesParser` (below as "Values"), `parse_partial_json`, `fix_json_parse`, and `jiter` emit a value for each chunk fed to the parser, while `jsonmodem::StreamingParser` has modes that produce parse events.
 
 
-The first four columns use `jsonmodem`, respectively:
 
 * Default: ``jsonmodem::StreamingParser` with `NonScalarValueMode` of `None`. Parse events are emitted for every null, boolean, numeric, and string chunk parsed.
 * Roots: The above, and the fully parsed JSON value is also built in memory and emitted as a parse event with an empty path on completely parsing a value.
