@@ -99,9 +99,18 @@ the user with minimal latency.
   * `fix_json_parse` – helper from Vercel AI's library.
   * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
 
-These implementations produce different outputs: `StreamingValuesParser`, `parse_partial_json`, `fix_json_parse`, and `jiter` emit a value for each chunk, while `StreamingParser` yields discrete parse events that may be combined later.
+These implementations produce different outputs: `jsonmodem::StreamingValuesParser` (below as "Values"), `parse_partial_json`, `fix_json_parse`, and `jiter` emit a value for each chunk fed to the parser, while `jsonmodem::StreamingParser` has modes that produce parse events.
 
-| chunks | parser_none | parser_roots | parser_all | values_parser | parse_partial_json | fix_json_parse | jiter_partial | jiter_partial_owned |
+The jsonmodem default, roots, and all 
+
+The first four columns use `jsonmodem`, respectively:
+
+* Default: ``jsonmodem::StreamingParser` with `NonScalarValueMode` of `None`. Parse events are emitted for every null, boolean, numeric, and string chunk parsed.
+* Roots: The above, and the fully parsed JSON value is also built in memory and emitted as a parse event with an empty path on completely parsing a value.
+* All: Will also emit all array and object values at every depth.
+* Values: Uses `jsonmodem::StreamingValuesParser`, which instead of producing parse events on iteration, produces whole values. 
+
+| chunks | Default | Roots | All | Values | `parse_partial_json` | `fix_json_parse` | `jiter_partial` | `jiter_partial_owned` |
 | -----: | ----------: | -----------: | ---------: | -------------: | -----------------: | -------------: | ------------: | -------------------: |
 |    100 |     115 μs |      141 μs |     144 μs |        673 μs |            5.35 ms |         3.92 ms |      1.05 ms |              1.75 ms |
 |  1 000 |     211 μs |      257 μs |     271 μs |        5.16 ms |            50.4 ms |         36.9 ms |      9.93 ms |              15.9 ms |
