@@ -54,6 +54,10 @@ name = "streaming_json_medium"
 harness = false
 
 [[bench]]
+name = "streaming_json_large"
+harness = false
+
+[[bench]]
 name = "streaming_json_incremental"
 harness = false
 

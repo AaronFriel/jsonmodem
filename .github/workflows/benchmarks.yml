@@ -15,6 +15,7 @@ jobs:
           - competitive_benchmarks
           - streaming_json_strategies
           - streaming_json_medium
+          - streaming_json_large
           - streaming_json_incremental
           - streaming_parser
     steps:
