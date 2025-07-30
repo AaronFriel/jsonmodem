@@ -90,18 +90,17 @@ the user with minimal latency.
 * 16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces (the `response_large.json` file).
 * **Implementations**
 
-  * `jsonmodem::StreamingParser` – single-pass state machine. `NonScalarValueMode` controls memory usage:
-    * `None` – no objects or arrays are buffered.
-    * `Roots` – root objects and arrays are buffered.
-    * `All` – every object and array is buffered.
-  * `jsonmodem::StreamingValuesParser` – yields a collection of parsed values each call.
+  * `jsonmodem::StreamingParser` – single-pass state machine. `NonScalarValueMode` controls memory usage and is rendered in the table below:
+    * `None` (the `jsonmodem` column) – no objects or arrays are emitted. This is the default and recommended for streaming servers.
+    * `Roots` – root objects and arrays are buffered and emitted as parse events.
+    * `All` – every object and array is emitted as a parse event.
+  * `Values` - uses `jsonmodem::StreamingValuesParser`, yields parsed values each chunk parsed.
   * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with `serde_json`.
   * `fix_json_parse` – helper from Vercel AI's library.
   * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
 
 These implementations produce different outputs: `jsonmodem::StreamingValuesParser` (below as "Values"), `parse_partial_json`, `fix_json_parse`, and `jiter` emit a value for each chunk fed to the parser, while `jsonmodem::StreamingParser` has modes that produce parse events.
 
-The jsonmodem default, roots, and all 
 
 The first four columns use `jsonmodem`, respectively:
 
