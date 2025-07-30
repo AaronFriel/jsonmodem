@@ -1,0 +1,98 @@
+{
+  "person": {
+    "id": "d50887ca-a6ce-4e59-b89f-14f0b5d03b03",
+    "name": {
+      "fullName": "Leonid Bugaev",
+      "givenName": "Leonid",
+      "familyName": "Bugaev"
+    },
+    "email": "leonsbox@gmail.com",
+    "gender": "male",
+    "location": "Saint Petersburg, Saint Petersburg, RU",
+    "geo": {
+      "city": "Saint Petersburg",
+      "state": "Saint Petersburg",
+      "country": "Russia",
+      "lat": 59.9342802,
+      "lng": 30.3350986
+    },
+    "bio": "Senior engineer at Granify.com",
+    "site": "http://flickfaver.com",
+    "avatar": "https://d1ts43dypk8bqh.cloudfront.net/v1/avatars/d50887ca-a6ce-4e59-b89f-14f0b5d03b03",
+    "employment": {
+      "name": "www.latera.ru",
+      "title": "Software Engineer",
+      "domain": "gmail.com"
+    },
+    "facebook": {
+      "handle": "leonid.bugaev"
+    },
+    "github": {
+      "handle": "buger",
+      "id": 14009,
+      "avatar": "https://avatars.githubusercontent.com/u/14009?v=3",
+      "company": "Granify",
+      "blog": "http://leonsbox.com",
+      "followers": 95,
+      "following": 10
+    },
+    "twitter": {
+      "handle": "flickfaver",
+      "id": 77004410,
+      "bio": null,
+      "followers": 2,
+      "following": 1,
+      "statuses": 5,
+      "favorites": 0,
+      "location": "",
+      "site": "http://flickfaver.com",
+      "avatar": null
+    },
+    "linkedin": {
+      "handle": "in/leonidbugaev"
+    },
+    "googleplus": {
+      "handle": null
+    },
+    "angellist": {
+      "handle": "leonid-bugaev",
+      "id": 61541,
+      "bio": "Senior engineer at Granify.com",
+      "blog": "http://buger.github.com",
+      "site": "http://buger.github.com",
+      "followers": 41,
+      "avatar": "https://d1qb2nb5cznatu.cloudfront.net/users/61541-medium_jpg?1405474390"
+    },
+    "klout": {
+      "handle": null,
+      "score": null
+    },
+    "foursquare": {
+      "handle": null
+    },
+    "aboutme": {
+      "handle": "leonid.bugaev",
+      "bio": null,
+      "avatar": null
+    },
+    "gravatar": {
+      "handle": "buger",
+      "urls": [],
+      "avatar": "http://1.gravatar.com/avatar/f7c8edd577d13b8930d5522f28123510",
+      "avatars": [
+        {
+          "url": "http://1.gravatar.com/avatar/f7c8edd577d13b8930d5522f28123510",
+          "type": "thumbnail"
+        }
+      ]
+    },
+    "fuzzy": false
+  },
+  "company": null,
+  "code": {
+    "python": "class TrieNode:\n    def __init__(self):\n        self.children = {}\n        self.is_end = False\n\nclass Trie:\n    def __init__(self):\n        self.root = TrieNode()\n    \n    def insert(self, word):\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                node.children[char] = TrieNode()\n            node = node.children[char]\n        node.is_end = True\n\n    def search(self, word):\n        node = self.root\n        for char in word:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return node.is_end\n\n    def starts_with(self, prefix):\n        node = self.root\n        for char in prefix:\n            if char not in node.children:\n                return False\n            node = node.children[char]\n        return True",
+    "haskell": "import qualified Data.Map as Map\nimport Data.Maybe (fromMaybe)\n\ndata Trie = Trie { isEnd :: Bool,\n                   children :: Map.Map Char Trie }\n    deriving (Show)\n\nemptyTrie :: Trie\nemptyTrie = Trie False Map.empty\n\ninsert :: String -> Trie -> Trie\ninsert []     (Trie _ ch) = Trie True ch\ninsert (c:cs) (Trie end ch) =\n    Trie end (Map.alter (Just . insert cs . fromMaybe emptyTrie) c ch)\n\nsearch :: String -> Trie -> Bool\nsearch []     (Trie end _) = end\nsearch (c:cs) (Trie _ ch) = case Map.lookup c ch of\n                              Nothing -> False\n                              Just t  -> search cs t\n\nstartsWith :: String -> Trie -> Bool\nstartsWith [] _ = True\nstartsWith (c:cs) (Trie _ ch) = case Map.lookup c ch of\n                                  Nothing -> False\n                                  Just t  -> startsWith cs t",
+    "rust": "use std::collections::HashMap;\n\n#[derive(Default)]\nstruct TrieNode {\n    children: HashMap<char, TrieNode>,\n    is_end: bool,\n}\n\nimpl TrieNode {\n    fn new() -> Self {\n        TrieNode {\n            children: HashMap::new(),\n            is_end: false,\n        }\n    }\n}\n\npub struct Trie {\n    root: TrieNode,\n}\n\nimpl Trie {\n    pub fn new() -> Self {\n        Trie {\n            root: TrieNode::new(),\n        }\n    }\n\n    pub fn insert(&mut self, word: &str) {\n        let mut node = &mut self.root;\n        for c in word.chars() {\n            node = node.children.entry(c).or_insert_with(TrieNode::new);\n        }\n        node.is_end = true;\n    }\n\n    pub fn search(&self, word: &str) -> bool {\n        let mut node = &self.root;\n        for c in word.chars() {\n            if let Some(next) = node.children.get(&c) {\n                node = next;\n            } else {\n                return false;\n            }\n        }\n        node.is_end\n    }\n\n    pub fn starts_with(&self, prefix: &str) -> bool {\n        let mut node = &self.root;\n        for c in prefix.chars() {\n            if let Some(next) = node.children.get(&c) {\n                node = next;\n            } else {\n                return false;\n            }\n        }\n        true\n    }\n}"
+  },
+  "analysis": "# Comparative Review of Trie Implementations in Python, Haskell, and Rust\n\n## Introduction\n\nTries, or prefix trees, are fundamental data structures in information retrieval, facilitating efficient storage and lookup of strings. This comparative analysis scrutinizes three such implementations in Python, Haskell, and Rust, focusing on the impact of language paradigms, expressiveness, and system-level features on code quality, maintainability, and correctness. The discussion meticulously addresses algorithmic fidelity, idiomaticity, landscape of error handling, and the broader trade-offs inherent to each linguistic approach.\n\n## 1. Feature Sets of the Target Languages\n\n### Python\n\nPython is an interpreted, dynamically-typed, high-level language renowned for its readability and brevity. The reference implementation leverages Python\u2019s dynamic object system and built-in dictionary for node linkage. Duck typing and lack of compile-time checks prioritize ease of use and flexibility over static safety.\n\n### Haskell\n\nHaskell, a purely functional language, boasts type inference, algebraic data types, and immutable data structures. Its approach to Tries harnesses recursive algebraic types and the powerful features of the `Data.Map` module, prioritizing elegance, safety, and declarative abstraction.\n\n### Rust\n\nA modern system language, Rust combines performance similar to C/C++ with memory safety guarantees via ownership and borrowing semantics. Its standard library offers hash maps and sophisticated struct definitions. The Rust implementation of Trie offers explicit control over structure and mutability and makes trade-offs between performance and expressiveness.\n\n## 2. Implementation Quality\n\n### Python Implementation\n\n**Structure and Clarity:**  \nThe Python implementation separates the `TrieNode` and `Trie` objects, providing clear encapsulation. Each node\u2019s children are stored as a dictionary mapping characters to child nodes.  \n**Idiomaticity:**  \nPythonic conventions are well-observed with `__init__` constructors and methods named after intuitive semantic actions (`insert`, `search`, and `starts_with`).  \n**Performance Trade-offs:**  \nThe use of Python dictionaries for children ensures average-case O(1) lookups per node, but with substantial memory overhead owing to the dynamic typing and object representation.  \n**Error Handling:**  \nLimited error handling is present, with the implicit contract that arguments are strings and the trie is used as intended. Python\u2019s typical philosophy is followed: errors arising from misuse would likely be \"loud\" (e.g., via exceptions), aligning with its \"easier to seek forgiveness than permission\" attitude.  \n**Correctness:**  \nAlgorithmically, the operations are correct. Each character in the string is traversed, nodes are created on demand, and the terminal marker `is_end` is accurately set and checked.\n\n### Haskell Implementation\n\n**Structure and Clarity:**  \nThe Haskell Trie is defined as an algebraic data type with two fields: a `Bool` for end-of-word marking and a `Map` for children. Immutability is enforced by the language, and recursion elegantly models operations.  \n**Idiomaticity:**  \nThe implementation is idiomatic, with concise pattern matching and higher-order functions. Use of `fromMaybe` together with `Map.alter` and `Just . insert cs . fromMaybe emptyTrie` provides expressive means of updating or inserting children.  \n**Performance Trade-offs:**  \nWhile elegant, `Data.Map` utilizes O(log n) lookups (as a balanced tree), unlike Python\u2019s O(1) hash map. This impacts raw speed but not asymptotic behavior for typical use cases, unless very large or deeply nested data is present.  \n**Error Handling:**  \nType safety is second to none: the compiler guarantees correct operation on valid string input, and operations on the `Map` are exhaustively handled via case analysis. Logical errors or misuse are almost impossible without explicit programmer intent.  \n**Correctness:**  \nBoth the recursive and functional characteristics of Haskell ensure correctness, especially as recursion directly mirrors the trie\u2019s logical structure. The separation of concerns is also improved through pure functions, facilitating both testing and reasoning.\n\n### Rust Implementation\n\n**Structure and Clarity:**  \nRust\u2019s implementation uses a struct for each node with a hash map for children and a Boolean for terminal marking. The `Trie` struct encapsulates the root node, and methods are defined with explicit mutability and type signatures.  \n**Idiomaticity:**  \nCareful adherence to Rust semantics is necessary. Mutable borrowing (`&mut self`) when inserting and immutable reference borrowing (`&self`) for lookup reflect the language\u2019s safety model. The use of `or_insert_with` when descending the tree exemplifies idiomatic Rust for in-place mutation.  \n**Performance Trade-offs:**  \nRust offers performance parity with C/C++, with highly predictable memory usage and no garbage collection. Hash maps provide efficient traversal. The explicitness can introduce verbosity, but also eliminates many classes of runtime bugs present in Python.  \n**Error Handling:**  \nRust\u2019s approach to safety is evident: all references are checked at compile time, and data races are impossible by design. Run-time errors (such as out-of-bounds access) are largely prevented by the type system and ownership model.  \n**Correctness:**  \nThe algorithm\u2019s correctness is assured by both the language and the implementation. The only manual risk would be in logic errors, which are unlikely due to the straightforward structure, explicit node creation, and clear trait contracts.\n\n## 3. Algorithmic Fidelity and Operations\n\nAll three variants implement the standard trie operations: insert, search, and prefix search. In each case, they:\n\n- Traverse the trie from the root, descending by each character.\n- Update or check the child map, creating nodes on-the-fly as needed during `insert`.\n- Set and check a Boolean terminal marker for distinguishing keys from prefixes.\n\nNo variant implements deletion or more advanced features (e.g., lexicographical traversal or memory optimization via compression), making them \"baseline\" trie exemplars.\n\n**Insert:**  \nAll three implementations guarantee each inserted word creates a unique path and marking its end node.\n\n**Search:**  \nString lookup terminates successfully if and only if all characters are present in order and the final node is designated as terminal.\n\n**Prefix Search:**  \nEach language enables a prefix search via traversal, halting and returning true if the path exists.\n\n## 4. Language-Driven Trade-Offs\n\n### Python\n\n- **Strengths:** Maximum brevity, readability, and ease of maintenance.\n- **Weaknesses:** Lacks compile-time assurance of type correctness; any misspelling or incorrect mutation remains undetected until execution. Suboptimal for large-scale or performance-intensive applications.\n- **Expressiveness:** High; the code reads \"like English\" and reveals exactly the programmer\u2019s intent, but at a modest performance price.\n- **Idioms:** Heavy use of dictionaries and class-based object orientation.\n\n### Haskell\n\n- **Strengths:** Impeccable safety; type errors, mode errors, and most logical errors are compile-time detected. The functional paradigm allows for succinct recursion.\n- **Weaknesses:** Subtle inefficiencies (tree-based maps, recursive structure) may affect raw speed. Steep learning curve for those unfamiliar with functional patterns.\n- **Expressiveness:** Extreme; trivial transformations and insertions/deletions of trie logic are easy, thanks to algebraic types and higher-order operations.\n- **Idioms:** Recursion, pattern matching, algebraic data, and type classes.\n\n### Rust\n\n- **Strengths:** Blends C-level performance and predictability with memory safety. The language\u2019s strictness enforces correct lifetime and mutability, preventing common bugs.\n- **Weaknesses:** Relative verbosity; programmers must explicitly manage mutability and borrowing in all paths. Slight increase in code volume and cognitive overhead.\n- **Expressiveness:** High once the language is mastered; slightly less direct than Python for basic data structures, but far safer.\n- **Idioms:** Ownership, mutable references, pattern matching, and trait-based encapsulation.\n\n## 5. Maintainability and Extensibility\n\nPython\u2019s implementation would be the easiest for rapid prototyping or for educational environments where correctness is enforced by external tests and where performance is not a primary concern.\n\nHaskell offers elegant solutions for bulk operations, parallelization, or adaptation to more complex trie variants (such as compressed tries or those supporting wildcards and regular expressions).\n\nRust is the optimal choice for embedding a trie in a network application, system daemon, or library where safety, performance, and careful control over memory and mutability are paramount.\n\n## 6. Summary Table\n\n| Feature               | Python           | Haskell         | Rust                |\n|-----------------------|------------------|-----------------|---------------------|\n| Paradigm              | OO, dynamic      | Functional      | System, static      |\n| Safety                | Dynamic (low)    | Compile-time    | Compile-time strong |\n| Performance           | Modest           | Moderate        | High                |\n| Expressiveness        | High             | Extreme         | High                |\n| Ease of Use           | Highest          | Moderate        | Moderate            |\n| Idiomaticity          | Yes              | Yes             | Yes                 |\n| Mutability            | Implicit         | Immutable       | Explicit            |\n| Dictionary/Map Lookup | O(1)             | O(log n)        | O(1)                |\n| Code Verbosity        | Low              | Low             | Moderate            |\n\n## 7. Final Considerations\n\nThe selection of language and the associated implementation is a function of desired application properties: if clarity, scriptability, and low cognitive load are priorities, Python excels. For research, correctness, and elegant expressiveness, Haskell is supreme. For high-performance, safety-critical, and resource-constrained software, Rust dominates.\n\nWhile each implementation adheres to its own idiomatic patterns, all three deliver the essential functionality of a trie in a commendably clear and maintainable fashion. Ultimately, the choice between them should reflect the broader system context and the constraints imposed by the target environment."
+}
