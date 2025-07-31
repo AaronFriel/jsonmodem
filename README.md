@@ -84,30 +84,25 @@ the user with minimal latency.
 ---
 
 ## 📊 Performance
-
 **Streaming‑JSON benchmark (time *per chunk*)**
 
-* 10 kB JSON streamed in 100 / 1 000 / 5 000 pieces.
+* 16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces (the `response_large.json` file).
 * **Implementations**
 
-  * `jsonmodem::StreamingParser` – single‑pass state machine
-  * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with
-    `serde_json`
-  * [`partial_json_fixer`](https://crates.io/crates/partial-json-fixer) - Rust crate
+  * `jsonmodem::StreamingParser`, emits parse events for values with low overhead.
+  * `jsonmodem::StreamingValuesParser`, yields parsed values each chunk parsed. A drop-in replacement for `jiter`, `partial_json_fixer`.
+  * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with `serde_json`.
+  * `fix_json_parse` – helper from Vercel AI's library.
+  * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
 
-**Result:** `jsonmodem::StreamingParser` is nearly 100 times faster because it never rebuilds or
-  re‑parses the buffer, with greater performance improvements as documents grow longer or are
-  streamed as more pieces.
 
-| chunks |     jsonmodem   |  parse_partial_json  |  partial_json_fixer  | speed-up\* |
-| -----: | --------------: | -------------------: | -------------------: | ---------: |
-|    100 |      **75 µs** |             1 627 µs |             1 552 µs |  **20.8×** |
-|  1 000 |      **196 µs** |            16 347 µs |            15 339 µs |  **78.1×** |
-|  5 000 |      **730 µs** |            81 673 µs |            76 610 µs | **105.0×** |
 
-\* Versus the fastest helper (`partial_json_fixer`). Benchmarked with Criterion.
 
----
+| chunks | StreamingParser | StreamingValuesParser | `parse_partial_json` | `fix_json_parse` |   `jiter`   |
+| -----: | --------------: | --------------------: | -------------------: | ---------------: | ----------: |
+|    100 |           115 μs|                673 μs |             5,350 μs |         3,920 μs |    1,750 μs |
+|  1 000 |           211 μs|              5,160 μs |            50,400 μs |        36,900 μs |   15,900 μs |
+|  5 000 |           589 μs|             22,900 μs |           222,000 μs |       164,000 μs |   67,100 μs |
 
 ## 🔭 Roadmap
 
