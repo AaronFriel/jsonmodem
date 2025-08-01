@@ -15,10 +15,12 @@ fuzzing = []
 serde = []
 bench = []
 comparison = []
+pyo3 = ["dep:pyo3"]
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
+pyo3 = { version = "0.25.1", optional = true }
 
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["yaml"] }

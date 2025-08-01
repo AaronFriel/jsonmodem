@@ -1,19 +1,19 @@
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{
     ParseEvent, Value,
-    value::Map,
+    factory::{JsonFactory, StdFactory},
     value_zipper::{ValueBuilder, ZipperError},
 };
 
 #[derive(Debug)]
-pub(crate) struct EventStack {
+pub(crate) struct EventStack<F: JsonFactory<Any = Value> = StdFactory> {
     events: Vec<ParseEvent>,
-    builder: Option<ValueBuilder>,
+    builder: Option<ValueBuilder<F>>,
 }
 
-impl EventStack {
-    pub(crate) fn new(events: Vec<ParseEvent>, builder: Option<ValueBuilder>) -> Self {
+impl<F: JsonFactory<Any = Value> + Default> EventStack<F> {
+    pub(crate) fn new(events: Vec<ParseEvent>, builder: Option<ValueBuilder<F>>) -> Self {
         Self { events, builder }
     }
 
@@ -31,18 +31,34 @@ impl EventStack {
             match &mut event {
                 // scalars
                 ParseEvent::Null { path } => {
-                    builder.set(path.last(), Value::Null)?;
+                    let v = {
+                        let f = builder.factory();
+                        f.into_any_null(f.new_null())
+                    };
+                    builder.set(path.last(), v)?;
                 }
                 ParseEvent::Boolean { path, value } => {
-                    builder.set(path.last(), (*value).into())?;
+                    let v = {
+                        let f = builder.factory();
+                        f.into_any_bool(f.new_bool(*value))
+                    };
+                    builder.set(path.last(), v)?;
                 }
                 ParseEvent::Number { path, value } => {
-                    builder.set(path.last(), (*value).into())?;
+                    let v = {
+                        let f = builder.factory();
+                        f.into_any_num(f.new_number(*value))
+                    };
+                    builder.set(path.last(), v)?;
                 }
                 ParseEvent::String { fragment, path, .. } => {
+                    let init = {
+                        let f = builder.factory();
+                        f.into_any_str(f.new_string(""))
+                    };
                     builder.mutate_with(
                         path.last(),
-                        || Value::String(String::new()),
+                        || init,
                         |v| {
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
@@ -56,10 +72,18 @@ impl EventStack {
 
                 // ── container starts ───────────────────────────────────────
                 ParseEvent::ObjectBegin { path } => {
-                    builder.enter_with(path.last(), || Value::Object(Map::new()))?;
+                    let init = {
+                        let f = builder.factory();
+                        f.into_any_object(f.new_object())
+                    };
+                    builder.enter_with(path.last(), || init)?;
                 }
                 ParseEvent::ArrayStart { path } => {
-                    builder.enter_with(path.last(), || Value::Array(Vec::new()))?;
+                    let init = {
+                        let f = builder.factory();
+                        f.into_any_array(f.new_array())
+                    };
+                    builder.enter_with(path.last(), || init)?;
                 }
 
                 // ── container ends ─────────────────────────────────────────
