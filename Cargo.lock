@@ -491,6 +491,7 @@ dependencies = [
  "jiter",
  "ouroboros",
  "paste",
+ "pyo3",
  "quickcheck",
  "quickcheck_macros",
  "rstest",

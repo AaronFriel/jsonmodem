@@ -393,7 +393,7 @@ impl StreamingParser {
                 if matches!(options.non_scalar_values, NonScalarValueMode::None) {
                     None
                 } else {
-                    Some(ValueBuilder::Empty)
+                    Some(ValueBuilder::<crate::factory::StdFactory>::default())
                 },
             ),
 
@@ -533,7 +533,7 @@ impl StreamingParser {
                     if matches!(self.non_scalar_values, NonScalarValueMode::None) {
                         None
                     } else {
-                        Some(ValueBuilder::Empty)
+                        Some(ValueBuilder::<crate::factory::StdFactory>::default())
                     },
                 );
             }
