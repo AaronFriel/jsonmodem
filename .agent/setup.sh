@@ -27,3 +27,7 @@ sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 
 # Attempt to enable perf events for the current user. This can fail if
 # /proc/sys is read-only, such as in CI containers, so ignore errors.
 sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid' || true
+
+# Install Maturin and Pytest for building and testing Python bindings
+pip3 install --user maturin pytest
+
