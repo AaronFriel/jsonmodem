@@ -19,7 +19,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
       - name: Run codex setup
-        run: /opt/codex/setup_universal.sh
+        run: HOME=/root /opt/codex/setup_universal.sh
       - name: Run setup
         run: .agent/setup.sh
       - name: Run checks
