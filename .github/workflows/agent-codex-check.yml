@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/openai/codex-universal:latest
+      env:
+        CODEX_ENV_RUST_VERSION: 1.87.0
+        CODEX_ENV_PYTHON_VERSION: 3.12
+        CODEX_ENV_GO_VERSION: 1.24.3
+        CODEX_ENV_NODE_VERSION: 22
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
