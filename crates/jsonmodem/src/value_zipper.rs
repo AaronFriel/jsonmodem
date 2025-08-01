@@ -333,14 +333,23 @@ impl core::error::Error for ZipperError {}
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-pub enum ValueBuilder {
+enum BuilderState {
     Empty,
     Ready(ValueZipper),
 }
 
-impl Default for ValueBuilder {
+#[derive(Debug)]
+pub struct ValueBuilder<F: crate::factory::JsonFactory<Any = Value>> {
+    state: BuilderState,
+    factory: F,
+}
+
+impl<F: crate::factory::JsonFactory<Any = Value> + Default> Default for ValueBuilder<F> {
     fn default() -> Self {
-        Self::Empty
+        Self {
+            state: BuilderState::Empty,
+            factory: F::default(),
+        }
     }
 }
 
@@ -356,28 +365,33 @@ macro_rules! raise {
     }};
 }
 
-impl ValueBuilder {
+impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
+    #[inline]
+    pub fn factory(&self) -> &F {
+        &self.factory
+    }
+
     // façade – these rely on the fact that root already exists; no clone needed
     #[inline]
-    pub fn enter_with<F>(
+    pub fn enter_with<G>(
         &mut self,
         pc: Option<&PathComponent>,
-        make_child: F,
+        make_child: G,
     ) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> Value,
+        G: FnOnce() -> Value,
     {
         match pc {
-            None if matches!(self, ValueBuilder::Empty) => {
-                *self = ValueBuilder::Ready(ValueZipper::new(make_child()));
+            None if matches!(self.state, BuilderState::Empty) => {
+                self.state = BuilderState::Ready(ValueZipper::new(make_child()));
                 Ok(())
             }
             None => {
                 raise!(ZipperError::ExpectedEmptyPath)
             }
-            Some(pc) => match self {
-                ValueBuilder::Ready(z) => z.enter_lazy(pc.clone(), make_child),
-                ValueBuilder::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
+            Some(pc) => match &mut self.state {
+                BuilderState::Ready(z) => z.enter_lazy(pc.clone(), make_child),
+                BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
             },
         }
     }
@@ -386,13 +400,13 @@ impl ValueBuilder {
     pub fn set(&mut self, pc: Option<&PathComponent>, value: Value) -> Result<(), ZipperError> {
         match pc {
             None => {
-                *self = ValueBuilder::Ready(ValueZipper::new(value));
+                self.state = BuilderState::Ready(ValueZipper::new(value));
                 Ok(())
             }
-            Some(pc) => match self {
-                ValueBuilder::Ready(z) => z.set_at(pc.clone(), value),
+            Some(pc) => match &mut self.state {
+                BuilderState::Ready(z) => z.set_at(pc.clone(), value),
                 #[cfg_attr(coverage_nightly, coverage(off))]
-                ValueBuilder::Empty => raise!(ZipperError::ExpectedEmptyPath),
+                BuilderState::Empty => raise!(ZipperError::ExpectedEmptyPath),
             },
         }
     }
@@ -409,21 +423,21 @@ impl ValueBuilder {
         M: FnOnce(&mut Value) -> Result<(), ZipperError>,
     {
         match pc {
-            None if matches!(self, ValueBuilder::Empty) => {
+            None if matches!(self.state, BuilderState::Empty) => {
                 let mut v = make_default();
                 mutator(&mut v)?;
-                *self = ValueBuilder::Ready(ValueZipper::new(v));
+                self.state = BuilderState::Ready(ValueZipper::new(v));
                 Ok(())
             }
-            None => match self {
-                ValueBuilder::Ready(z) => mutator(z.current_mut()),
+            None => match &mut self.state {
+                BuilderState::Ready(z) => mutator(z.current_mut()),
                 #[cfg_attr(coverage_nightly, coverage(off))]
-                ValueBuilder::Empty => raise!(ZipperError::ExpectedEmptyPath),
+                BuilderState::Empty => raise!(ZipperError::ExpectedEmptyPath),
             },
-            Some(pc) => match self {
-                ValueBuilder::Ready(z) => z.mutate_lazy(pc.clone(), make_default, mutator),
+            Some(pc) => match &mut self.state {
+                BuilderState::Ready(z) => z.mutate_lazy(pc.clone(), make_default, mutator),
                 #[cfg_attr(coverage_nightly, coverage(off))]
-                ValueBuilder::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
+                BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
             },
         }
     }
@@ -431,25 +445,25 @@ impl ValueBuilder {
     #[allow(clippy::unnecessary_wraps)]
     #[inline]
     pub fn pop(&mut self) -> Result<&mut Value, ZipperError> {
-        match self {
-            ValueBuilder::Ready(z) => Ok(z.pop()),
-            ValueBuilder::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
+        match &mut self.state {
+            BuilderState::Ready(z) => Ok(z.pop()),
+            BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
         }
     }
 
     #[inline]
     pub fn read_root(&self) -> Option<&Value> {
-        match self {
-            ValueBuilder::Ready(z) => Some(z.read_root()),
-            ValueBuilder::Empty => None,
+        match &self.state {
+            BuilderState::Ready(z) => Some(z.read_root()),
+            BuilderState::Empty => None,
         }
     }
 
     #[inline]
     pub fn into_value(self) -> Option<Value> {
-        match self {
-            ValueBuilder::Ready(z) => Some(z.into_value()),
-            ValueBuilder::Empty => None,
+        match self.state {
+            BuilderState::Ready(z) => Some(z.into_value()),
+            BuilderState::Empty => None,
         }
     }
 }
@@ -461,7 +475,7 @@ impl ValueBuilder {
 #[cfg(test)]
 pub struct StreamingParserBuilder {
     parser: StreamingParser,
-    state: ValueBuilder,
+    state: ValueBuilder<crate::factory::StdFactory>,
 }
 
 #[cfg(test)]
@@ -469,7 +483,7 @@ impl StreamingParserBuilder {
     pub fn new(options: ParserOptions) -> Self {
         Self {
             parser: StreamingParser::new(options),
-            state: ValueBuilder::Empty,
+            state: ValueBuilder::<crate::factory::StdFactory>::default(),
         }
     }
 
@@ -763,7 +777,7 @@ mod tests {
 
     #[test]
     fn builder_usage_simple() {
-        let mut builder = ValueBuilder::default();
+        let mut builder = ValueBuilder::<crate::factory::StdFactory>::default();
         assert!(builder.read_root().is_none());
         // Initialize root as an object
         builder
@@ -785,7 +799,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "operation would pop past the root")]
     fn builder_pop_errors() {
-        let mut builder = ValueBuilder::default();
+        let mut builder = ValueBuilder::<crate::factory::StdFactory>::default();
         // Popping when empty should panic in test configuration
         builder.pop().unwrap();
     }
