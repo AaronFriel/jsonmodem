@@ -1,3 +1,5 @@
+#![allow(clippy::inline_always)]
+
 use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, vec::Vec};
 
 use crate::value::Value;
@@ -44,72 +46,72 @@ impl JsonFactory for StdFactory {
     type Object = BTreeMap<String, Value>;
     type Any = Value;
 
-    #[inline]
+    #[inline(always)]
     fn new_null(&self) -> Self::Null {
         // unit type has a default return
     }
 
-    #[inline]
+    #[inline(always)]
     fn new_bool(&self, b: bool) -> Self::Bool {
         b
     }
 
-    #[inline]
+    #[inline(always)]
     fn new_number(&self, n: f64) -> Self::Num {
         n
     }
 
-    #[inline]
+    #[inline(always)]
     fn new_string(&self, s: &str) -> Self::Str {
         s.to_owned()
     }
 
-    #[inline]
+    #[inline(always)]
     fn new_array(&self) -> Self::Array {
         Vec::new()
     }
 
-    #[inline]
+    #[inline(always)]
     fn new_object(&self) -> Self::Object {
         BTreeMap::new()
     }
 
-    #[inline]
+    #[inline(always)]
     fn push_array(&self, array: &mut Self::Array, val: Self::Any) {
         array.push(val);
     }
 
-    #[inline]
+    #[inline(always)]
     fn insert_object(&self, obj: &mut Self::Object, key: &str, val: Self::Any) {
         obj.insert(key.to_owned(), val);
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_str(&self, s: Self::Str) -> Self::Any {
         Value::String(s)
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_num(&self, n: Self::Num) -> Self::Any {
         Value::Number(n)
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_bool(&self, b: Self::Bool) -> Self::Any {
         Value::Boolean(b)
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_null(&self, _n: Self::Null) -> Self::Any {
         Value::Null
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_array(&self, a: Self::Array) -> Self::Any {
         Value::Array(a)
     }
 
-    #[inline]
+    #[inline(always)]
     fn into_any_object(&self, o: Self::Object) -> Self::Any {
         Value::Object(o)
     }
