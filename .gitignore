@@ -3,3 +3,6 @@
 actionlint
 
 /crates/jsonmodem-py/target/
+.venv
+.agent/.setup_py_done
+.agent/.setup_done
