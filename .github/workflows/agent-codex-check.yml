@@ -8,18 +8,24 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/openai/codex-universal:latest
-      env:
-        CODEX_ENV_RUST_VERSION: 1.87.0
-        CODEX_ENV_PYTHON_VERSION: 3.12
-        CODEX_ENV_GO_VERSION: 1.24.3
-        CODEX_ENV_NODE_VERSION: 22
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Run codex setup
-        run: HOME=/root /opt/codex/setup_universal.sh
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - name: Run setup
         run: .agent/setup.sh
       - name: Run checks
