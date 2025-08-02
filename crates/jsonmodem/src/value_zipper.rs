@@ -1,5 +1,3 @@
-#![allow(clippy::enum_glob_use)]
-
 use alloc::{boxed::Box, collections::btree_map::Entry, string::String, vec::Vec};
 use core::{cmp::Ordering, ptr::NonNull};
 
@@ -309,19 +307,18 @@ pub enum ZipperError {
 
 impl core::fmt::Display for ZipperError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        use ZipperError::*;
         write!(
             f,
             "{}",
             match self {
-                ExpectedObject => "expected an object at the current path",
-                ExpectedArray => "expected an array at the current path",
-                InvalidArrayIndex => "invalid array index",
-                ExpectedEmptyPath => "operation requires an empty path",
-                ExpectedNonEmptyPath => "operation would pop past the root",
-                ExpectedString => "expected the root to be a string",
+                Self::ExpectedObject => "expected an object at the current path",
+                Self::ExpectedArray => "expected an array at the current path",
+                Self::InvalidArrayIndex => "invalid array index",
+                Self::ExpectedEmptyPath => "operation requires an empty path",
+                Self::ExpectedNonEmptyPath => "operation would pop past the root",
+                Self::ExpectedString => "expected the root to be a string",
                 #[cfg(test)]
-                ParserError => "parser error occurred",
+                Self::ParserError => "parser error occurred",
             }
         )
     }
@@ -354,15 +351,9 @@ impl<F: crate::factory::JsonFactory<Any = Value> + Default> Default for ValueBui
 }
 
 macro_rules! raise {
-    ($err:expr) => {{
-        #[cfg(test)]
-        {
-            panic!("ZipperError: {}", $err);
-        }
-
-        #[cfg(not(test))]
-        return Err($err);
-    }};
+    ($err:expr) => {
+        return Err($err)
+    };
 }
 
 impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
@@ -442,7 +433,6 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
         }
     }
 
-    #[allow(clippy::unnecessary_wraps)]
     #[inline]
     pub fn pop(&mut self) -> Result<&mut Value, ZipperError> {
         match &mut self.state {
@@ -797,10 +787,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "operation would pop past the root")]
     fn builder_pop_errors() {
         let mut builder = ValueBuilder::<crate::factory::StdFactory>::default();
-        // Popping when empty should panic in test configuration
-        builder.pop().unwrap();
+        // Popping when empty should yield an error
+        assert_eq!(builder.pop(), Err(ZipperError::ExpectedNonEmptyPath));
     }
 }

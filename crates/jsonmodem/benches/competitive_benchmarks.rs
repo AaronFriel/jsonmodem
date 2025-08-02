@@ -1,5 +1,5 @@
-#![allow(missing_docs)]
 #![cfg(feature = "comparison")]
+#![allow(missing_docs)]
 //! Benchmark comparison of jiter, `serde_json`, and jsonmodem
 //!
 //! ```text
@@ -109,23 +109,22 @@ fn jiter_iter_big(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     });
 }
 
+fn find_string(jiter: &mut Jiter) -> String {
+    match jiter.peek().unwrap() {
+        Peek::String => jiter.known_str().unwrap().to_string(),
+        Peek::Array => {
+            assert!(jiter.known_array().unwrap().is_some());
+            let s = find_string(jiter).to_string();
+            assert!(jiter.array_step().unwrap().is_none());
+            s
+        }
+        _ => panic!("Expected string or array"),
+    }
+}
+
 fn jiter_iter_pass2(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
     let json_data = black_box(json.as_bytes());
-
-    #[allow(clippy::items_after_statements)]
-    fn find_string(jiter: &mut Jiter) -> String {
-        match jiter.peek().unwrap() {
-            Peek::String => jiter.known_str().unwrap().to_string(),
-            Peek::Array => {
-                assert!(jiter.known_array().unwrap().is_some());
-                let s = find_string(jiter).to_string();
-                assert!(jiter.array_step().unwrap().is_none());
-                s
-            }
-            _ => panic!("Expected string or array"),
-        }
-    }
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {

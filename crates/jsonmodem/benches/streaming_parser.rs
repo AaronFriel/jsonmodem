@@ -1,5 +1,5 @@
-#![allow(missing_docs)]
 //! Benchmark – `jsonmodem::StreamingParser`
+#![allow(missing_docs)]
 
 use std::time::Duration;
 

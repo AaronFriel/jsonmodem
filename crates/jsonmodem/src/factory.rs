@@ -5,7 +5,6 @@ use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, vec::Vec};
 use crate::value::Value;
 
 /// Abstraction over JSON value construction.
-#[allow(clippy::wrong_self_convention)]
 pub trait JsonFactory {
     type Str;
     type Num;
@@ -25,12 +24,12 @@ pub trait JsonFactory {
     fn push_array(&self, array: &mut Self::Array, val: Self::Any);
     fn insert_object(&self, obj: &mut Self::Object, key: &str, val: Self::Any);
 
-    fn into_any_str(&self, s: Self::Str) -> Self::Any;
-    fn into_any_num(&self, n: Self::Num) -> Self::Any;
-    fn into_any_bool(&self, b: Self::Bool) -> Self::Any;
-    fn into_any_null(&self, n: Self::Null) -> Self::Any;
-    fn into_any_array(&self, a: Self::Array) -> Self::Any;
-    fn into_any_object(&self, o: Self::Object) -> Self::Any;
+    fn any_from_str(&self, s: Self::Str) -> Self::Any;
+    fn any_from_num(&self, n: Self::Num) -> Self::Any;
+    fn any_from_bool(&self, b: Self::Bool) -> Self::Any;
+    fn any_from_null(&self, n: Self::Null) -> Self::Any;
+    fn any_from_array(&self, a: Self::Array) -> Self::Any;
+    fn any_from_object(&self, o: Self::Object) -> Self::Any;
 }
 
 /// Factory producing standard Rust values.
@@ -87,32 +86,32 @@ impl JsonFactory for StdFactory {
     }
 
     #[inline(always)]
-    fn into_any_str(&self, s: Self::Str) -> Self::Any {
+    fn any_from_str(&self, s: Self::Str) -> Self::Any {
         Value::String(s)
     }
 
     #[inline(always)]
-    fn into_any_num(&self, n: Self::Num) -> Self::Any {
+    fn any_from_num(&self, n: Self::Num) -> Self::Any {
         Value::Number(n)
     }
 
     #[inline(always)]
-    fn into_any_bool(&self, b: Self::Bool) -> Self::Any {
+    fn any_from_bool(&self, b: Self::Bool) -> Self::Any {
         Value::Boolean(b)
     }
 
     #[inline(always)]
-    fn into_any_null(&self, _n: Self::Null) -> Self::Any {
+    fn any_from_null(&self, _n: Self::Null) -> Self::Any {
         Value::Null
     }
 
     #[inline(always)]
-    fn into_any_array(&self, a: Self::Array) -> Self::Any {
+    fn any_from_array(&self, a: Self::Array) -> Self::Any {
         Value::Array(a)
     }
 
     #[inline(always)]
-    fn into_any_object(&self, o: Self::Object) -> Self::Any {
+    fn any_from_object(&self, o: Self::Object) -> Self::Any {
         Value::Object(o)
     }
 }
