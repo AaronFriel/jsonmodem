@@ -137,6 +137,13 @@ terminal.
 
 ## Python bindings
 
-Building the Python bindings requires [Maturin](https://github.com/PyO3/maturin).
-Install it with `pip3 install maturin` and ensure `setup.sh` installs it so the
-bindings can be compiled in CI and development environments.
+Building and testing the Python bindings is driven by two helper scripts,
+`setup-py.sh` and `check-py.sh`.  `setup-py.sh` installs
+[uv](https://github.com/astral-sh/uv), creates a `.venv` in the repository root,
+and installs `maturin` before building the extension with
+`maturin develop`.  Like `setup.sh`, it is idempotent and is executed
+automatically when the agent environment is prepared.
+
+`check-py.sh` rebuilds the bindings and runs the smoke tests under `pytest`.
+The `py.yml` GitHub Action calls `setup.sh`, then `setup-py.sh`, and finally
+`check-py.sh` to verify that the Python package can be built and imported.
