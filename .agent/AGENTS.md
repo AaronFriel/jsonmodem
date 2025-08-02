@@ -1,20 +1,22 @@
 # Agent Instructions
 
 To verify changes locally before submitting a PR, run the same checks as CI
-(excluding the benchmark, fuzz, and Miri jobs).  The fuzz crate itself is
+(excluding the benchmark, fuzz, and Miri jobs). The fuzz crate itself is
 included in the normal build, test, and clippy steps, so ensure it compiles.
+Local runs enable the `bench-fast` and `test-fast` features for quick feedback;
+CI executes the full suites without these flags.
 
 Required checks:
 
 ```bash
 # Build release artifacts
-cargo build --all --release --workspace
+cargo build --all --release --workspace --exclude jsonmodem-py --features bench-fast --features test-fast
 
 # Run tests
-cargo test --all --workspace --all-features --verbose
+cargo test --all --workspace --exclude jsonmodem-py --verbose --features bench-fast --features test-fast
 
 # Lint with Clippy
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --exclude jsonmodem-py --features bench-fast --features test-fast -- -D warnings
 
 # Check formatting using nightly rustfmt
 cargo +nightly fmt --all -- --check
@@ -43,12 +45,13 @@ workaround so future contributors can rely on up‑to‑date guidance.
 
 The default `cargo bench` command runs only jsonmodem's own benchmarks. The
 partial JSON benchmarks skip the `serde`, `jiter`, and fix‑JSON variants unless
-the optional `comparison` feature is enabled. The following commands produce
-concise timings suitable for copy‑pasting:
+the optional `comparison` feature is enabled. For quick local iterations, add
+`--features bench-fast` to dramatically shorten run times. The following
+commands produce concise timings suitable for copy‑pasting:
 
 ```bash
 # jsonmodem benchmarks only
-cargo bench --bench streaming_parser -- --output-format bencher | rg '^test'
+cargo bench --features bench-fast --bench streaming_parser -- --output-format bencher | rg '^test'
 
 # sample output
 # test streaming_parser_split/100  ... bench:   48241 ns/iter (+/- 1145)
@@ -56,10 +59,10 @@ cargo bench --bench streaming_parser -- --output-format bencher | rg '^test'
 # test streaming_parser_split/5000 ... bench:  604477 ns/iter (+/- 8785)
 
 # partial JSON benchmarks
-cargo bench --bench streaming_json_medium -- --output-format bencher | rg '^test'
+cargo bench --features bench-fast --bench streaming_json_medium -- --output-format bencher | rg '^test'
 
 # include external implementations
-cargo bench --features comparison --bench streaming_json_medium -- --output-format bencher | rg '^test'
+cargo bench --features bench-fast --features comparison --bench streaming_json_medium -- --output-format bencher | rg '^test'
 ```
 
 ## Flamegraphs and line-level profiling

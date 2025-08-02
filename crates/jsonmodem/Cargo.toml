@@ -16,6 +16,10 @@ serde = []
 bench = []
 comparison = []
 pyo3 = ["dep:pyo3"]
+bench-fast = []
+test-fast = []
+# Enabling `miri` pulls in the faster test and benchmark configurations.
+miri = ["bench-fast", "test-fast"]
 
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }

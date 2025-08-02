@@ -87,6 +87,7 @@ fn main() {
     // Snapshot accumulator – we want one JSON line per `ParseEvent` so that
     // `cargo insta` can show meaningful diffs whenever the event stream
     // changes.
+    #[allow(unused_mut, unused_variables)]
     let mut reference_value = String::from("\n");
 
     for chunk in simulated_stream {

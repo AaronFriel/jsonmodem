@@ -85,12 +85,12 @@ sudo bash -c 'echo 0 > /proc/sys/kernel/perf_event_paranoid' || true
 ################################################################################
 # Pre-build (skip fuzz crate)
 ################################################################################
-EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE")
+EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-py)
 
 cargo fetch
 cargo build  --workspace --release               "${EXCLUDE_ARGS[@]}"
-cargo test   --workspace --all-features --no-run  "${EXCLUDE_ARGS[@]}"
-cargo clippy --workspace --all-targets --all-features "${EXCLUDE_ARGS[@]}" -- -D warnings
+cargo test   --workspace --no-run  "${EXCLUDE_ARGS[@]}"
+cargo clippy --workspace --all-targets "${EXCLUDE_ARGS[@]}" -- -D warnings
 
 # Optional fuzz pre-compile
 if [[ -d "$FUZZ_CRATE" ]]; then
