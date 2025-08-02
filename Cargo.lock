@@ -512,6 +512,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonmodem-py"
+version = "0.1.0"
+dependencies = [
+ "jsonmodem",
+ "pyo3",
+]
+
+[[package]]
 name = "lexical-parse-float"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

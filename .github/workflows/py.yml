@@ -1,0 +1,33 @@
+name: Python bindings
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  py:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Run setup
+        run: .agent/setup.sh
+      - name: Python environment
+        run: .agent/setup-py.sh
+      - name: Python checks
+        run: .agent/check-py.sh

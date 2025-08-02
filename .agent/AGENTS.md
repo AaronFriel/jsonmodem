@@ -22,11 +22,17 @@ cargo +nightly fmt --all -- --check
 # Lint GitHub Actions workflows
 bash <(curl https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
 ./actionlint -color
+
+# Run Python tests for the bindings
+maturin develop -m crates/jsonmodem-py/Cargo.toml --release
+pytest -q crates/jsonmodem-py/tests
 ```
 
 The `setup.sh` script installs the stable and nightly toolchains as well as
 Clang 19 and the `llvm-tools-preview` component, which provide `llvm-nm` and
-other utilities required to build the fuzz crate.
+other utilities required to build the fuzz crate. When new development tools are
+needed, document them here and add installation steps to `setup.sh` so
+contributors can reproduce the environment.
 
 If any of the instructions in this file become inaccurate—for example, if a
 benchmark or `perf` invocation no longer works—address the issue first and then
@@ -128,3 +134,16 @@ python3 scripts/perf_snippet.py | tee perf_with_code.txt
 For deterministic instruction counts, `cargo profiler callgrind --release --bench streaming_json_medium` will emit
 `callgrind.out.*` which can be viewed with `kcachegrind` and also prints the hottest lines directly in the
 terminal.
+
+## Python bindings
+
+Building and testing the Python bindings is driven by two helper scripts,
+`setup-py.sh` and `check-py.sh`.  `setup-py.sh` installs
+[uv](https://github.com/astral-sh/uv), creates a `.venv` in the repository root,
+and installs `maturin` before building the extension with
+`maturin develop`.  Like `setup.sh`, it is idempotent and is executed
+automatically when the agent environment is prepared.
+
+`check-py.sh` rebuilds the bindings and runs the smoke tests under `pytest`.
+The `py.yml` GitHub Action calls `setup.sh`, then `setup-py.sh`, and finally
+`check-py.sh` to verify that the Python package can be built and imported.
