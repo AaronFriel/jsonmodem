@@ -31,4 +31,4 @@ jobs:
           toolchain: stable
 
       - name: Run test suite
-        run: cargo test --all --workspace --exclude jsonmodem-fuzz --all-features --verbose
+        run: cargo test --all --workspace --exclude jsonmodem-fuzz --verbose

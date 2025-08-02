@@ -19,8 +19,6 @@ fn bench_streaming_json_large(c: &mut Criterion) {
     .unwrap();
 
     let mut group = c.benchmark_group("streaming_json_large");
-    group.measurement_time(Duration::from_secs(10));
-    group.warm_up_time(Duration::from_secs(5));
 
     for &parts in &[100usize, 1_000, 5_000] {
         let chunks = produce_chunks(&payload, parts);
@@ -100,5 +98,20 @@ fn bench_streaming_json_large(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_streaming_json_large);
+fn criterion() -> Criterion {
+    let mut c = Criterion::default();
+    if cfg!(feature = "bench-fast") {
+        c = c
+            .warm_up_time(Duration::from_millis(10))
+            .measurement_time(Duration::from_millis(100))
+            .sample_size(10);
+    } else {
+        c = c
+            .warm_up_time(Duration::from_secs(5))
+            .measurement_time(Duration::from_secs(10));
+    }
+    c
+}
+
+criterion_group! { name = benches; config = criterion(); targets = bench_streaming_json_large }
 criterion_main!(benches);

@@ -18,7 +18,7 @@ jobs:
           components: clippy
 
       - name: Run clippy
-        run: cargo clippy --workspace --exclude jsonmodem-fuzz --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude jsonmodem-fuzz --all-targets -- -D warnings
 
 
   format:

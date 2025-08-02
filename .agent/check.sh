@@ -34,24 +34,27 @@ run_step "rustfmt (check)"  cargo +nightly fmt --all -- --check
 ###############################################################################
 # 2. Build, test, lint (skip fuzz crate)
 ###############################################################################
-EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE")
+EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-py)
+# Speed up local iteration by enabling lighter-weight test and benchmark
+# configurations. CI runs without these features for full coverage.
+FAST_FEATURES=(--features bench-fast --features test-fast)
 
-run_step "build (release)"  cargo build  --workspace --release              "${EXCLUDE_ARGS[@]}"
-run_step "tests"            cargo test   --workspace --all-features --verbose "${EXCLUDE_ARGS[@]}"
-run_step "clippy"           cargo clippy --workspace --all-targets --all-features "${EXCLUDE_ARGS[@]}" \
+run_step "build (release)"  cargo build  --workspace --release              "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}"
+run_step "tests"            cargo test   --workspace --verbose              "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}"
+run_step "clippy"           cargo clippy --workspace --all-targets          "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}" \
                                -- -D warnings
 
 # Extra clippy pass that compiles under the same cfg flags Miri uses.
 run_step "clippy (cfg=miri)" \
          env RUSTFLAGS="--cfg miri" \
-         cargo clippy --workspace --all-targets --all-features "${EXCLUDE_ARGS[@]}" \
+         cargo clippy --workspace --all-targets "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}" \
            -- -D warnings
 
 ###############################################################################
 # 3. Optional Miri (cfg via env var)
 ###############################################################################
 if [[ "${AGENT_CHECK_MIRI_DISABLE:-false}" != "true" ]]; then
-  run_step "miri test"      cargo +nightly miri test --workspace
+  run_step "miri test"      cargo +nightly miri test --workspace --features miri
 else
   echo "⚠️  AGENT_CHECK_MIRI_DISABLE=true – skipping Miri checks."
 fi

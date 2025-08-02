@@ -302,8 +302,6 @@ fn bench_dataset(cfg: &Dataset, c: &mut Criterion) {
         cfg.name
     );
     let mut group = c.benchmark_group(cfg.name);
-    group.measurement_time(Duration::from_secs(3));
-    group.warm_up_time(Duration::from_secs(1));
     jiter_value(&path, &mut group);
     if let Some(f) = cfg.jiter_iter {
         f(&path, &mut group);
@@ -395,5 +393,20 @@ pub fn competitive_benches(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, competitive_benches);
+fn criterion() -> Criterion {
+    let mut c = Criterion::default();
+    if cfg!(feature = "bench-fast") {
+        c = c
+            .warm_up_time(Duration::from_millis(10))
+            .measurement_time(Duration::from_millis(100))
+            .sample_size(10);
+    } else {
+        c = c
+            .warm_up_time(Duration::from_secs(1))
+            .measurement_time(Duration::from_secs(3));
+    }
+    c
+}
+
+criterion_group! { name = benches; config = criterion(); targets = competitive_benches }
 criterion_main!(benches);

@@ -70,10 +70,13 @@ fn partition_roundtrip_quickcheck() {
         reconstructed.len() == 1 && reconstructed[0] == value
     }
 
-    #[cfg(not(miri))]
-    let tests = if is_ci::cached() { 10_000 } else { 1_000 };
-    #[cfg(miri)]
-    let tests = 10;
+    let tests = if cfg!(any(miri, feature = "test-fast")) {
+        10
+    } else if is_ci::cached() {
+        10_000
+    } else {
+        1_000
+    };
 
     QuickCheck::new()
         .tests(tests)
