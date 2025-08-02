@@ -33,28 +33,28 @@ impl<F: JsonFactory<Any = Value> + Default> EventStack<F> {
                 ParseEvent::Null { path } => {
                     let v = {
                         let f = builder.factory();
-                        f.into_any_null(f.new_null())
+                        f.any_from_null(f.new_null())
                     };
                     builder.set(path.last(), v)?;
                 }
                 ParseEvent::Boolean { path, value } => {
                     let v = {
                         let f = builder.factory();
-                        f.into_any_bool(f.new_bool(*value))
+                        f.any_from_bool(f.new_bool(*value))
                     };
                     builder.set(path.last(), v)?;
                 }
                 ParseEvent::Number { path, value } => {
                     let v = {
                         let f = builder.factory();
-                        f.into_any_num(f.new_number(*value))
+                        f.any_from_num(f.new_number(*value))
                     };
                     builder.set(path.last(), v)?;
                 }
                 ParseEvent::String { fragment, path, .. } => {
                     let init = {
                         let f = builder.factory();
-                        f.into_any_str(f.new_string(""))
+                        f.any_from_str(f.new_string(""))
                     };
                     builder.mutate_with(
                         path.last(),
@@ -74,14 +74,14 @@ impl<F: JsonFactory<Any = Value> + Default> EventStack<F> {
                 ParseEvent::ObjectBegin { path } => {
                     let init = {
                         let f = builder.factory();
-                        f.into_any_object(f.new_object())
+                        f.any_from_object(f.new_object())
                     };
                     builder.enter_with(path.last(), || init)?;
                 }
                 ParseEvent::ArrayStart { path } => {
                     let init = {
                         let f = builder.factory();
-                        f.into_any_array(f.new_array())
+                        f.any_from_array(f.new_array())
                     };
                     builder.enter_with(path.last(), || init)?;
                 }

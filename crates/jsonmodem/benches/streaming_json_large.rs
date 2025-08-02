@@ -1,5 +1,5 @@
+//! Benchmarks for streaming large JSON payloads.
 #![allow(missing_docs)]
-
 mod streaming_json_common;
 use std::time::Duration;
 

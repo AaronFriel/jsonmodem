@@ -2,8 +2,11 @@ use alloc::vec::Vec;
 
 /// Split `payload` into approximately equal-sized chunks without
 /// breaking UTF-8 code points.
+///
+/// # Panics
+///
+/// Panics if `parts` is zero.
 #[must_use]
-#[allow(clippy::missing_panics_doc)]
 pub fn produce_chunks(payload: &str, parts: usize) -> Vec<&str> {
     assert!(parts > 0);
     let len = payload.len();
@@ -22,8 +25,11 @@ pub fn produce_chunks(payload: &str, parts: usize) -> Vec<&str> {
 }
 
 /// Return a sequence of prefixes converging to `payload`.
+///
+/// # Panics
+///
+/// Panics if `parts` is zero.
 #[must_use]
-#[allow(clippy::missing_panics_doc)]
 pub fn produce_prefixes(payload: &str, parts: usize) -> Vec<&str> {
     let chunks = produce_chunks(payload, parts);
     let mut prefixes = Vec::with_capacity(chunks.len());

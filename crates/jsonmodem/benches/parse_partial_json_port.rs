@@ -404,26 +404,24 @@ pub fn fix_json(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
-    use super::*;
 
     #[test]
     fn test_fix_json_simple_string() {
         let inp = "\"hello"; // missing closing quote
-        let fixed = fix_json(inp);
+        let fixed = super::fix_json(inp);
         assert_eq!(fixed, "\"hello\"");
     }
 
     #[test]
     fn test_parse_partial_json_success() {
-        let (val, state) = parse_partial_json(Some("123"));
+        let (val, state) = super::parse_partial_json(Some("123"));
         assert_eq!(state, ParseState::SuccessfulParse);
         assert_eq!(val.unwrap(), serde_json::json!(123));
     }
 
     #[test]
     fn test_parse_partial_json_repaired() {
-        let (val, state) = parse_partial_json(Some("[1, 2, 3")); // missing ]
+        let (val, state) = super::parse_partial_json(Some("[1, 2, 3")); // missing ]
         assert_eq!(state, ParseState::RepairedParse);
         assert_eq!(val.unwrap(), serde_json::json!([1, 2, 3]));
     }
@@ -434,14 +432,14 @@ mod tests {
         // down to its last *syntactically* valid prefix which, in this case,
         // is just the opening brace – completed to `{}` during the
         // post-processing phase. Therefore the parse **succeeds after repair**.
-        let (val, state) = parse_partial_json(Some("{ invalid json"));
+        let (val, state) = super::parse_partial_json(Some("{ invalid json"));
         assert_eq!(state, ParseState::RepairedParse);
         assert_eq!(val.unwrap(), serde_json::json!({}));
     }
     #[test]
     fn unicode_inside_unterminated_string() {
         let inp = r#"{"msg":"¡Hola"#;
-        let (val, state) = parse_partial_json(Some(inp));
+        let (val, state) = super::parse_partial_json(Some(inp));
         assert_eq!(state, ParseState::RepairedParse);
         assert_eq!(val.unwrap()["msg"], "¡Hola");
     }
@@ -449,7 +447,7 @@ mod tests {
     #[test]
     fn ignore_trailing_garbage_after_complete_value() {
         let inp = "123abc";
-        let (val, state) = parse_partial_json(Some(inp));
+        let (val, state) = super::parse_partial_json(Some(inp));
         // TS version succeeds; Rust should too once patched.
         assert_eq!(state, ParseState::RepairedParse);
         assert_eq!(val.unwrap(), serde_json::json!(123));

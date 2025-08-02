@@ -1,5 +1,5 @@
+//! Benchmarks for incremental streaming scenarios.
 #![allow(missing_docs)]
-
 mod streaming_json_common;
 use std::time::Duration;
 
