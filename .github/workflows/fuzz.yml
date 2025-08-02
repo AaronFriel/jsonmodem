@@ -8,7 +8,7 @@ on:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 15 # setup + 5 min fuzzing
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -19,8 +19,9 @@ jobs:
           toolchain: nightly
           components: llvm-tools
 
-      - name: Cache fuzz corpora and artifacts
-        uses: actions/cache@v4
+      - name: Restore fuzz corpora and artifacts
+        id: cache-fuzz-restore
+        uses: actions/cache/restore@v4
         with:
           path: |
             fuzz/corpus
@@ -32,10 +33,18 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
-      - name: Fuzz
-        # Estimated to take about 5 minutes - a decent amount of time for PRs.
-        run: |
-          cargo fuzz run fuzz_parser -- -runs=1000
+      - name: Fuzz (5 000 runs ≈ 5 min on CI)
+        run: cargo fuzz run fuzz_parser -- -runs=5000
+
+      - name: Save updated corpora and artifacts
+        id: cache-fuzz-save
+        if: always() && steps.cache-fuzz-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            fuzz/corpus
+            fuzz/artifacts
+          key: ${{ steps.cache-fuzz-restore.outputs.cache-primary-key }}
 
       - name: Upload fuzz artifacts
         if: always()
