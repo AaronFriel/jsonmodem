@@ -38,8 +38,9 @@ export PATH="$(rustc +nightly --print sysroot)/lib/rustlib/${HOST_TRIPLE}/bin:$P
 ################################################################################
 # Developer utilities
 ################################################################################
-cargo +stable  install --locked cargo-nextest cargo-edit
-cargo +nightly install --locked cargo-fuzz flamegraph
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/v1.14.3/install-from-binstall-release.sh \
+  | BINSTALL_VERSION=v1.14.3 bash
+cargo binstall -y cargo-nextest cargo-edit cargo-fuzz flamegraph
 
 if ! command -v cargo-insta >/dev/null 2>&1; then
   curl -LsSf https://insta.rs/install.sh | sh
