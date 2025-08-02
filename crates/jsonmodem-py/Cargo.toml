@@ -7,12 +7,8 @@ license = "MIT OR Apache-2.0"
 description = "Python bindings for the jsonmodem Rust crate"
 
 [lib]
-name = "jsonmodem_py"
 crate-type = ["cdylib"]
 
 [dependencies]
 jsonmodem = { path = "../jsonmodem" }
 pyo3 = { version = "0.25", features = ["extension-module"] }
-
-[tool.maturin]
-module-name = "jsonmodem"
