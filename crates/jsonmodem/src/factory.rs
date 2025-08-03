@@ -1,117 +1,64 @@
-#![allow(clippy::inline_always)]
+use alloc::{borrow::ToOwned, string::String};
+use core::fmt::Debug;
 
-use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, vec::Vec};
-
-use crate::value::Value;
-
-/// Abstraction over JSON value construction.
-pub trait JsonFactory {
-    type Str;
-    type Num;
-    type Bool;
-    type Null;
-    type Array;
-    type Object;
-    type Any;
-
-    fn new_null(&self) -> Self::Null;
-    fn new_bool(&self, b: bool) -> Self::Bool;
-    fn new_number(&self, n: f64) -> Self::Num;
-    fn new_string(&self, s: &str) -> Self::Str;
-    fn new_array(&self) -> Self::Array;
-    fn new_object(&self) -> Self::Object;
-
-    fn push_array(&self, array: &mut Self::Array, val: Self::Any);
-    fn insert_object(&self, obj: &mut Self::Object, key: &str, val: Self::Any);
-
-    fn any_from_str(&self, s: Self::Str) -> Self::Any;
-    fn any_from_num(&self, n: Self::Num) -> Self::Any;
-    fn any_from_bool(&self, b: Self::Bool) -> Self::Any;
-    fn any_from_null(&self, n: Self::Null) -> Self::Any;
-    fn any_from_array(&self, a: Self::Array) -> Self::Any;
-    fn any_from_object(&self, o: Self::Object) -> Self::Any;
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum ValueKind {
+    Null,
+    Bool,
+    Num,
+    Str,
+    Array,
+    Object,
 }
 
-/// Factory producing standard Rust values.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StdFactory;
+/// Abstraction over JSON value construction.
+pub trait JsonFactory: Debug + Clone + PartialEq + Default {
+    type Str: Debug + Clone + PartialEq + Eq + Default + ToOwned + AsRef<str>;
+    type Num: Debug + Copy + Clone + PartialEq;
+    type Bool: Debug + Copy + Clone + PartialEq;
+    type Null: Debug + Copy + Clone + PartialEq;
+    type Array: Debug + Clone + Default + PartialEq;
+    type Object: Debug + Clone + Default + PartialEq;
 
-impl JsonFactory for StdFactory {
-    type Str = String;
-    type Num = f64;
-    type Bool = bool;
-    type Null = ();
-    type Array = Vec<Value>;
-    type Object = BTreeMap<String, Value>;
-    type Any = Value;
+    fn new_null() -> Self::Null;
+    fn new_bool(b: bool) -> Self::Bool;
+    fn new_number(n: f64) -> Self::Num;
+    fn new_string(s: String) -> Self::Str;
+    fn new_array() -> Self::Array;
+    fn new_object() -> Self::Object;
 
-    #[inline(always)]
-    fn new_null(&self) -> Self::Null {
-        // unit type has a default return
-    }
+    fn kind(v: &Self) -> ValueKind;
+    fn as_string_mut(v: &mut Self) -> Option<&mut Self::Str>;
+    fn as_array_mut(v: &mut Self) -> Option<&mut Self::Array>;
+    fn as_object_mut(v: &mut Self) -> Option<&mut Self::Object>;
 
-    #[inline(always)]
-    fn new_bool(&self, b: bool) -> Self::Bool {
-        b
-    }
+    fn push_string(string: &mut Self::Str, val: &Self::Str);
+    fn push_str(string: &mut Self::Str, val: &str);
+    fn push_array(array: &mut Self::Array, val: Self);
+    fn insert_object(obj: &mut Self::Object, key: &str, val: Self);
 
-    #[inline(always)]
-    fn new_number(&self, n: f64) -> Self::Num {
-        n
-    }
+    fn from_str(s: Self::Str) -> Self;
+    fn from_num(n: Self::Num) -> Self;
+    fn from_bool(b: Self::Bool) -> Self;
+    fn from_null(n: Self::Null) -> Self;
+    fn from_array(a: Self::Array) -> Self;
+    fn from_object(o: Self::Object) -> Self;
 
-    #[inline(always)]
-    fn new_string(&self, s: &str) -> Self::Str {
-        s.to_owned()
-    }
+    fn into_array(v: Self) -> Option<Self::Array>
+    where
+        Self: Sized;
 
-    #[inline(always)]
-    fn new_array(&self) -> Self::Array {
-        Vec::new()
-    }
+    fn into_object(v: Self) -> Option<Self::Object>
+    where
+        Self: Sized;
 
-    #[inline(always)]
-    fn new_object(&self) -> Self::Object {
-        BTreeMap::new()
-    }
+    fn object_get_mut<'a>(obj: &'a mut Self::Object, key: &str) -> Option<&'a mut Self>;
 
-    #[inline(always)]
-    fn push_array(&self, array: &mut Self::Array, val: Self::Any) {
-        array.push(val);
-    }
+    fn object_insert(obj: &mut Self::Object, key: String, val: Self) -> &mut Self;
 
-    #[inline(always)]
-    fn insert_object(&self, obj: &mut Self::Object, key: &str, val: Self::Any) {
-        obj.insert(key.to_owned(), val);
-    }
+    fn array_get_mut(arr: &mut Self::Array, idx: usize) -> Option<&mut Self>;
 
-    #[inline(always)]
-    fn any_from_str(&self, s: Self::Str) -> Self::Any {
-        Value::String(s)
-    }
+    fn array_push(arr: &mut Self::Array, val: Self) -> &mut Self;
 
-    #[inline(always)]
-    fn any_from_num(&self, n: Self::Num) -> Self::Any {
-        Value::Number(n)
-    }
-
-    #[inline(always)]
-    fn any_from_bool(&self, b: Self::Bool) -> Self::Any {
-        Value::Boolean(b)
-    }
-
-    #[inline(always)]
-    fn any_from_null(&self, _n: Self::Null) -> Self::Any {
-        Value::Null
-    }
-
-    #[inline(always)]
-    fn any_from_array(&self, a: Self::Array) -> Self::Any {
-        Value::Array(a)
-    }
-
-    #[inline(always)]
-    fn any_from_object(&self, o: Self::Object) -> Self::Any {
-        Value::Object(o)
-    }
+    fn array_len(arr: &Self::Array) -> usize;
 }

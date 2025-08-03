@@ -32,7 +32,7 @@ pub use alloc::vec;
 pub use chunk_utils::{produce_chunks, produce_prefixes};
 pub use error::ParserError;
 pub use event::{ParseEvent, PathComponent, PathComponentFrom};
-pub use factory::{JsonFactory, StdFactory};
+pub use factory::JsonFactory;
 pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
 pub use parser::StreamingParser;
 pub use streaming_values::{StreamingValue, StreamingValuesParser};

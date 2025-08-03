@@ -485,6 +485,7 @@ dependencies = [
 name = "jsonmodem"
 version = "0.1.2"
 dependencies = [
+ "cfg-if",
  "criterion",
  "insta",
  "is_ci",

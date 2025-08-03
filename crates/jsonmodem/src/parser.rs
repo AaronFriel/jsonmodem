@@ -31,7 +31,7 @@ use alloc::{
 use core::{f64, fmt};
 
 use crate::{
-    StringValueMode,
+    JsonFactory, StringValueMode, Value,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
     event::{ParseEvent, PathComponent},
@@ -251,6 +251,9 @@ impl FrameStack {
     }
 }
 
+/// The streaming JSON parser. Uses the default `Value` type for JSON values.
+pub type StreamingParser = StreamingParserImpl<Value>;
+
 #[derive(Debug)]
 /// The streaming JSON parser.
 ///
@@ -271,7 +274,7 @@ impl FrameStack {
 ///     println!("{:?}", event);
 /// }
 /// ```
-pub struct StreamingParser {
+pub struct StreamingParserImpl<V: JsonFactory = Value> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
     end_of_input: bool,
@@ -294,7 +297,7 @@ pub struct StreamingParser {
 
     /// Last token we produced
     frames: FrameStack, // stack of open containers (arrays or objects)
-    events: EventStack,
+    events: EventStack<V>,
 
     multiple_values: bool,
     string_value_mode: StringValueMode,
@@ -309,14 +312,14 @@ pub struct StreamingParser {
     lexed_tokens: Vec<Token>,
 }
 
-impl Default for StreamingParser {
+impl<V: JsonFactory> Default for StreamingParserImpl<V> {
     fn default() -> Self {
         Self::new(ParserOptions::default())
     }
 }
 
-impl Iterator for StreamingParser {
-    type Item = Result<ParseEvent, ParserError>;
+impl<V: JsonFactory> Iterator for StreamingParserImpl<V> {
+    type Item = Result<ParseEvent<V>, ParserError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_event()
@@ -328,30 +331,30 @@ impl Iterator for StreamingParser {
 /// Returned by [`StreamingParser::finish`], this parser will process any
 /// remaining input and then end. It implements `Iterator` to yield
 /// `ParseEvent` results.
-pub struct ClosedStreamingParser {
-    parser: StreamingParser,
+pub struct ClosedStreamingParser<V: JsonFactory> {
+    parser: StreamingParserImpl<V>,
 }
 
-impl ClosedStreamingParser {
+impl<V: JsonFactory> ClosedStreamingParser<V> {
     #[cfg(test)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
         self.parser.get_lexed_tokens()
     }
 
-    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&crate::value::Value> {
+    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&V> {
         self.parser.unstable_get_current_value_ref()
     }
 }
 
-impl Iterator for ClosedStreamingParser {
-    type Item = Result<ParseEvent, ParserError>;
+impl<V: JsonFactory> Iterator for ClosedStreamingParser<V> {
+    type Item = Result<ParseEvent<V>, ParserError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser.next_event()
     }
 }
 
-impl StreamingParser {
+impl<V: JsonFactory> StreamingParserImpl<V> {
     #[must_use]
     /// Creates a new `StreamingParser` with the given options.
     ///
@@ -393,7 +396,7 @@ impl StreamingParser {
                 if matches!(options.non_scalar_values, NonScalarValueMode::None) {
                     None
                 } else {
-                    Some(ValueBuilder::<crate::factory::StdFactory>::default())
+                    Some(ValueBuilder::default())
                 },
             ),
 
@@ -450,7 +453,7 @@ impl StreamingParser {
     ///     }
     /// );
     /// ```
-    pub fn finish(mut self) -> ClosedStreamingParser {
+    pub fn finish(mut self) -> ClosedStreamingParser<V> {
         self.end_of_input = true;
         ClosedStreamingParser { parser: self }
     }
@@ -463,12 +466,12 @@ impl StreamingParser {
     #[doc(hidden)]
     #[doc(hidden)]
     #[must_use]
-    pub fn unstable_get_current_value_ref(&self) -> Option<&crate::value::Value> {
+    pub fn unstable_get_current_value_ref(&self) -> Option<&V> {
         self.events.read_root()
     }
 
     #[cfg(test)]
-    pub(crate) fn current_value(&self) -> Option<crate::value::Value> {
+    pub(crate) fn current_value(&self) -> Option<V> {
         self.unstable_get_current_value_ref().cloned()
     }
 
@@ -482,7 +485,7 @@ impl StreamingParser {
     /// * `Some(Err(err))`       - the parser has errored, and no more events
     ///   can be produced
     /// * `None`                 – the parser has no events.
-    fn next_event(&mut self) -> Option<Result<ParseEvent, ParserError>> {
+    fn next_event(&mut self) -> Option<Result<ParseEvent<V>, ParserError>> {
         match self.next_event_internal() {
             Some(Ok(event)) => Some(Ok(event)),
             None => None,
@@ -500,7 +503,7 @@ impl StreamingParser {
         }
     }
 
-    fn next_event_internal(&mut self) -> Option<Result<ParseEvent, ParserError>> {
+    fn next_event_internal(&mut self) -> Option<Result<ParseEvent<V>, ParserError>> {
         if self.parse_state == ParseState::Error {
             // If we are in error state, we can’t produce any more events
             return None;
@@ -533,7 +536,7 @@ impl StreamingParser {
                     if matches!(self.non_scalar_values, NonScalarValueMode::None) {
                         None
                     } else {
-                        Some(ValueBuilder::<crate::factory::StdFactory>::default())
+                        Some(ValueBuilder::default())
                     },
                 );
             }
@@ -1335,12 +1338,18 @@ impl StreamingParser {
             }
             (Token::Boolean(b), _) => {
                 self.events
-                    .push(ParseEvent::Boolean { path, value: b })
+                    .push(ParseEvent::Boolean {
+                        path,
+                        value: V::new_bool(b),
+                    })
                     .map_err(|err| self.zipper_error(err))?;
             }
             (Token::Number(n), _) => {
                 self.events
-                    .push(ParseEvent::Number { path, value: n })
+                    .push(ParseEvent::Number {
+                        path,
+                        value: V::new_number(n),
+                    })
                     .map_err(|err| self.zipper_error(err))?;
             }
             // Streaming string fragments (partial) build up until the full string is complete.
@@ -1348,8 +1357,8 @@ impl StreamingParser {
                 self.events
                     .push(ParseEvent::String {
                         path,
-                        fragment,
-                        value,
+                        fragment: V::new_string(fragment),
+                        value: value.map(V::new_string),
                         is_final: !partial,
                     })
                     .map_err(|err| self.zipper_error(err))?;
@@ -1412,7 +1421,7 @@ impl StreamingParser {
         self.syntax_error(format!("Internal error: {err}"))
     }
 
-    fn is_root_event(ev: &ParseEvent) -> bool {
+    fn is_root_event(ev: &ParseEvent<V>) -> bool {
         use ParseEvent::*;
         match ev {
             Null { path }
@@ -1484,6 +1493,6 @@ mod tests {
     #[test]
     fn size_of_closed_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser>(), 280);
+        assert_eq!(size_of::<ClosedStreamingParser<Value>>(), 280);
     }
 }

@@ -3,29 +3,31 @@
 use alloc::vec::Vec;
 
 use crate::{
-    ParseEvent, StreamingParser, Value,
+    JsonFactory, ParseEvent, Value,
     options::{NonScalarValueMode, ParserOptions},
-    parser::ParserError,
+    parser::{ParserError, StreamingParserImpl},
 };
 
 /// A value produced during streaming parsing.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct StreamingValue {
+pub struct StreamingValue<V: JsonFactory> {
     pub index: usize,
-    pub value: Value,
+    pub value: V,
     pub is_final: bool,
 }
+
+pub type StreamingValuesParser = StreamingValuesParserImpl<Value>;
 
 /// Parser wrapper that returns complete values after each chunk.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct StreamingValuesParser {
-    parser: StreamingParser,
+pub struct StreamingValuesParserImpl<V: JsonFactory> {
+    parser: StreamingParserImpl<V>,
     next_index: usize,
 }
 
-impl StreamingValuesParser {
+impl<V: JsonFactory> StreamingValuesParserImpl<V> {
     /// Create a new parser. `non_scalar_values` must not be `None`.
     #[must_use]
     #[inline]
@@ -37,23 +39,23 @@ impl StreamingValuesParser {
         // use root-only events for efficiency
         options.non_scalar_values = NonScalarValueMode::Roots;
         Self {
-            parser: StreamingParser::new(options),
+            parser: StreamingParserImpl::new(options),
             next_index: 0,
         }
     }
 
     /// Feed a chunk of input and collect streaming values.
     #[inline]
-    pub fn feed(&mut self, chunk: &str) -> Result<Vec<StreamingValue>, ParserError> {
+    pub fn feed(&mut self, chunk: &str) -> Result<Vec<StreamingValue<V>>, ParserError> {
         self.parser.feed(chunk);
         self.collect_from_parser()
     }
 
     /// Signal end of input and collect remaining values.
     #[inline]
-    pub fn finish(self) -> Result<Vec<StreamingValue>, ParserError> {
+    pub fn finish(self) -> Result<Vec<StreamingValue<V>>, ParserError> {
         let mut closed = self.parser.finish();
-        let mut out = Vec::new();
+        let mut out = Vec::<StreamingValue<V>>::new();
         let mut index = self.next_index;
         for evt in closed.by_ref() {
             let ev = evt?;
@@ -61,7 +63,7 @@ impl StreamingValuesParser {
                 ParseEvent::Null { .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::Null,
+                        value: V::from_null(V::new_null()),
                         is_final: true,
                     });
                     index += 1;
@@ -69,7 +71,7 @@ impl StreamingValuesParser {
                 ParseEvent::Boolean { value, .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::Boolean(value),
+                        value: V::from_bool(value),
                         is_final: true,
                     });
                     index += 1;
@@ -77,7 +79,7 @@ impl StreamingValuesParser {
                 ParseEvent::Number { value, .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::Number(value),
+                        value: V::from_num(value),
                         is_final: true,
                     });
                     index += 1;
@@ -89,7 +91,7 @@ impl StreamingValuesParser {
                 } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::String(v),
+                        value: V::from_str(v),
                         is_final,
                     });
                     if is_final {
@@ -99,7 +101,7 @@ impl StreamingValuesParser {
                 ParseEvent::ArrayEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::Array(v),
+                        value: V::from_array(v),
                         is_final: true,
                     });
                     index += 1;
@@ -107,7 +109,7 @@ impl StreamingValuesParser {
                 ParseEvent::ObjectEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: Value::Object(v),
+                        value: V::from_object(v),
                         is_final: true,
                     });
                     index += 1;
@@ -126,15 +128,15 @@ impl StreamingValuesParser {
     }
 
     #[inline]
-    fn collect_from_parser(&mut self) -> Result<Vec<StreamingValue>, ParserError> {
-        let mut out = Vec::new();
+    fn collect_from_parser(&mut self) -> Result<Vec<StreamingValue<V>>, ParserError> {
+        let mut out = Vec::<StreamingValue<V>>::new();
         for evt in self.parser.by_ref() {
             let ev = evt?;
             match ev {
                 ParseEvent::Null { .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::Null,
+                        value: V::from_null(V::new_null()),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -142,7 +144,7 @@ impl StreamingValuesParser {
                 ParseEvent::Boolean { value, .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::Boolean(value),
+                        value: V::from_bool(value),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -150,7 +152,7 @@ impl StreamingValuesParser {
                 ParseEvent::Number { value, .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::Number(value),
+                        value: V::from_num(value),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -162,7 +164,7 @@ impl StreamingValuesParser {
                 } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::String(v),
+                        value: V::from_str(v),
                         is_final,
                     });
                     if is_final {
@@ -172,7 +174,7 @@ impl StreamingValuesParser {
                 ParseEvent::ArrayEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::Array(v),
+                        value: V::from_array(v),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -180,7 +182,7 @@ impl StreamingValuesParser {
                 ParseEvent::ObjectEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: Value::Object(v),
+                        value: V::from_object(v),
                         is_final: true,
                     });
                     self.next_index += 1;
