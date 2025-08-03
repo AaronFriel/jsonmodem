@@ -21,9 +21,7 @@ fn finish_seq(chunks: &[&str]) -> Value {
     }
     let parser = parser.finish();
 
-    let mut events = vec![];
-
-    events.extend(parser);
+    let mut events = parser.collect::<Vec<_>>();
 
     // Use the fact that the final event will have a value
     let last_event = events
@@ -203,15 +201,13 @@ fn test_continue_string_with_escape() {
     // Feed the opening quote of the string – this is not enough to complete
     // a JSON value, so we should not receive any events yet and `current_value`
     // must stay `None`.
-    parser.feed("\"");
-    assert!(parser.by_ref().all(|r| r.is_ok()));
+    assert!(parser.feed("\"").all(|r| r.is_ok()));
     assert!(parser.current_value().is_none());
 
     // Feed a backslash – still inside the string escape sequence, which is
     // incomplete at this point. Again, we must not observe any completed
     // events and `current_value` should remain unset.
-    parser.feed("\\");
-    assert!(parser.all(|r| r.is_ok()));
+    assert!(parser.feed("\\").all(|r| r.is_ok()));
     assert!(parser.current_value().is_none());
 }
 
@@ -258,8 +254,7 @@ fn test_streaming_multiple_values() {
     });
 
     // First chunk – should yield exactly one number event with value `1`.
-    parser.feed("1 ");
-    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
+    let evts: Vec<_> = parser.feed("1 ").map(Result::unwrap).collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -270,8 +265,7 @@ fn test_streaming_multiple_values() {
     assert_eq!(vals, vec![1.0]);
 
     // Second chunk – should yield exactly one number event with value `2`.
-    parser.feed(" 2 ");
-    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
+    let evts: Vec<_> = parser.feed(" 2 ").map(Result::unwrap).collect();
     let vals: Vec<_> = evts
         .into_iter()
         .filter_map(|ev| match ev {
@@ -282,7 +276,6 @@ fn test_streaming_multiple_values() {
     assert_eq!(vals, vec![2.0]);
 
     // Third chunk – whitespace only, should not emit any events.
-    parser.feed("   ");
-    let evts: Vec<_> = parser.by_ref().map(Result::unwrap).collect();
+    let evts: Vec<_> = parser.feed("   ").map(Result::unwrap).collect();
     assert!(evts.is_empty());
 }

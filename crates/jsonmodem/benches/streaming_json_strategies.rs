@@ -1,5 +1,5 @@
 //! Benchmarks comparing streaming strategies.
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 mod streaming_json_common;
 use std::time::Duration;
 

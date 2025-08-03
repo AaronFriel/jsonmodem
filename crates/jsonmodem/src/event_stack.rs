@@ -2,18 +2,17 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use crate::{
-    ParseEvent,
-    factory::JsonFactory,
+    JsonValue, JsonValueFactory, ParseEvent,
     value_zipper::{ValueBuilder, ZipperError},
 };
 
 #[derive(Debug)]
-pub(crate) struct EventStack<V: JsonFactory> {
+pub(crate) struct EventStack<V: JsonValue> {
     events: Vec<ParseEvent<V>>,
     builder: Option<ValueBuilder<V>>,
 }
 
-impl<V: JsonFactory> EventStack<V> {
+impl<V: JsonValue> EventStack<V> {
     pub(crate) fn new(events: Vec<ParseEvent<V>>, builder: Option<ValueBuilder<V>>) -> Self {
         Self { events, builder }
     }
@@ -27,26 +26,37 @@ impl<V: JsonFactory> EventStack<V> {
         self.events.pop()
     }
 
-    pub(crate) fn push(&mut self, mut event: ParseEvent<V>) -> Result<(), ZipperError> {
+    pub(crate) fn push<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        f: &mut F,
+        mut event: ParseEvent<V>,
+    ) -> Result<(), ZipperError> {
         if let Some(ref mut builder) = self.builder {
             match &mut event {
                 // scalars
                 ParseEvent::Null { path } => {
-                    builder.set(path.last(), V::from_null(V::new_null()))?;
+                    let v = f.new_null();
+                    builder.set(path.last(), f.build_from_null(v), f)?;
                 }
                 ParseEvent::Boolean { path, value } => {
-                    builder.set(path.last(), V::from_bool(*value))?;
+                    let v = f.build_from_bool(*value);
+                    builder.set(path.last(), v, f)?;
                 }
                 ParseEvent::Number { path, value } => {
-                    builder.set(path.last(), V::from_num(*value))?;
+                    let v = f.build_from_num(*value);
+                    builder.set(path.last(), v, f)?;
                 }
                 ParseEvent::String { fragment, path, .. } => {
                     builder.mutate_with(
+                        f,
                         path.last(),
-                        || V::from_str(V::Str::default()),
-                        |v| {
+                        |fac| {
+                            let v = fac.new_string("");
+                            fac.build_from_str(v)
+                        },
+                        |v, fac| {
                             if let Some(s) = V::as_string_mut(v) {
-                                V::push_string(s, fragment);
+                                fac.push_string(s, fragment);
                                 Ok(())
                             } else {
                                 Err(ZipperError::ExpectedString)
@@ -57,10 +67,16 @@ impl<V: JsonFactory> EventStack<V> {
 
                 // ── container starts ───────────────────────────────────────
                 ParseEvent::ObjectBegin { path } => {
-                    builder.enter_with(path.last(), || V::from_object(V::new_object()))?;
+                    builder.enter_with(path.last(), f, |fac| {
+                        let v = fac.new_object();
+                        fac.build_from_object(v)
+                    })?;
                 }
                 ParseEvent::ArrayStart { path } => {
-                    builder.enter_with(path.last(), || V::from_array(V::new_array()))?;
+                    builder.enter_with(path.last(), f, |fac| {
+                        let v = fac.new_array();
+                        fac.build_from_array(v)
+                    })?;
                 }
 
                 // ── container ends ─────────────────────────────────────────

@@ -1,5 +1,5 @@
 //! Benchmark – `jsonmodem::StreamingParser`
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 
 use std::time::Duration;
 
@@ -43,8 +43,7 @@ fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarValueMode) -
     let mut produced = 0usize;
 
     for chunk in payload.as_bytes().chunks(chunk_size) {
-        parser.feed(std::str::from_utf8(chunk).expect("chunk is valid UTF-8"));
-        for _res in parser.by_ref() {
+        for _res in parser.feed(std::str::from_utf8(chunk).expect("chunk is valid UTF-8")) {
             // drain any immediately-available events
             produced += 1;
         }

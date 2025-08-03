@@ -22,8 +22,7 @@ fn repro_multi_value_string_root() {
         non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
-    parser.feed(payload);
-    let events: Vec<_> = parser.map(|x| x.unwrap()).collect();
+    let events: Vec<_> = parser.feed(payload).map(|x| x.unwrap()).collect();
     assert_eq!(
         &events,
         &[ParseEvent::String {
@@ -43,7 +42,7 @@ fn repro_multi_value_string_root() {
 /// the incremental parser regardless of input partitioning.
 #[test]
 fn multi_value_roundtrip_quickcheck() {
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn prop(
         values: Vec<Value>,
         splits: Vec<usize>,
@@ -84,8 +83,7 @@ fn multi_value_roundtrip_quickcheck() {
             let end = idx + size;
             let chunk: String = chars[idx..end].iter().collect();
             chunks.push(chunk.clone());
-            parser.feed(&chunk);
-            for event in parser.by_ref() {
+            for event in parser.feed(&chunk) {
                 match event {
                     Ok(event) => events.push(event),
                     Err(_err) => {
@@ -100,8 +98,7 @@ fn multi_value_roundtrip_quickcheck() {
             let chunk: String = chars[idx..].iter().collect();
 
             chunks.push(chunk.clone());
-            parser.feed(&chunk);
-            for event in parser.by_ref() {
+            for event in parser.feed(&chunk) {
                 match event {
                     Ok(event) => events.push(event),
                     Err(_err) => {
@@ -153,8 +150,7 @@ fn multi_value_roundtrip_repro() {
     });
     let mut events = vec![];
     for chunk in &chunks {
-        parser.feed(chunk);
-        for event in parser.by_ref() {
+        for event in parser.feed(chunk) {
             match event {
                 Ok(event) => events.push(event),
                 Err(err) => {

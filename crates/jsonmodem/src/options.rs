@@ -1,5 +1,3 @@
-#![allow(clippy::struct_excessive_bools)]
-
 /// Determines the meaning of the `value` field in the `String` token.
 ///
 /// This setting determines the memory and network overhead for parsing string

@@ -1,4 +1,4 @@
-#![allow(clippy::inline_always)]
+#![expect(clippy::inline_always)]
 
 use alloc::{collections::VecDeque, string::String};
 

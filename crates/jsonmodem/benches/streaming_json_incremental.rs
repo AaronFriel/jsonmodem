@@ -1,5 +1,5 @@
 //! Benchmarks for incremental streaming scenarios.
-#![allow(missing_docs)]
+#![expect(missing_docs)]
 mod streaming_json_common;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use jsonmodem::{
 use streaming_json_common::partial_json_fixer;
 use streaming_json_common::{make_json_payload, parse_partial_json_port};
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn bench_streaming_json_incremental(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
     let payload_bytes = payload.as_bytes();
@@ -46,17 +46,15 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                             non_scalar_values: mode,
                             ..Default::default()
                         });
-                        parser.feed(first_half);
                         // Drain all events produced so far so that the parser
                         // is ready for the next chunk.
-                        for _ in &mut parser {}
+                        for _ in &mut parser.feed(first_half) {}
                         parser
                     },
                     |mut parser| {
                         // measured section – process *one* additional chunk
-                        parser.feed(incremental_part);
                         let mut events = 0usize;
-                        for _ in &mut parser {
+                        for _ in &mut parser.feed(incremental_part) {
                             events += 1;
                         }
                         black_box(events);

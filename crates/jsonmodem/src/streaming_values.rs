@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    JsonFactory, ParseEvent, Value,
+    JsonValue, JsonValueFactory, ParseEvent, StdValueFactory, Value,
     options::{NonScalarValueMode, ParserOptions},
     parser::{ParserError, StreamingParserImpl},
 };
@@ -11,7 +11,7 @@ use crate::{
 /// A value produced during streaming parsing.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct StreamingValue<V: JsonFactory> {
+pub struct StreamingValue<V: JsonValue> {
     pub index: usize,
     pub value: V,
     pub is_final: bool,
@@ -22,12 +22,12 @@ pub type StreamingValuesParser = StreamingValuesParserImpl<Value>;
 /// Parser wrapper that returns complete values after each chunk.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct StreamingValuesParserImpl<V: JsonFactory> {
+pub struct StreamingValuesParserImpl<V: JsonValue> {
     parser: StreamingParserImpl<V>,
     next_index: usize,
 }
 
-impl<V: JsonFactory> StreamingValuesParserImpl<V> {
+impl<V: JsonValue> StreamingValuesParserImpl<V> {
     /// Create a new parser. `non_scalar_values` must not be `None`.
     #[must_use]
     #[inline]
@@ -46,24 +46,34 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
 
     /// Feed a chunk of input and collect streaming values.
     #[inline]
-    pub fn feed(&mut self, chunk: &str) -> Result<Vec<StreamingValue<V>>, ParserError> {
-        self.parser.feed(chunk);
-        self.collect_from_parser()
+    pub fn feed_with<F: JsonValueFactory<Value = V> + Default>(
+        &mut self,
+        f: F,
+        chunk: &str,
+    ) -> Result<Vec<StreamingValue<V>>, ParserError> {
+        let mut f = f;
+        self.parser.feed_with(&mut f, chunk);
+        self.collect_from_parser(&mut f)
     }
 
     /// Signal end of input and collect remaining values.
     #[inline]
-    pub fn finish(self) -> Result<Vec<StreamingValue<V>>, ParserError> {
-        let mut closed = self.parser.finish();
+    pub fn finish_with<F: JsonValueFactory<Value = V>>(
+        self,
+        f: F,
+    ) -> Result<Vec<StreamingValue<V>>, ParserError> {
+        let mut f = f;
+        let mut event_iter = self.parser.finish_with(&mut f);
         let mut out = Vec::<StreamingValue<V>>::new();
         let mut index = self.next_index;
-        for evt in closed.by_ref() {
+        while let Some(evt) = event_iter.next() {
             let ev = evt?;
             match ev {
                 ParseEvent::Null { .. } => {
+                    let v = event_iter.factory.new_null();
                     out.push(StreamingValue {
                         index,
-                        value: V::from_null(V::new_null()),
+                        value: event_iter.factory.build_from_null(v),
                         is_final: true,
                     });
                     index += 1;
@@ -71,7 +81,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::Boolean { value, .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: V::from_bool(value),
+                        value: event_iter.factory.build_from_bool(value),
                         is_final: true,
                     });
                     index += 1;
@@ -79,7 +89,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::Number { value, .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: V::from_num(value),
+                        value: event_iter.factory.build_from_num(value),
                         is_final: true,
                     });
                     index += 1;
@@ -91,7 +101,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 } => {
                     out.push(StreamingValue {
                         index,
-                        value: V::from_str(v),
+                        value: event_iter.factory.build_from_str(v),
                         is_final,
                     });
                     if is_final {
@@ -101,7 +111,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::ArrayEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: V::from_array(v),
+                        value: event_iter.factory.build_from_array(v),
                         is_final: true,
                     });
                     index += 1;
@@ -109,7 +119,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::ObjectEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index,
-                        value: V::from_object(v),
+                        value: event_iter.factory.build_from_object(v),
                         is_final: true,
                     });
                     index += 1;
@@ -117,7 +127,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 _ => {}
             }
         }
-        if let Some(val) = closed.unstable_get_current_value_ref() {
+        if let Some(val) = event_iter.unstable_get_current_value_ref() {
             out.push(StreamingValue {
                 index,
                 value: val.clone(),
@@ -128,15 +138,19 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
     }
 
     #[inline]
-    fn collect_from_parser(&mut self) -> Result<Vec<StreamingValue<V>>, ParserError> {
+    fn collect_from_parser<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        f: &mut F,
+    ) -> Result<Vec<StreamingValue<V>>, ParserError> {
         let mut out = Vec::<StreamingValue<V>>::new();
-        for evt in self.parser.by_ref() {
+        while let Some(evt) = self.parser.next_event_with(f) {
             let ev = evt?;
             match ev {
                 ParseEvent::Null { .. } => {
+                    let v = f.new_null();
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_null(V::new_null()),
+                        value: f.build_from_null(v),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -144,7 +158,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::Boolean { value, .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_bool(value),
+                        value: f.build_from_bool(value),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -152,7 +166,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::Number { value, .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_num(value),
+                        value: f.build_from_num(value),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -164,7 +178,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_str(v),
+                        value: f.build_from_str(v),
                         is_final,
                     });
                     if is_final {
@@ -174,7 +188,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::ArrayEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_array(v),
+                        value: f.build_from_array(v),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -182,7 +196,7 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
                 ParseEvent::ObjectEnd { value: Some(v), .. } => {
                     out.push(StreamingValue {
                         index: self.next_index,
-                        value: V::from_object(v),
+                        value: f.build_from_object(v),
                         is_final: true,
                     });
                     self.next_index += 1;
@@ -198,5 +212,19 @@ impl<V: JsonFactory> StreamingValuesParserImpl<V> {
             });
         }
         Ok(out)
+    }
+}
+
+impl StreamingValuesParserImpl<Value> {
+    /// Feed a chunk of input and collect streaming values.
+    #[inline]
+    pub fn feed(&mut self, chunk: &str) -> Result<Vec<StreamingValue<Value>>, ParserError> {
+        self.feed_with(StdValueFactory, chunk)
+    }
+
+    /// Signal end of input and collect remaining values.
+    #[inline]
+    pub fn finish(self) -> Result<Vec<StreamingValue<Value>>, ParserError> {
+        self.finish_with(StdValueFactory)
     }
 }

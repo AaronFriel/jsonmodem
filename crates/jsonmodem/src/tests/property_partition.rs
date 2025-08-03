@@ -15,7 +15,7 @@ use crate::{
 /// exact same `Value` when reconstructed from the emitted `ParseEvent`s.
 #[test]
 fn partition_roundtrip_quickcheck() {
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn prop(value: Value, splits: Vec<usize>, string_value_mode: StringValueMode) -> bool {
         let src = value.to_string();
         if src.is_empty() {
@@ -45,8 +45,7 @@ fn partition_roundtrip_quickcheck() {
             let size = 1 + (s % remaining);
             let end = idx + size;
             let chunk: String = chars[idx..end].iter().collect();
-            parser.feed(&chunk);
-            for event in parser.by_ref() {
+            for event in parser.feed(&chunk) {
                 events.push(event.unwrap());
             }
             idx = end;
@@ -54,8 +53,7 @@ fn partition_roundtrip_quickcheck() {
         }
         if remaining > 0 {
             let chunk: String = chars[idx..].iter().collect();
-            parser.feed(&chunk);
-            for event in parser.by_ref() {
+            for event in parser.feed(&chunk) {
                 events.push(event.unwrap());
             }
         }
