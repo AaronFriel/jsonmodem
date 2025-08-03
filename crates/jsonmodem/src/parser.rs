@@ -206,6 +206,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn last(&self) -> Option<&Frame> {
         if let Some((_, frame)) = self.stack.last() {
             return Some(frame);
@@ -213,6 +214,7 @@ impl FrameStack {
         self.root.as_ref()
     }
 
+    #[inline]
     pub fn last_mut(&mut self) -> Option<&mut Frame> {
         if let Some((_, frame)) = self.stack.last_mut() {
             Some(frame)
@@ -221,6 +223,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn push(&mut self, frame: Frame) {
         match self.last() {
             Some(last_frame) => {
@@ -233,6 +236,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn pop(&mut self) -> Option<Frame> {
         match self.stack.pop() {
             Some((_, f)) => Some(f),
@@ -240,10 +244,12 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn to_path_components(&self) -> Vec<PathComponent> {
         self.stack.iter().map(|(pc, _)| pc.clone()).collect()
     }
 
+    #[inline]
     pub fn clear(&mut self) {
         self.root = None;
         self.stack.clear();

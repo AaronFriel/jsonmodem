@@ -101,6 +101,7 @@ impl JsonValue for Value {
     type Array = Vec<Value>;
     type Object = BTreeMap<String, Value>;
 
+    #[inline(always)]
     fn kind(v: &Self) -> ValueKind {
         match v {
             Value::Null => ValueKind::Null,
@@ -112,6 +113,7 @@ impl JsonValue for Value {
         }
     }
 
+    #[inline(always)]
     fn as_string_mut(v: &mut Self) -> Option<&mut Self::Str> {
         if let Value::String(s) = v {
             Some(s)
@@ -120,6 +122,7 @@ impl JsonValue for Value {
         }
     }
 
+    #[inline(always)]
     fn as_array_mut(v: &mut Self) -> Option<&mut <self::Value as JsonValue>::Array> {
         if let Value::Array(a) = v {
             Some(a)
@@ -128,6 +131,7 @@ impl JsonValue for Value {
         }
     }
 
+    #[inline(always)]
     fn as_object_mut(v: &mut Self) -> Option<&mut <self::Value as JsonValue>::Object> {
         if let Value::Object(o) = v {
             Some(o)
@@ -136,6 +140,7 @@ impl JsonValue for Value {
         }
     }
 
+    #[inline(always)]
     fn object_get_mut<'a>(
         obj: &'a mut <self::Value as JsonValue>::Object,
         key: &str,
@@ -143,14 +148,17 @@ impl JsonValue for Value {
         obj.get_mut(key)
     }
 
+    #[inline(always)]
     fn array_get_mut(arr: &mut <self::Value as JsonValue>::Array, idx: usize) -> Option<&mut Self> {
         arr.get_mut(idx)
     }
 
+    #[inline(always)]
     fn array_len(arr: &<self::Value as JsonValue>::Array) -> usize {
         arr.len()
     }
 
+    #[inline(always)]
     fn into_array(v: Self) -> Option<<self::Value as JsonValue>::Array> {
         if let Value::Array(a) = v {
             Some(a)
@@ -159,6 +167,7 @@ impl JsonValue for Value {
         }
     }
 
+    #[inline(always)]
     fn into_object(v: Self) -> Option<<self::Value as JsonValue>::Object> {
         if let Value::Object(o) = v {
             Some(o)
@@ -171,28 +180,35 @@ impl JsonValue for Value {
 impl JsonValueFactory for StdValueFactory {
     type Value = Value;
 
+    #[inline(always)]
     fn new_null(&mut self) -> <self::Value as JsonValue>::Null {}
 
+    #[inline(always)]
     fn new_bool(&mut self, b: bool) -> <self::Value as JsonValue>::Bool {
         b
     }
 
+    #[inline(always)]
     fn new_number(&mut self, n: f64) -> <self::Value as JsonValue>::Num {
         n
     }
 
+    #[inline(always)]
     fn new_string(&mut self, s: &str) -> <self::Value as JsonValue>::Str {
         s.into()
     }
 
+    #[inline(always)]
     fn new_array(&mut self) -> <self::Value as JsonValue>::Array {
         Vec::new()
     }
 
+    #[inline(always)]
     fn new_object(&mut self) -> <self::Value as JsonValue>::Object {
         BTreeMap::new()
     }
 
+    #[inline(always)]
     fn push_string(
         &mut self,
         string: &mut <self::Value as JsonValue>::Str,
@@ -201,14 +217,17 @@ impl JsonValueFactory for StdValueFactory {
         string.push_str(val);
     }
 
+    #[inline(always)]
     fn push_str(&mut self, string: &mut <self::Value as JsonValue>::Str, val: &str) {
         string.push_str(val);
     }
 
+    #[inline(always)]
     fn push_array(&mut self, array: &mut <self::Value as JsonValue>::Array, val: self::Value) {
         array.push(val);
     }
 
+    #[inline(always)]
     fn insert_object(
         &mut self,
         obj: &mut <self::Value as JsonValue>::Object,
@@ -218,30 +237,37 @@ impl JsonValueFactory for StdValueFactory {
         obj.insert(key.into(), val);
     }
 
+    #[inline(always)]
     fn build_from_str(&mut self, s: <self::Value as JsonValue>::Str) -> self::Value {
         Value::String(s)
     }
 
+    #[inline(always)]
     fn build_from_num(&mut self, n: <self::Value as JsonValue>::Num) -> self::Value {
         Value::Number(n)
     }
 
+    #[inline(always)]
     fn build_from_bool(&mut self, b: <self::Value as JsonValue>::Bool) -> self::Value {
         Value::Boolean(b)
     }
 
+    #[inline(always)]
     fn build_from_null(&mut self, _n: <self::Value as JsonValue>::Null) -> self::Value {
         Value::Null
     }
 
+    #[inline(always)]
     fn build_from_array(&mut self, a: <self::Value as JsonValue>::Array) -> self::Value {
         Value::Array(a)
     }
 
+    #[inline(always)]
     fn build_from_object(&mut self, o: <self::Value as JsonValue>::Object) -> self::Value {
         Value::Object(o)
     }
 
+    #[inline(always)]
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <self::Value as JsonValue>::Object,
@@ -260,6 +286,7 @@ impl JsonValueFactory for StdValueFactory {
         }
     }
 
+    #[inline(always)]
     fn array_push<'a, 'b: 'a>(
         &mut self,
         arr: &'b mut <self::Value as JsonValue>::Array,

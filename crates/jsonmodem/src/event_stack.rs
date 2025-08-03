@@ -18,14 +18,17 @@ impl<V: JsonValue> EventStack<V> {
     }
 
     #[cfg(any(test, feature = "fuzzing"))]
+    #[inline(always)]
     pub(crate) fn len(&self) -> usize {
         self.events.len()
     }
 
+    #[inline(always)]
     pub(crate) fn pop(&mut self) -> Option<ParseEvent<V>> {
         self.events.pop()
     }
 
+    #[inline(always)]
     pub(crate) fn push<F: JsonValueFactory<Value = V>>(
         &mut self,
         f: &mut F,
@@ -124,6 +127,7 @@ impl<V: JsonValue> EventStack<V> {
         Ok(())
     }
 
+    #[inline(always)]
     pub(crate) fn read_root(&self) -> Option<&V> {
         self.builder.as_ref().and_then(|x| x.read_root())
     }
