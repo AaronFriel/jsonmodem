@@ -1,3 +1,5 @@
+#![allow(clippy::inline_always)]
+
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
