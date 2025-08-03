@@ -38,7 +38,7 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::value::Value;
+use crate::{JsonFactory, Value};
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
@@ -252,16 +252,29 @@ impl PathComponent {
 /// ```
 /// use jsonmodem::{ParseEvent, PathComponent, Value};
 ///
-/// let evt = ParseEvent::Null { path: Vec::new() };
+/// let evt = ParseEvent::<Value>::Null { path: Vec::new() };
 /// assert_eq!(evt, ParseEvent::Null { path: Vec::new() });
 /// ```
 #[cfg_attr(
     any(test, feature = "serde"),
     derive(serde::Serialize, serde::Deserialize)
 )]
-#[cfg_attr(any(test, feature = "serde"), serde(tag = "kind"))]
+#[cfg_attr(
+    any(test, feature = "serde"),
+    serde(
+        tag = "kind",
+        bound = "
+            V::Str   : serde::Serialize + serde::de::DeserializeOwned,
+            V::Num   : serde::Serialize + serde::de::DeserializeOwned,
+            V::Bool  : serde::Serialize + serde::de::DeserializeOwned,
+            V::Null  : serde::Serialize + serde::de::DeserializeOwned,
+            V::Array : serde::Serialize + serde::de::DeserializeOwned,
+            V::Object: serde::Serialize + serde::de::DeserializeOwned
+        "
+    )
+)]
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParseEvent {
+pub enum ParseEvent<V: JsonFactory = Value> {
     /// A JSON `null` value.
     Null {
         /// The path to the value.
@@ -272,7 +285,7 @@ pub enum ParseEvent {
         /// The path to the value.
         path: Vec<PathComponent>,
         /// The boolean value.
-        value: bool,
+        value: V::Bool,
     },
     /// A JSON number value.
     ///
@@ -282,7 +295,7 @@ pub enum ParseEvent {
         /// The path to the value.
         path: Vec<PathComponent>,
         /// The number value.
-        value: f64,
+        value: V::Num,
     },
     /// A JSON string value.
     String {
@@ -296,9 +309,9 @@ pub enum ParseEvent {
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")
         )]
-        value: Option<String>,
+        value: Option<V::Str>,
         /// A fragment of a string value.
-        fragment: String,
+        fragment: V::Str,
         /// Whether this is the final fragment of a string value. Implied when
         /// `value` is set.
         #[cfg_attr(
@@ -323,7 +336,7 @@ pub enum ParseEvent {
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")
         )]
-        value: Option<Vec<Value>>,
+        value: Option<V::Array>,
     },
     /// Marks the start of a JSON object.
     ObjectBegin {
@@ -341,11 +354,9 @@ pub enum ParseEvent {
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")
         )]
-        value: Option<BTreeMap<String, Value>>,
+        value: Option<V::Object>,
     },
 }
-
-use alloc::collections::BTreeMap;
 
 /// Reconstructs the fully materialised JSON root values from a stream of
 /// `ParseEvent`s.
@@ -384,7 +395,7 @@ use alloc::collections::BTreeMap;
 #[cfg(test)]
 pub fn reconstruct_values<I>(events: I) -> Vec<Value>
 where
-    I: IntoIterator<Item = ParseEvent>,
+    I: IntoIterator<Item = ParseEvent<Value>>,
 {
     use crate::value::Map;
 

@@ -1,21 +1,21 @@
-use alloc::{boxed::Box, collections::btree_map::Entry, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{cmp::Ordering, ptr::NonNull};
 
+use crate::{JsonFactory, event::PathComponent};
 #[cfg(test)]
-use crate::{ParseEvent, ParserOptions, StreamingParser};
-use crate::{event::PathComponent, value::Value};
+use crate::{ParseEvent, ParserOptions, StreamingParser, Value};
 
 #[derive(Debug)]
-pub struct ValueZipper {
-    root: Box<Value>,
-    path: Vec<NonNull<Value>>, // 0 = root, last = current leaf
+pub struct ValueZipper<V: JsonFactory> {
+    root: Box<V>,
+    path: Vec<NonNull<V>>, // 0 = root, last = current leaf
     #[cfg(test)]
     path_components: Vec<PathComponent>,
 }
 
-impl ValueZipper {
+impl<V: JsonFactory> ValueZipper<V> {
     #[inline]
-    pub fn new(value: Value) -> Self {
+    pub fn new(value: V) -> Self {
         Self {
             root: Box::new(value),
             path: Vec::with_capacity(8),
@@ -25,7 +25,7 @@ impl ValueZipper {
     }
 
     #[inline]
-    fn current_mut(&mut self) -> &mut Value {
+    fn current_mut(&mut self) -> &mut V {
         match self.path.last().copied().as_mut() {
             // SAFETY: `ptr` came from `NonNull::from` on a `&mut Value` (see
             // `enter_*_lazy`).  It is still valid because:
@@ -47,7 +47,7 @@ impl ValueZipper {
     #[inline]
     pub fn enter_lazy<F>(&mut self, pc: PathComponent, make_child: F) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> Value,
+        F: FnOnce() -> V,
     {
         match pc {
             PathComponent::Key(k) => self.enter_key_lazy(k, make_child),
@@ -56,7 +56,7 @@ impl ValueZipper {
     }
 
     #[inline]
-    pub fn set_at(&mut self, pc: PathComponent, value: Value) -> Result<(), ZipperError> {
+    pub fn set_at(&mut self, pc: PathComponent, value: V) -> Result<(), ZipperError> {
         match pc {
             PathComponent::Key(k) => self.modify_or_insert_key(
                 k,
@@ -95,8 +95,8 @@ impl ValueZipper {
         mutator: M,
     ) -> Result<(), ZipperError>
     where
-        D: FnOnce() -> Value,
-        M: FnOnce(&mut Value) -> Result<(), ZipperError>,
+        D: FnOnce() -> V,
+        M: FnOnce(&mut V) -> Result<(), ZipperError>,
     {
         match pc {
             PathComponent::Key(k) => self.modify_or_insert_key(
@@ -125,7 +125,7 @@ impl ValueZipper {
     }
 
     #[inline]
-    pub fn pop(&mut self) -> &mut Value {
+    pub fn pop(&mut self) -> &mut V {
         let leaf = match self.path.pop().as_mut() {
             // SAFETY: identical reasoning as in `current_mut`:
             //
@@ -148,12 +148,12 @@ impl ValueZipper {
     }
 
     #[inline]
-    pub fn read_root(&self) -> &Value {
+    pub fn read_root(&self) -> &V {
         &self.root
     }
 
     #[inline]
-    pub fn into_value(self) -> Value {
+    pub fn into_value(self) -> V {
         *self.root
     }
 
@@ -169,34 +169,24 @@ impl ValueZipper {
     ) -> Result<(), ZipperError>
     where
         T: Clone,
-        F: FnOnce(T) -> Value,
-        G: FnOnce(T, Option<&mut Value>) -> Result<(), ZipperError>,
+        F: FnOnce(T) -> V,
+        G: FnOnce(T, Option<&mut V>) -> Result<(), ZipperError>,
     {
-        // if self.path.is_empty() {
-        //     return Err(ZipperError::ExpectedNonEmptyPath);
-        // }
-        let Value::Object(obj) = self.current_mut() else {
+        // Ensure we’re at an object.
+        let Some(obj) = V::as_object_mut(self.current_mut()) else {
             return Err(ZipperError::ExpectedObject);
         };
-        match obj.entry(k) {
-            Entry::Occupied(mut occ) => {
-                f(default, Some(occ.get_mut()))?;
-            }
-            Entry::Vacant(vac) => {
-                // Insert a freshly initialised child and immediately pass a
-                // mutable reference to the caller so the very first chunk of
-                // data (e.g. the first PartialString segment) is not lost.
-                // Clone `default` so we can pass ownership to both the
-                // initializer (which consumes it) *and* to the caller-supplied
-                // closure.  `T` is bounded by `Clone` so this is always
-                // possible and cheap for the `()` case that accounts for the
-                // partial-string pathway.
-                let cloned_default = default.clone();
-                let child_ref = vac.insert(initializer(default));
-                f(cloned_default, Some(child_ref))?;
-            }
+
+        // Fast path: key already present.
+        if let Some(child) = V::object_get_mut(obj, &k) {
+            return f(default, Some(child));
         }
-        Ok(())
+
+        // Key missing ⇒ insert and then mutate.
+        let cloned_default = default.clone();
+        let new_child = initializer(default);
+        let child_ref = V::object_insert(obj, k, new_child);
+        f(cloned_default, Some(child_ref))
     }
 
     #[inline]
@@ -209,56 +199,48 @@ impl ValueZipper {
     ) -> Result<(), ZipperError>
     where
         T: Clone,
-        F: FnOnce(T) -> Value,
-        G: FnOnce(T, Option<&mut Value>) -> Result<(), ZipperError>,
+        F: FnOnce(T) -> V,
+        G: FnOnce(T, Option<&mut V>) -> Result<(), ZipperError>,
     {
-        // if self.path.is_empty() {
-        //     return Err(ZipperError::ExpectedNonEmptyPath);
-        // }
-        let Value::Array(arr) = self.current_mut() else {
+        let Some(arr) = V::as_array_mut(self.current_mut()) else {
             return Err(ZipperError::ExpectedArray);
         };
 
-        match index.cmp(&arr.len()) {
-            Ordering::Less => {
-                f(default, Some(&mut arr[index]))?;
+        match index.cmp(&V::array_len(arr)) {
+            core::cmp::Ordering::Less => {
+                // Existing element – mutate in place.
+                let elem = V::array_get_mut(arr, index).expect("index checked");
+                f(default, Some(elem))
             }
-            Ordering::Equal => {
-                // Append a new child and immediately mutate it so that the first
-                // incoming chunk (for example the opening segment of a streamed
-                // string) is preserved instead of being overwritten on the next
-                // call.
-                // As with the key variant we need the value twice: once for
-                // `initializer` and once for the caller-supplied closure.
+            core::cmp::Ordering::Equal => {
+                // Need to append a new element and then mutate it.
                 let cloned_default = default.clone();
-                arr.push(initializer(default));
-                let last = arr.last_mut().expect("just pushed");
-                f(cloned_default, Some(last))?;
+                let new_child = initializer(default);
+                let elem_ref = V::array_push(arr, new_child);
+                f(cloned_default, Some(elem_ref))
             }
-            Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
+            core::cmp::Ordering::Greater => Err(ZipperError::InvalidArrayIndex),
         }
-        Ok(())
     }
 
     #[inline]
     fn enter_key_lazy<F>(&mut self, k: String, make_child: F) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> Value,
+        F: FnOnce() -> V,
     {
         #[cfg(test)]
         self.path_components.push(PathComponent::Key(k.clone()));
-        let child_ptr = {
-            let Value::Object(obj) = self.current_mut() else {
-                return Err(ZipperError::ExpectedObject);
-            };
-            match obj.entry(k) {
-                Entry::Occupied(mut occ) => NonNull::from(occ.get_mut()),
-                Entry::Vacant(vac) => {
-                    let v = make_child();
-                    NonNull::from(vac.insert(v))
-                }
-            }
+
+        let obj = V::as_object_mut(self.current_mut()).ok_or(ZipperError::ExpectedObject)?;
+
+        let child_ptr = if let Some(child) = V::object_get_mut(obj, &k) {
+            core::ptr::NonNull::from(child)
+        } else {
+            let new_child = make_child();
+            let child_ref = V::object_insert(obj, k, new_child);
+            core::ptr::NonNull::from(child_ref)
         };
+
         self.path.push(child_ptr);
         Ok(())
     }
@@ -266,24 +248,25 @@ impl ValueZipper {
     #[inline]
     fn enter_index_lazy<F>(&mut self, index: usize, make_child: F) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> Value,
+        F: FnOnce() -> V,
     {
         #[cfg(test)]
         self.path_components.push(PathComponent::Index(index));
-        let child_ptr = {
-            let Value::Array(arr) = self.current_mut() else {
-                return Err(ZipperError::ExpectedArray);
-            };
 
-            match index.cmp(&arr.len()) {
-                Ordering::Less => NonNull::from(&mut arr[index]),
-                Ordering::Equal => {
-                    arr.push(make_child());
-                    NonNull::from(arr.last_mut().expect("just pushed"))
-                }
-                Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
+        let arr = V::as_array_mut(self.current_mut()).ok_or(ZipperError::ExpectedArray)?;
+
+        let child_ptr = match index.cmp(&V::array_len(arr)) {
+            Ordering::Less => {
+                let elem = V::array_get_mut(arr, index).expect("index verified");
+                NonNull::from(elem)
             }
+            Ordering::Equal => {
+                let elem = V::array_push(arr, make_child());
+                NonNull::from(elem)
+            }
+            Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
         };
+
         self.path.push(child_ptr);
         Ok(())
     }
@@ -330,22 +313,20 @@ impl core::error::Error for ZipperError {}
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-enum BuilderState {
+enum BuilderState<V: JsonFactory> {
     Empty,
-    Ready(ValueZipper),
+    Ready(ValueZipper<V>),
 }
 
 #[derive(Debug)]
-pub struct ValueBuilder<F: crate::factory::JsonFactory<Any = Value>> {
-    state: BuilderState,
-    factory: F,
+pub struct ValueBuilder<V: JsonFactory> {
+    state: BuilderState<V>,
 }
 
-impl<F: crate::factory::JsonFactory<Any = Value> + Default> Default for ValueBuilder<F> {
+impl<V: JsonFactory> Default for ValueBuilder<V> {
     fn default() -> Self {
         Self {
             state: BuilderState::Empty,
-            factory: F::default(),
         }
     }
 }
@@ -356,12 +337,7 @@ macro_rules! raise {
     };
 }
 
-impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
-    #[inline]
-    pub fn factory(&self) -> &F {
-        &self.factory
-    }
-
+impl<V: JsonFactory> ValueBuilder<V> {
     // façade – these rely on the fact that root already exists; no clone needed
     #[inline]
     pub fn enter_with<G>(
@@ -370,7 +346,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
         make_child: G,
     ) -> Result<(), ZipperError>
     where
-        G: FnOnce() -> Value,
+        G: FnOnce() -> V,
     {
         match pc {
             None if matches!(self.state, BuilderState::Empty) => {
@@ -388,7 +364,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
     }
 
     #[inline]
-    pub fn set(&mut self, pc: Option<&PathComponent>, value: Value) -> Result<(), ZipperError> {
+    pub fn set(&mut self, pc: Option<&PathComponent>, value: V) -> Result<(), ZipperError> {
         match pc {
             None => {
                 self.state = BuilderState::Ready(ValueZipper::new(value));
@@ -410,8 +386,8 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
         mutator: M,
     ) -> Result<(), ZipperError>
     where
-        D: FnOnce() -> Value,
-        M: FnOnce(&mut Value) -> Result<(), ZipperError>,
+        D: FnOnce() -> V,
+        M: FnOnce(&mut V) -> Result<(), ZipperError>,
     {
         match pc {
             None if matches!(self.state, BuilderState::Empty) => {
@@ -434,7 +410,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
     }
 
     #[inline]
-    pub fn pop(&mut self) -> Result<&mut Value, ZipperError> {
+    pub fn pop(&mut self) -> Result<&mut V, ZipperError> {
         match &mut self.state {
             BuilderState::Ready(z) => Ok(z.pop()),
             BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
@@ -442,7 +418,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
     }
 
     #[inline]
-    pub fn read_root(&self) -> Option<&Value> {
+    pub fn read_root(&self) -> Option<&V> {
         match &self.state {
             BuilderState::Ready(z) => Some(z.read_root()),
             BuilderState::Empty => None,
@@ -450,7 +426,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
     }
 
     #[inline]
-    pub fn into_value(self) -> Option<Value> {
+    pub fn into_value(self) -> Option<V> {
         match self.state {
             BuilderState::Ready(z) => Some(z.into_value()),
             BuilderState::Empty => None,
@@ -465,7 +441,7 @@ impl<F: crate::factory::JsonFactory<Any = Value>> ValueBuilder<F> {
 #[cfg(test)]
 pub struct StreamingParserBuilder {
     parser: StreamingParser,
-    state: ValueBuilder<crate::factory::StdFactory>,
+    state: ValueBuilder<Value>,
 }
 
 #[cfg(test)]
@@ -473,7 +449,7 @@ impl StreamingParserBuilder {
     pub fn new(options: ParserOptions) -> Self {
         Self {
             parser: StreamingParser::new(options),
-            state: ValueBuilder::<crate::factory::StdFactory>::default(),
+            state: ValueBuilder::default(),
         }
     }
 
@@ -767,7 +743,7 @@ mod tests {
 
     #[test]
     fn builder_usage_simple() {
-        let mut builder = ValueBuilder::<crate::factory::StdFactory>::default();
+        let mut builder = ValueBuilder::default();
         assert!(builder.read_root().is_none());
         // Initialize root as an object
         builder
@@ -788,7 +764,7 @@ mod tests {
 
     #[test]
     fn builder_pop_errors() {
-        let mut builder = ValueBuilder::<crate::factory::StdFactory>::default();
+        let mut builder = ValueBuilder::<Value>::default();
         // Popping when empty should yield an error
         assert_eq!(builder.pop(), Err(ZipperError::ExpectedNonEmptyPath));
     }

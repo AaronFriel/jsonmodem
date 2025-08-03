@@ -1,15 +1,14 @@
 #![allow(missing_docs)]
-use jsonmodem::{JsonFactory, StdFactory, Value};
+use jsonmodem::{JsonFactory, Value};
 
 #[test]
 fn std_factory_roundtrip() {
-    let f = StdFactory;
-    let mut arr = f.new_array();
-    f.push_array(&mut arr, f.any_from_bool(f.new_bool(true)));
-    let mut obj = f.new_object();
-    f.insert_object(&mut obj, "n", f.any_from_num(f.new_number(1.0)));
-    let v_arr = f.any_from_array(arr);
-    let v_obj = f.any_from_object(obj);
+    let mut arr = Value::new_array();
+    Value::push_array(&mut arr, Value::from_bool(Value::new_bool(true)));
+    let mut obj = Value::new_object();
+    Value::insert_object(&mut obj, "n", Value::from_num(Value::new_number(1.0)));
+    let v_arr = Value::from_array(arr);
+    let v_obj = Value::from_object(obj);
     assert_eq!(v_arr, Value::Array(vec![Value::Boolean(true)]));
     assert_eq!(
         v_obj,
