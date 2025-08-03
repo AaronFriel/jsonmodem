@@ -39,8 +39,8 @@
 //! cargo run -p jsonmodem --example llm_tool_call
 //! ```
 
-#![allow(clippy::needless_raw_string_hashes)]
-#![allow(clippy::doc_markdown)]
+#![expect(clippy::needless_raw_string_hashes)]
+#![expect(clippy::doc_markdown)]
 
 use jsonmodem::{ParseEvent, ParserOptions, StreamingParser, StringValueMode, path};
 
@@ -91,10 +91,8 @@ fn main() {
     let mut reference_value = String::from("\n");
 
     for chunk in simulated_stream {
-        parser.feed(chunk);
-
         // Drain all events currently available.
-        for evt in parser.by_ref() {
+        for evt in parser.feed(chunk) {
             let evt = evt.expect("parser error");
 
             // Record a serialised copy of each event for the snapshot.

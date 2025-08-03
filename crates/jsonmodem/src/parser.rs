@@ -17,10 +17,10 @@
 //!     println!("{:?}", event);
 //! }
 //! ```
-#![allow(clippy::single_match_else)]
-#![allow(clippy::enum_glob_use)]
-#![allow(clippy::struct_excessive_bools)]
-#![allow(clippy::inline_always)]
+#![expect(clippy::single_match_else)]
+#![allow(clippy::enum_glob_use)] // Conditional
+#![allow(clippy::struct_excessive_bools)] // Conditional
+#![expect(clippy::inline_always)]
 
 use alloc::{
     format,
@@ -31,7 +31,7 @@ use alloc::{
 use core::{f64, fmt};
 
 use crate::{
-    JsonFactory, StringValueMode, Value,
+    JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
     event::{ParseEvent, PathComponent},
@@ -58,7 +58,6 @@ pub(crate) enum Token {
     Boolean(bool),
     Null,
     Number(f64),
-    #[allow(clippy::doc_link_with_quotes)]
     /// Must be one of: `{` `}` `[` `]` `:` `,`
     Punctuator(u8),
 }
@@ -207,6 +206,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn last(&self) -> Option<&Frame> {
         if let Some((_, frame)) = self.stack.last() {
             return Some(frame);
@@ -214,6 +214,7 @@ impl FrameStack {
         self.root.as_ref()
     }
 
+    #[inline]
     pub fn last_mut(&mut self) -> Option<&mut Frame> {
         if let Some((_, frame)) = self.stack.last_mut() {
             Some(frame)
@@ -222,6 +223,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn push(&mut self, frame: Frame) {
         match self.last() {
             Some(last_frame) => {
@@ -234,6 +236,7 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn pop(&mut self) -> Option<Frame> {
         match self.stack.pop() {
             Some((_, f)) => Some(f),
@@ -241,10 +244,12 @@ impl FrameStack {
         }
     }
 
+    #[inline]
     pub fn to_path_components(&self) -> Vec<PathComponent> {
         self.stack.iter().map(|(pc, _)| pc.clone()).collect()
     }
 
+    #[inline]
     pub fn clear(&mut self) {
         self.root = None;
         self.stack.clear();
@@ -274,7 +279,7 @@ pub type StreamingParser = StreamingParserImpl<Value>;
 ///     println!("{:?}", event);
 /// }
 /// ```
-pub struct StreamingParserImpl<V: JsonFactory = Value> {
+pub struct StreamingParserImpl<V: JsonValue = Value> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
     end_of_input: bool,
@@ -312,17 +317,22 @@ pub struct StreamingParserImpl<V: JsonFactory = Value> {
     lexed_tokens: Vec<Token>,
 }
 
-impl<V: JsonFactory> Default for StreamingParserImpl<V> {
+impl<V: JsonValue> Default for StreamingParserImpl<V> {
     fn default() -> Self {
         Self::new(ParserOptions::default())
     }
 }
 
-impl<V: JsonFactory> Iterator for StreamingParserImpl<V> {
-    type Item = Result<ParseEvent<V>, ParserError>;
+pub struct StreamingParserIteratorWith<'a, F: JsonValueFactory> {
+    parser: &'a mut StreamingParserImpl<F::Value>,
+    pub(crate) factory: F,
+}
+
+impl<F: JsonValueFactory> Iterator for StreamingParserIteratorWith<'_, F> {
+    type Item = Result<ParseEvent<F::Value>, ParserError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_event()
+        self.parser.next_event_with(&mut self.factory)
     }
 }
 
@@ -331,30 +341,31 @@ impl<V: JsonFactory> Iterator for StreamingParserImpl<V> {
 /// Returned by [`StreamingParser::finish`], this parser will process any
 /// remaining input and then end. It implements `Iterator` to yield
 /// `ParseEvent` results.
-pub struct ClosedStreamingParser<V: JsonFactory> {
-    parser: StreamingParserImpl<V>,
+pub struct ClosedStreamingParser<F: JsonValueFactory> {
+    parser: StreamingParserImpl<F::Value>,
+    pub(crate) factory: F,
 }
 
-impl<V: JsonFactory> ClosedStreamingParser<V> {
+impl<F: JsonValueFactory> ClosedStreamingParser<F> {
     #[cfg(test)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
         self.parser.get_lexed_tokens()
     }
 
-    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&V> {
+    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&F::Value> {
         self.parser.unstable_get_current_value_ref()
     }
 }
 
-impl<V: JsonFactory> Iterator for ClosedStreamingParser<V> {
-    type Item = Result<ParseEvent<V>, ParserError>;
+impl<F: JsonValueFactory> Iterator for ClosedStreamingParser<F> {
+    type Item = Result<ParseEvent<F::Value>, ParserError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next_event()
+        self.parser.next_event_with(&mut self.factory)
     }
 }
 
-impl<V: JsonFactory> StreamingParserImpl<V> {
+impl<V: JsonValue> StreamingParserImpl<V> {
     #[must_use]
     /// Creates a new `StreamingParser` with the given options.
     ///
@@ -410,52 +421,36 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
         }
     }
 
-    /// Feeds a chunk of JSON text into the parser.
-    ///
-    /// The parser buffers the input and parses it incrementally,
-    /// yielding events when complete JSON tokens or structures are recognized.
-    ///
-    /// # Arguments
-    ///
-    /// * `text` - A string slice containing JSON data or partial data.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use jsonmodem::{StreamingParser, ParserOptions};
-    /// let mut parser = StreamingParser::new(ParserOptions::default());
-    /// parser.feed("{\"hello\":");
-    /// ```
-    pub fn feed(&mut self, text: &str) {
+    /// TODO - Update with concrete example following pyo3 integration
+    #[doc(hidden)]
+    pub fn feed_with<'a, F: JsonValueFactory<Value = V>>(
+        &'a mut self,
+        factory: F,
+        text: &str,
+    ) -> StreamingParserIteratorWith<'a, F> {
         self.source.push(text);
+        StreamingParserIteratorWith {
+            parser: self,
+            factory,
+        }
     }
 
     #[must_use]
     /// Marks the end of input and returns a closed parser to consume pending
     /// events.
     ///
-    /// After calling `finish`, no further input can be fed. The returned
+    /// After calling `finish_with`, no further input can be fed. The returned
     /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
     /// and then ends.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
-    /// let mut parser = StreamingParser::new(ParserOptions::default());
-    /// parser.feed("true");
-    /// let mut closed = parser.finish();
-    /// assert_eq!(
-    ///     closed.next().unwrap().unwrap(),
-    ///     ParseEvent::Boolean {
-    ///         path: vec![],
-    ///         value: true
-    ///     }
-    /// );
-    /// ```
-    pub fn finish(mut self) -> ClosedStreamingParser<V> {
+    pub fn finish_with<F: JsonValueFactory<Value = V>>(
+        mut self,
+        factory: F,
+    ) -> ClosedStreamingParser<F> {
         self.end_of_input = true;
-        ClosedStreamingParser { parser: self }
+        ClosedStreamingParser {
+            parser: self,
+            factory,
+        }
     }
 
     /// Experimental helper that returns the *currently* fully-parsed JSON value
@@ -485,8 +480,11 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
     /// * `Some(Err(err))`       - the parser has errored, and no more events
     ///   can be produced
     /// * `None`                 – the parser has no events.
-    fn next_event(&mut self) -> Option<Result<ParseEvent<V>, ParserError>> {
-        match self.next_event_internal() {
+    pub(crate) fn next_event_with<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        f: &mut F,
+    ) -> Option<Result<ParseEvent<V>, ParserError>> {
+        match self.next_event_internal(f) {
             Some(Ok(event)) => Some(Ok(event)),
             None => None,
             Some(Err(err)) => {
@@ -503,9 +501,11 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
         }
     }
 
-    fn next_event_internal(&mut self) -> Option<Result<ParseEvent<V>, ParserError>> {
+    fn next_event_internal<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        f: &mut F,
+    ) -> Option<Result<ParseEvent<V>, ParserError>> {
         if self.parse_state == ParseState::Error {
-            // If we are in error state, we can’t produce any more events
             return None;
         }
 
@@ -515,7 +515,6 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                 self.events.len() <= 1,
                 "Internal error: more than one event in the queue"
             );
-            // Anything already queued up?
             if let Some(ev) = self.events.pop() {
                 if matches!(self.non_scalar_values, NonScalarValueMode::Roots)
                     && !Self::is_root_event(&ev)
@@ -525,9 +524,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                 return Some(Ok(ev));
             }
 
-            // Streaming reset (mirrors TS `if (this.stream && this.parseState === 'end')`)
             if self.multiple_values && matches!(self.parse_state, ParseState::End) {
-                // Reset *except* the source buffer
                 self.lex_state = LexState::Default;
                 self.parse_state = ParseState::Start;
                 self.frames.clear();
@@ -541,7 +538,6 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                 );
             }
 
-            // Drive the old lexer / dispatcher one token forward
             let token = match self.lex() {
                 Ok(tok) => tok,
                 Err(err) => {
@@ -555,7 +551,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                 }
             };
             let is_eof = token.is_eof();
-            match self.dispatch_parse_state(token) {
+            match self.dispatch_parse_state(token, f) {
                 Ok(()) => {}
                 Err(err) => {
                     #[cfg(test)]
@@ -568,7 +564,6 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                 }
             }
 
-            // Stop when we reach EoF or partial token
             if is_eof || self.partial_lex {
                 break;
             }
@@ -702,7 +697,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     #[inline(always)]
     fn lex_state_step(
         &mut self,
@@ -1180,7 +1175,11 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
     // Parse state dispatcher (translation of TS parseStates method)
     // ------------------------------------------------------------------------------------------------
     #[inline(always)]
-    fn dispatch_parse_state(&mut self, token: Token) -> Result<(), ParserError> {
+    fn dispatch_parse_state<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        token: Token,
+        f: &mut F,
+    ) -> Result<(), ParserError> {
         use ParseState::*;
 
         match self.parse_state {
@@ -1190,7 +1189,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                     return Err(self.invalid_eof());
                 }
                 Token::Eof => (),
-                _ => self.push(token)?,
+                _ => self.push(token, f)?,
             },
 
             BeforePropertyName => match token {
@@ -1205,7 +1204,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                     }
                     self.parse_state = AfterPropertyName;
                 }
-                Token::Punctuator(_) => self.pop()?,
+                Token::Punctuator(_) => self.pop(f)?,
                 Token::String { .. } => {
                     return Err(
                         self.syntax_error("Unexpected string value in property name".to_string())
@@ -1222,13 +1221,13 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
 
             BeforePropertyValue => match token {
                 Token::Eof => (),
-                _ => self.push(token)?,
+                _ => self.push(token, f)?,
             },
 
             BeforeArrayValue => match token {
                 Token::Eof => (),
-                Token::Punctuator(b']') => self.pop()?,
-                _ => self.push(token)?,
+                Token::Punctuator(b']') => self.pop(f)?,
+                _ => self.push(token, f)?,
             },
 
             AfterPropertyValue => match token {
@@ -1239,7 +1238,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
                     }
                     self.parse_state = BeforePropertyName;
                 }
-                Token::Punctuator(b'}') => self.pop()?,
+                Token::Punctuator(b'}') => self.pop(f)?,
                 _ => (),
             },
 
@@ -1257,7 +1256,7 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
 
                     self.parse_state = BeforeArrayValue;
                 }
-                Token::Punctuator(b']') => self.pop()?,
+                Token::Punctuator(b']') => self.pop(f)?,
                 _ => (),
             },
             End | Error => {}
@@ -1267,17 +1266,17 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
     }
 
     #[inline(always)]
-    fn pop(&mut self) -> Result<(), ParserError> {
+    fn pop<F: JsonValueFactory<Value = V>>(&mut self, f: &mut F) -> Result<(), ParserError> {
         let path = self.frames.to_path_components();
         match self.frames.pop() {
             Some(Frame::Array { .. }) => {
                 self.events
-                    .push(ParseEvent::ArrayEnd { path, value: None })
+                    .push(f, ParseEvent::ArrayEnd { path, value: None })
                     .map_err(|err| self.zipper_error(err))?;
             }
             Some(Frame::Object { .. }) => {
                 self.events
-                    .push(ParseEvent::ObjectEnd { path, value: None })
+                    .push(f, ParseEvent::ObjectEnd { path, value: None })
                     .map_err(|err| self.zipper_error(err))?;
             }
             _ => {}
@@ -1298,14 +1297,21 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
     }
 
     #[inline(always)]
-    fn push(&mut self, token: Token) -> Result<(), ParserError> {
+    fn push<F: JsonValueFactory<Value = V>>(
+        &mut self,
+        token: Token,
+        f: &mut F,
+    ) -> Result<(), ParserError> {
         match token {
             Token::Punctuator(b'{') => {
                 self.frames.push(Frame::new_object_frame());
                 self.events
-                    .push(ParseEvent::ObjectBegin {
-                        path: self.frames.to_path_components(),
-                    })
+                    .push(
+                        f,
+                        ParseEvent::ObjectBegin {
+                            path: self.frames.to_path_components(),
+                        },
+                    )
                     .map_err(|err| self.zipper_error(err))?;
                 self.parse_state = ParseState::BeforePropertyName;
                 return Ok(());
@@ -1313,9 +1319,12 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
             Token::Punctuator(b'[') => {
                 self.frames.push(Frame::new_array_frame());
                 self.events
-                    .push(ParseEvent::ArrayStart {
-                        path: self.frames.to_path_components(),
-                    })
+                    .push(
+                        f,
+                        ParseEvent::ArrayStart {
+                            path: self.frames.to_path_components(),
+                        },
+                    )
                     .map_err(|err| self.zipper_error(err))?;
                 self.parse_state = ParseState::BeforeArrayValue;
                 return Ok(());
@@ -1333,34 +1342,34 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
         match (token, self.partial_lex) {
             (Token::Null, _) => {
                 self.events
-                    .push(ParseEvent::Null { path })
+                    .push(f, ParseEvent::Null { path })
                     .map_err(|err| self.zipper_error(err))?;
             }
             (Token::Boolean(b), _) => {
+                let value = f.new_bool(b);
                 self.events
-                    .push(ParseEvent::Boolean {
-                        path,
-                        value: V::new_bool(b),
-                    })
+                    .push(f, ParseEvent::Boolean { path, value })
                     .map_err(|err| self.zipper_error(err))?;
             }
             (Token::Number(n), _) => {
+                let value = f.new_number(n);
                 self.events
-                    .push(ParseEvent::Number {
-                        path,
-                        value: V::new_number(n),
-                    })
+                    .push(f, ParseEvent::Number { path, value })
                     .map_err(|err| self.zipper_error(err))?;
             }
-            // Streaming string fragments (partial) build up until the full string is complete.
             (Token::String { fragment, value }, partial) => {
+                let value = value.as_ref().map(|s| f.new_string(s));
+                let fragment = f.new_string(&fragment);
                 self.events
-                    .push(ParseEvent::String {
-                        path,
-                        fragment: V::new_string(fragment),
-                        value: value.map(V::new_string),
-                        is_final: !partial,
-                    })
+                    .push(
+                        f,
+                        ParseEvent::String {
+                            path,
+                            fragment,
+                            value,
+                            is_final: !partial,
+                        },
+                    )
                     .map_err(|err| self.zipper_error(err))?;
             }
             (Token::PropertyName { .. }, _) => {
@@ -1465,6 +1474,39 @@ impl<V: JsonFactory> StreamingParserImpl<V> {
     }
 }
 
+impl StreamingParserImpl<Value> {
+    /// Feeds a chunk of JSON text into the parser.
+    ///
+    /// The parser buffers the input and parses it incrementally,
+    /// yielding events when complete JSON tokens or structures are recognized.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A string slice containing JSON data or partial data.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use jsonmodem::{StreamingParser, ParserOptions};
+    /// let mut parser = StreamingParser::new(ParserOptions::default());
+    /// parser.feed("{\"hello\":");
+    /// ```
+    pub fn feed<'a>(&'a mut self, text: &str) -> StreamingParserIteratorWith<'a, StdValueFactory> {
+        self.feed_with(StdValueFactory, text)
+    }
+
+    #[must_use]
+    /// Marks the end of input and returns a closed parser to consume pending
+    /// events.
+    ///
+    /// After calling `finish_with`, no further input can be fed. The returned
+    /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
+    /// and then ends.
+    pub fn finish(self) -> ClosedStreamingParser<StdValueFactory> {
+        self.finish_with(StdValueFactory)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParserError {
     msg: String,
@@ -1483,6 +1525,7 @@ impl core::error::Error for ParserError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StdValueFactory;
 
     #[test]
     fn size_of_parser() {
@@ -1493,6 +1536,6 @@ mod tests {
     #[test]
     fn size_of_closed_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser<Value>>(), 280);
+        assert_eq!(size_of::<ClosedStreamingParser<StdValueFactory>>(), 280);
     }
 }

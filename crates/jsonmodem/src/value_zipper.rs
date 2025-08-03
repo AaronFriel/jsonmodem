@@ -1,19 +1,19 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::{cmp::Ordering, ptr::NonNull};
 
-use crate::{JsonFactory, event::PathComponent};
+use crate::{JsonValue, JsonValueFactory, event::PathComponent};
 #[cfg(test)]
-use crate::{ParseEvent, ParserOptions, StreamingParser, Value};
+use crate::{ParseEvent, ParserOptions, StdValueFactory, StreamingParser, Value};
 
 #[derive(Debug)]
-pub struct ValueZipper<V: JsonFactory> {
+pub struct ValueZipper<V: JsonValue> {
     root: Box<V>,
     path: Vec<NonNull<V>>, // 0 = root, last = current leaf
     #[cfg(test)]
     path_components: Vec<PathComponent>,
 }
 
-impl<V: JsonFactory> ValueZipper<V> {
+impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     pub fn new(value: V) -> Self {
         Self {
@@ -45,24 +45,36 @@ impl<V: JsonFactory> ValueZipper<V> {
     // ─── public clone‑free operations ──────────────────────────────────────
 
     #[inline]
-    pub fn enter_lazy<F>(&mut self, pc: PathComponent, make_child: F) -> Result<(), ZipperError>
+    pub fn enter_lazy<FN, FFac>(
+        &mut self,
+        pc: PathComponent,
+        f: &mut FFac,
+        make_child: FN,
+    ) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> V,
+        FFac: JsonValueFactory<Value = V>,
+        FN: FnOnce(&mut FFac) -> V,
     {
         match pc {
-            PathComponent::Key(k) => self.enter_key_lazy(k, make_child),
-            PathComponent::Index(i) => self.enter_index_lazy(i, make_child),
+            PathComponent::Key(k) => self.enter_key_lazy(k, f, make_child),
+            PathComponent::Index(i) => self.enter_index_lazy(i, f, make_child),
         }
     }
 
     #[inline]
-    pub fn set_at(&mut self, pc: PathComponent, value: V) -> Result<(), ZipperError> {
+    pub fn set_at<FFac: JsonValueFactory<Value = V>>(
+        &mut self,
+        pc: PathComponent,
+        value: V,
+        f: &mut FFac,
+    ) -> Result<(), ZipperError> {
         match pc {
             PathComponent::Key(k) => self.modify_or_insert_key(
+                f,
                 k,
                 value,
-                |v| v, // move
-                |new, entry| {
+                |v, _| v,
+                |new, entry, _| {
                     if let Some(e) = entry {
                         *e = new;
                         Ok(())
@@ -72,10 +84,11 @@ impl<V: JsonFactory> ValueZipper<V> {
                 },
             ),
             PathComponent::Index(i) => self.modify_or_insert_index(
+                f,
                 i,
                 value,
-                |v| v,
-                |new, entry| {
+                |v, _| v,
+                |new, entry, _| {
                     if let Some(e) = entry {
                         *e = new;
                         Ok(())
@@ -88,35 +101,39 @@ impl<V: JsonFactory> ValueZipper<V> {
     }
 
     #[inline]
-    pub fn mutate_lazy<D, M>(
+    pub fn mutate_lazy<D, M, FFac>(
         &mut self,
         pc: PathComponent,
+        f: &mut FFac,
         make_default: D,
         mutator: M,
     ) -> Result<(), ZipperError>
     where
-        D: FnOnce() -> V,
-        M: FnOnce(&mut V) -> Result<(), ZipperError>,
+        FFac: JsonValueFactory<Value = V>,
+        D: FnOnce(&mut FFac) -> V,
+        M: FnOnce(&mut V, &mut FFac) -> Result<(), ZipperError>,
     {
         match pc {
             PathComponent::Key(k) => self.modify_or_insert_key(
+                f,
                 k,
                 (), // zero‑sized token
-                |()| make_default(),
-                |(), entry| {
+                |(), fac| make_default(fac),
+                |(), entry, fac| {
                     if let Some(v) = entry {
-                        mutator(v)?;
+                        mutator(v, fac)?;
                     }
                     Ok(())
                 },
             ),
             PathComponent::Index(i) => self.modify_or_insert_index(
+                f,
                 i,
                 (),
-                |()| make_default(),
-                |(), entry| {
+                |(), fac| make_default(fac),
+                |(), entry, fac| {
                     if let Some(v) = entry {
-                        mutator(v)?;
+                        mutator(v, fac)?;
                     }
                     Ok(())
                 },
@@ -160,47 +177,48 @@ impl<V: JsonFactory> ValueZipper<V> {
     // ─── internal helpers (key / index) ────────────────────────────────────
 
     #[inline]
-    fn modify_or_insert_key<T, F, G>(
+    fn modify_or_insert_key<T, Init, Func, FFac>(
         &mut self,
+        f: &mut FFac,
         k: String,
         default: T,
-        initializer: F,
-        f: G,
+        initializer: Init,
+        func: Func,
     ) -> Result<(), ZipperError>
     where
+        FFac: JsonValueFactory<Value = V>,
         T: Clone,
-        F: FnOnce(T) -> V,
-        G: FnOnce(T, Option<&mut V>) -> Result<(), ZipperError>,
+        Init: FnOnce(T, &mut FFac) -> V,
+        Func: FnOnce(T, Option<&mut V>, &mut FFac) -> Result<(), ZipperError>,
     {
-        // Ensure we’re at an object.
         let Some(obj) = V::as_object_mut(self.current_mut()) else {
             return Err(ZipperError::ExpectedObject);
         };
 
-        // Fast path: key already present.
         if let Some(child) = V::object_get_mut(obj, &k) {
-            return f(default, Some(child));
+            return func(default, Some(child), f);
         }
 
-        // Key missing ⇒ insert and then mutate.
         let cloned_default = default.clone();
-        let new_child = initializer(default);
-        let child_ref = V::object_insert(obj, k, new_child);
-        f(cloned_default, Some(child_ref))
+        let new_child = initializer(default, f);
+        let child_ref = f.object_insert(obj, k, new_child);
+        func(cloned_default, Some(child_ref), f)
     }
 
     #[inline]
-    fn modify_or_insert_index<T, F, G>(
+    fn modify_or_insert_index<T, Init, Func, FFac>(
         &mut self,
+        f: &mut FFac,
         index: usize,
         default: T,
-        initializer: F,
-        f: G,
+        initializer: Init,
+        func: Func,
     ) -> Result<(), ZipperError>
     where
+        FFac: JsonValueFactory<Value = V>,
         T: Clone,
-        F: FnOnce(T) -> V,
-        G: FnOnce(T, Option<&mut V>) -> Result<(), ZipperError>,
+        Init: FnOnce(T, &mut FFac) -> V,
+        Func: FnOnce(T, Option<&mut V>, &mut FFac) -> Result<(), ZipperError>,
     {
         let Some(arr) = V::as_array_mut(self.current_mut()) else {
             return Err(ZipperError::ExpectedArray);
@@ -208,25 +226,29 @@ impl<V: JsonFactory> ValueZipper<V> {
 
         match index.cmp(&V::array_len(arr)) {
             core::cmp::Ordering::Less => {
-                // Existing element – mutate in place.
                 let elem = V::array_get_mut(arr, index).expect("index checked");
-                f(default, Some(elem))
+                func(default, Some(elem), f)
             }
             core::cmp::Ordering::Equal => {
-                // Need to append a new element and then mutate it.
                 let cloned_default = default.clone();
-                let new_child = initializer(default);
-                let elem_ref = V::array_push(arr, new_child);
-                f(cloned_default, Some(elem_ref))
+                let new_child = initializer(default, f);
+                let elem_ref = f.array_push(arr, new_child);
+                func(cloned_default, Some(elem_ref), f)
             }
             core::cmp::Ordering::Greater => Err(ZipperError::InvalidArrayIndex),
         }
     }
 
     #[inline]
-    fn enter_key_lazy<F>(&mut self, k: String, make_child: F) -> Result<(), ZipperError>
+    fn enter_key_lazy<FN, FFac>(
+        &mut self,
+        k: String,
+        f: &mut FFac,
+        make_child: FN,
+    ) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> V,
+        FFac: JsonValueFactory<Value = V>,
+        FN: FnOnce(&mut FFac) -> V,
     {
         #[cfg(test)]
         self.path_components.push(PathComponent::Key(k.clone()));
@@ -236,8 +258,8 @@ impl<V: JsonFactory> ValueZipper<V> {
         let child_ptr = if let Some(child) = V::object_get_mut(obj, &k) {
             core::ptr::NonNull::from(child)
         } else {
-            let new_child = make_child();
-            let child_ref = V::object_insert(obj, k, new_child);
+            let new_child = make_child(f);
+            let child_ref = f.object_insert(obj, k, new_child);
             core::ptr::NonNull::from(child_ref)
         };
 
@@ -246,9 +268,15 @@ impl<V: JsonFactory> ValueZipper<V> {
     }
 
     #[inline]
-    fn enter_index_lazy<F>(&mut self, index: usize, make_child: F) -> Result<(), ZipperError>
+    fn enter_index_lazy<FN, FFac>(
+        &mut self,
+        index: usize,
+        f: &mut FFac,
+        make_child: FN,
+    ) -> Result<(), ZipperError>
     where
-        F: FnOnce() -> V,
+        FFac: JsonValueFactory<Value = V>,
+        FN: FnOnce(&mut FFac) -> V,
     {
         #[cfg(test)]
         self.path_components.push(PathComponent::Index(index));
@@ -261,7 +289,8 @@ impl<V: JsonFactory> ValueZipper<V> {
                 NonNull::from(elem)
             }
             Ordering::Equal => {
-                let elem = V::array_push(arr, make_child());
+                let val = make_child(f);
+                let elem = f.array_push(arr, val);
                 NonNull::from(elem)
             }
             Ordering::Greater => return Err(ZipperError::InvalidArrayIndex),
@@ -313,17 +342,17 @@ impl core::error::Error for ZipperError {}
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
-enum BuilderState<V: JsonFactory> {
+enum BuilderState<V: JsonValue> {
     Empty,
     Ready(ValueZipper<V>),
 }
 
 #[derive(Debug)]
-pub struct ValueBuilder<V: JsonFactory> {
+pub struct ValueBuilder<V: JsonValue> {
     state: BuilderState<V>,
 }
 
-impl<V: JsonFactory> Default for ValueBuilder<V> {
+impl<V: JsonValue> Default for ValueBuilder<V> {
     fn default() -> Self {
         Self {
             state: BuilderState::Empty,
@@ -337,41 +366,48 @@ macro_rules! raise {
     };
 }
 
-impl<V: JsonFactory> ValueBuilder<V> {
+impl<V: JsonValue> ValueBuilder<V> {
     // façade – these rely on the fact that root already exists; no clone needed
     #[inline]
-    pub fn enter_with<G>(
+    pub fn enter_with<G, FFac>(
         &mut self,
         pc: Option<&PathComponent>,
+        f: &mut FFac,
         make_child: G,
     ) -> Result<(), ZipperError>
     where
-        G: FnOnce() -> V,
+        FFac: JsonValueFactory<Value = V>,
+        G: FnOnce(&mut FFac) -> V,
     {
         match pc {
             None if matches!(self.state, BuilderState::Empty) => {
-                self.state = BuilderState::Ready(ValueZipper::new(make_child()));
+                self.state = BuilderState::Ready(ValueZipper::new(make_child(f)));
                 Ok(())
             }
             None => {
                 raise!(ZipperError::ExpectedEmptyPath)
             }
             Some(pc) => match &mut self.state {
-                BuilderState::Ready(z) => z.enter_lazy(pc.clone(), make_child),
+                BuilderState::Ready(z) => z.enter_lazy(pc.clone(), f, make_child),
                 BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
             },
         }
     }
 
     #[inline]
-    pub fn set(&mut self, pc: Option<&PathComponent>, value: V) -> Result<(), ZipperError> {
+    pub fn set<FFac: JsonValueFactory<Value = V>>(
+        &mut self,
+        pc: Option<&PathComponent>,
+        value: V,
+        f: &mut FFac,
+    ) -> Result<(), ZipperError> {
         match pc {
             None => {
                 self.state = BuilderState::Ready(ValueZipper::new(value));
                 Ok(())
             }
             Some(pc) => match &mut self.state {
-                BuilderState::Ready(z) => z.set_at(pc.clone(), value),
+                BuilderState::Ready(z) => z.set_at(pc.clone(), value, f),
                 #[cfg_attr(coverage_nightly, coverage(off))]
                 BuilderState::Empty => raise!(ZipperError::ExpectedEmptyPath),
             },
@@ -379,30 +415,32 @@ impl<V: JsonFactory> ValueBuilder<V> {
     }
 
     #[inline]
-    pub fn mutate_with<D, M>(
+    pub fn mutate_with<D, M, FFac>(
         &mut self,
+        f: &mut FFac,
         pc: Option<&PathComponent>,
         make_default: D,
         mutator: M,
     ) -> Result<(), ZipperError>
     where
-        D: FnOnce() -> V,
-        M: FnOnce(&mut V) -> Result<(), ZipperError>,
+        FFac: JsonValueFactory<Value = V>,
+        D: FnOnce(&mut FFac) -> V,
+        M: FnOnce(&mut V, &mut FFac) -> Result<(), ZipperError>,
     {
         match pc {
             None if matches!(self.state, BuilderState::Empty) => {
-                let mut v = make_default();
-                mutator(&mut v)?;
+                let mut v = make_default(f);
+                mutator(&mut v, f)?;
                 self.state = BuilderState::Ready(ValueZipper::new(v));
                 Ok(())
             }
             None => match &mut self.state {
-                BuilderState::Ready(z) => mutator(z.current_mut()),
+                BuilderState::Ready(z) => mutator(z.current_mut(), f),
                 #[cfg_attr(coverage_nightly, coverage(off))]
                 BuilderState::Empty => raise!(ZipperError::ExpectedEmptyPath),
             },
             Some(pc) => match &mut self.state {
-                BuilderState::Ready(z) => z.mutate_lazy(pc.clone(), make_default, mutator),
+                BuilderState::Ready(z) => z.mutate_lazy(pc.clone(), f, make_default, mutator),
                 #[cfg_attr(coverage_nightly, coverage(off))]
                 BuilderState::Empty => raise!(ZipperError::ExpectedNonEmptyPath),
             },
@@ -459,10 +497,8 @@ impl StreamingParserBuilder {
         &mut self,
         buffer: &str,
     ) -> Result<Option<(&Value, Vec<ParseEvent>)>, ZipperError> {
-        self.parser.feed(buffer);
-
         let mut events: Vec<ParseEvent> = Vec::new();
-        for evt in self.parser.by_ref() {
+        for evt in self.parser.feed(buffer) {
             match evt {
                 Ok(event) => events.push(event),
                 Err(_) => {
@@ -476,19 +512,23 @@ impl StreamingParserBuilder {
             match evt {
                 // scalars
                 ParseEvent::Null { path } => {
-                    self.state.set(path.last(), Value::Null)?;
+                    self.state
+                        .set(path.last(), Value::Null, &mut StdValueFactory)?;
                 }
                 ParseEvent::Boolean { path, value } => {
-                    self.state.set(path.last(), (*value).into())?;
+                    self.state
+                        .set(path.last(), (*value).into(), &mut StdValueFactory)?;
                 }
                 ParseEvent::Number { path, value } => {
-                    self.state.set(path.last(), (*value).into())?;
+                    self.state
+                        .set(path.last(), (*value).into(), &mut StdValueFactory)?;
                 }
                 ParseEvent::String { fragment, path, .. } => {
                     self.state.mutate_with(
+                        &mut StdValueFactory,
                         path.last(),
-                        || Value::String(String::new()),
-                        |v| {
+                        |_| Value::String(String::new()),
+                        |v, _| {
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
                                 Ok(())
@@ -504,11 +544,15 @@ impl StreamingParserBuilder {
                     use crate::value::Map;
 
                     self.state
-                        .enter_with(path.last(), || Value::Object(Map::new()))?;
+                        .enter_with(path.last(), &mut StdValueFactory, |_| {
+                            Value::Object(Map::new())
+                        })?;
                 }
                 ParseEvent::ArrayStart { path } => {
                     self.state
-                        .enter_with(path.last(), || Value::Array(Vec::new()))?;
+                        .enter_with(path.last(), &mut StdValueFactory, |_| {
+                            Value::Array(Vec::new())
+                        })?;
                 }
 
                 // ── container ends ─────────────────────────────────────────
@@ -636,9 +680,7 @@ mod tests {
     #[timeout(Duration::from_millis(250))]
     fn root_number_single_chunk_repro_one() {
         let mut parser = StreamingParser::new(default_opts());
-        parser.feed("123 ");
-
-        let events: Vec<_> = parser.collect();
+        let events: Vec<_> = parser.feed("123 ").collect();
         assert!(events.iter().all(Result::is_ok), "all events should be ok");
         assert_eq!(
             events.len(),
@@ -663,10 +705,16 @@ mod tests {
     fn zipper_set_and_pop() {
         let mut zipper = ValueZipper::new(Value::Object(Map::new()));
         zipper
-            .enter_lazy(PathComponent::Key("foo".into()), || Value::Array(vec![]))
+            .enter_lazy(
+                PathComponent::Key("foo".into()),
+                &mut StdValueFactory,
+                |_| Value::Array(vec![]),
+            )
             .unwrap();
         zipper
-            .enter_lazy(PathComponent::Index(0), || Value::String("bar".into()))
+            .enter_lazy(PathComponent::Index(0), &mut StdValueFactory, |_| {
+                Value::String("bar".into())
+            })
             .unwrap();
         // Pop back to root
         zipper.pop();
@@ -687,7 +735,11 @@ mod tests {
         let mut zipper = ValueZipper::new(Value::Object(Map::new()));
         // Insert new entry
         zipper
-            .set_at(PathComponent::Key("k".into()), Value::Number(1.into()))
+            .set_at(
+                PathComponent::Key("k".into()),
+                Value::Number(1.into()),
+                &mut StdValueFactory,
+            )
             .unwrap();
         // Consume zipper to inspect inserted value, then rebuild for overwrite test
         let v1 = zipper.into_value();
@@ -698,7 +750,11 @@ mod tests {
         let mut zipper = ValueZipper::new(v1);
         // Overwrite existing entry
         zipper
-            .set_at(PathComponent::Key("k".into()), Value::Number(2.into()))
+            .set_at(
+                PathComponent::Key("k".into()),
+                Value::Number(2.into()),
+                &mut StdValueFactory,
+            )
             .unwrap();
         assert_eq!(
             zipper.into_value(),
@@ -712,8 +768,9 @@ mod tests {
         zipper
             .mutate_lazy(
                 PathComponent::Key("s".into()),
-                || Value::String(String::new()),
-                |v| {
+                &mut StdValueFactory,
+                |_| Value::String(String::new()),
+                |v, _| {
                     if let Value::String(s) = v {
                         s.push_str("hello");
                         Ok(())
@@ -732,11 +789,15 @@ mod tests {
     fn zipper_errors_for_wrong_container() {
         let mut zipper = ValueZipper::new(Value::String("x".into()));
         assert_eq!(
-            zipper.enter_lazy(PathComponent::Key("k".into()), || Value::Null),
+            zipper.enter_lazy(PathComponent::Key("k".into()), &mut StdValueFactory, |_| {
+                Value::Null
+            }),
             Err(ZipperError::ExpectedObject)
         );
         assert_eq!(
-            zipper.enter_lazy(PathComponent::Index(0), || Value::Null),
+            zipper.enter_lazy(PathComponent::Index(0), &mut StdValueFactory, |_| {
+                Value::Null
+            }),
             Err(ZipperError::ExpectedArray)
         );
     }
@@ -747,14 +808,16 @@ mod tests {
         assert!(builder.read_root().is_none());
         // Initialize root as an object
         builder
-            .enter_with(None, || Value::Object(Map::new()))
+            .enter_with(None, &mut StdValueFactory, |_| Value::Object(Map::new()))
             .unwrap();
         assert_eq!(builder.read_root(), Some(&Value::Object(Map::new())));
         // Enter and set a boolean child
         builder
-            .enter_with(Some(&PathComponent::Key("a".into())), || {
-                Value::Boolean(true)
-            })
+            .enter_with(
+                Some(&PathComponent::Key("a".into())),
+                &mut StdValueFactory,
+                |_| Value::Boolean(true),
+            )
             .unwrap();
         assert_eq!(
             builder.into_value(),

@@ -27,8 +27,7 @@ pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize 
     let mut events = 0usize;
 
     for &chunk in chunks {
-        parser.feed(chunk);
-        for _ in &mut parser {
+        for _ in parser.feed(chunk) {
             events += 1;
         }
     }

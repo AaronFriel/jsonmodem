@@ -3,9 +3,9 @@
 //! <https://github.com/vercel/ai/blob/53ea87ab77de821c085e52a26cfa1c069ff3eb39/packages/ai/src/util/parse-partial-json.ts>
 //! <https://github.com/vercel/ai/blob/53ea87ab77de821c085e52a26cfa1c069ff3eb39/packages/ai/src/util/fix-json.ts>
 
-#![allow(clippy::enum_glob_use)]
-#![allow(clippy::items_after_statements)]
-#![allow(clippy::cast_possible_wrap)]
+#![expect(clippy::enum_glob_use)]
+#![expect(clippy::items_after_statements)]
+#![expect(clippy::cast_possible_wrap)]
 
 use serde_json::Value as JsonValue;
 
@@ -70,7 +70,7 @@ pub(crate) enum State {
 /// that is semantically *at least* a prefix of the input. The algorithm does
 /// **not** attempt to correct semantically invalid documents – that is left to
 /// the final `serde_json` parse attempt.
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 #[must_use]
 pub fn fix_json(input: &str) -> String {
     use State::*;
@@ -361,7 +361,7 @@ pub fn fix_json(input: &str) -> String {
 
     // Build the *fixed* JSON string.
     let mut result = if last_valid_index >= 0 {
-        #[allow(clippy::cast_sign_loss)]
+        #[expect(clippy::cast_sign_loss)]
         input[..=(last_valid_index as usize)].to_owned()
     } else {
         String::new()

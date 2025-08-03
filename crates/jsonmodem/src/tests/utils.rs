@@ -80,7 +80,7 @@ fn render_tokens(tokens: &[Token]) -> Result<String, core::fmt::Error> {
 
 #[test]
 fn roundtrip_rendered_tokens() {
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn prop(value: Value) -> bool {
         let mut parser = StreamingParser::new(ParserOptions::default());
 

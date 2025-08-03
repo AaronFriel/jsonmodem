@@ -38,13 +38,13 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::{JsonFactory, Value};
+use crate::{JsonValue, Value};
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
 #[doc(hidden)]
 #[cfg(any(test, feature = "serde"))]
-#[allow(clippy::trivially_copy_pass_by_ref)]
+#[expect(clippy::trivially_copy_pass_by_ref)]
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -186,7 +186,7 @@ mod serde_impls {
         where
             E: Error,
         {
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_possible_truncation)]
             Ok(PathComponent::Index(value as usize))
         }
 
@@ -201,8 +201,8 @@ mod serde_impls {
                 ));
             }
 
-            #[allow(clippy::cast_sign_loss)]
-            #[allow(clippy::cast_possible_truncation)]
+            #[expect(clippy::cast_sign_loss)]
+            #[expect(clippy::cast_possible_truncation)]
             Ok(PathComponent::Index(value as usize))
         }
     }
@@ -274,7 +274,7 @@ impl PathComponent {
     )
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub enum ParseEvent<V: JsonFactory = Value> {
+pub enum ParseEvent<V: JsonValue = Value> {
     /// A JSON `null` value.
     Null {
         /// The path to the value.
