@@ -34,7 +34,7 @@ pub use error::ParserError;
 pub use event::{ParseEvent, PathComponent, PathComponentFrom};
 pub use factory::{JsonValue, JsonValueFactory, StdValueFactory, ValueKind};
 pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
-pub use parser::StreamingParser;
+pub use parser::{StreamingParser, StreamingParserImpl};
 pub use streaming_values::{StreamingValue, StreamingValuesParser};
 pub use value::{Array, Map, Value};
 

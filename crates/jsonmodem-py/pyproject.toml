@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0"]
+requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
@@ -8,3 +8,4 @@ version = "0.1.0"
 
 [tool.maturin]
 module-name = "jsonmodem"
+features = ["ext-module"]

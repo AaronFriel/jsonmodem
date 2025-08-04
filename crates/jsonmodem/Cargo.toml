@@ -15,7 +15,6 @@ fuzzing = []
 serde = []
 bench = []
 comparison = []
-pyo3 = ["dep:pyo3"]
 bench-fast = []
 test-fast = []
 # Enabling `miri` pulls in the faster test and benchmark configurations.
@@ -24,7 +23,6 @@ miri = ["bench-fast", "test-fast"]
 [dependencies]
 ouroboros = { version = "0.18.5", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
-pyo3 = { version = "0.25.1", optional = true }
 cfg-if = "1.0.1"
 
 [dev-dependencies]
