@@ -827,7 +827,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let num = self.buffer.parse::<f64>().unwrap();
+                    let Ok(num) = self.buffer.parse::<f64>() else {
+                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
+                    };
                     self.buffer.clear();
                     Ok(Some(self.new_token(Token::Number(num), false)))
                 }
@@ -861,7 +863,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let num = self.buffer.parse::<f64>().unwrap();
+                    let Ok(num) = self.buffer.parse::<f64>() else {
+                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
+                    };
                     self.buffer.clear();
                     Ok(Some(self.new_token(Token::Number(num), false)))
                 }
@@ -914,7 +918,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let num = self.buffer.parse::<f64>().unwrap();
+                    let Ok(num) = self.buffer.parse::<f64>() else {
+                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
+                    };
                     self.buffer.clear();
                     Ok(Some(self.new_token(Token::Number(num), false)))
                 }
@@ -980,7 +986,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let num = self.buffer.parse::<f64>().unwrap();
+                    let Ok(num) = self.buffer.parse::<f64>() else {
+                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
+                    };
                     self.buffer.clear();
                     Ok(Some(self.new_token(Token::Number(num), false)))
                 }
