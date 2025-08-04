@@ -1,7 +1,9 @@
 use jsonmodem::JsonValueFactory;
 use jsonmodem_py::PyFactory;
-use pyo3::Python;
-use pyo3::types::{PyAnyMethods, PyString, PyStringMethods};
+use pyo3::{
+    Python,
+    types::{PyAnyMethods, PyString, PyStringMethods},
+};
 
 #[test]
 fn pyfactory_scalar_roundtrip() {

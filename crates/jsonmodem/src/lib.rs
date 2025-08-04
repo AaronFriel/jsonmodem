@@ -35,7 +35,7 @@ pub use event::{ParseEvent, PathComponent, PathComponentFrom};
 pub use factory::{JsonValue, JsonValueFactory, StdValueFactory, ValueKind};
 pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
 pub use parser::{StreamingParser, StreamingParserImpl};
-pub use streaming_values::{StreamingValue, StreamingValuesParser};
+pub use streaming_values::{StreamingValue, StreamingValuesParser, StreamingValuesParserImpl};
 pub use value::{Array, Map, Value};
 
 /// Macro to build a `Vec<PathComponent>` from a heterogeneous list of keys and
