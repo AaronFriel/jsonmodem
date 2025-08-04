@@ -1,11 +1,11 @@
 mod pyfactory;
 mod pyvalue;
 
+use ::jsonmodem::{StreamingParserImpl, StreamingValuesParserImpl};
 pub use pyfactory::PyFactory;
 pub use pyvalue::PyJsonValue;
-
-use ::jsonmodem::StreamingParserImpl;
 pub type PyStreamingParser = StreamingParserImpl<PyJsonValue>;
+pub type PyStreamingValuesParser = StreamingValuesParserImpl<PyJsonValue>;
 
 use pyo3::prelude::*;
 

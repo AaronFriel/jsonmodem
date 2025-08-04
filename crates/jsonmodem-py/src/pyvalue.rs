@@ -1,14 +1,21 @@
-use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyList, PyString};
-
 use jsonmodem::{JsonValue, ValueKind};
+use pyo3::{
+    prelude::*,
+    types::{PyBool, PyDict, PyFloat, PyList, PyModule, PyString},
+};
 
 /// Wrapper around a Python object implementing [`JsonValue`].
 pub struct PyJsonValue(pub Py<PyAny>);
 
 impl Clone for PyJsonValue {
     fn clone(&self) -> Self {
-        Python::with_gil(|py| Self(self.0.clone_ref(py)))
+        Python::with_gil(|py| {
+            let copy = PyModule::import(py, "copy").expect("import copy");
+            let dup = copy
+                .call_method1("deepcopy", (self.0.clone_ref(py),))
+                .expect("deepcopy");
+            Self(dup.unbind())
+        })
     }
 }
 

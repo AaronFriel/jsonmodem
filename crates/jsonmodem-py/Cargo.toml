@@ -6,6 +6,7 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for the jsonmodem Rust crate"
 
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

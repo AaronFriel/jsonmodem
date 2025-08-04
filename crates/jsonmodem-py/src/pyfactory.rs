@@ -1,6 +1,8 @@
 use jsonmodem::JsonValueFactory;
-use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyList, PyString};
+use pyo3::{
+    prelude::*,
+    types::{PyBool, PyDict, PyFloat, PyList, PyString},
+};
 
 use crate::pyvalue::PyJsonValue;
 
