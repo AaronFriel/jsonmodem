@@ -89,6 +89,24 @@ fn error_invalid_characters_following_exponent_sign() {
 }
 
 #[test]
+fn error_missing_exponent_digits_with_space() {
+    let mut parser = StreamingParser::new(ParserOptions::default());
+    let err = parser.feed("1e ").last().unwrap().unwrap_err();
+    assert_eq!(err.to_string(), "JSON5: invalid character ' ' at 1:3");
+    assert_eq!(err.line, 1);
+    assert_eq!(err.column, 3);
+}
+
+#[test]
+fn error_missing_exponent_digits_with_sign() {
+    let mut parser = StreamingParser::new(ParserOptions::default());
+    let err = parser.feed("1e+ ").last().unwrap().unwrap_err();
+    assert_eq!(err.to_string(), "JSON5: invalid character ' ' at 1:4");
+    assert_eq!(err.line, 1);
+    assert_eq!(err.column, 4);
+}
+
+#[test]
 fn error_invalid_new_lines_in_strings() {
     let mut parser = StreamingParser::new(ParserOptions::default());
     let err = parser.feed("\"\n\"").last().unwrap().unwrap_err();
