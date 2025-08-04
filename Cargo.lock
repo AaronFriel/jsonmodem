@@ -492,7 +492,6 @@ dependencies = [
  "jiter",
  "ouroboros",
  "paste",
- "pyo3",
  "quickcheck",
  "quickcheck_macros",
  "rstest",
@@ -518,6 +517,7 @@ version = "0.1.0"
 dependencies = [
  "jsonmodem",
  "pyo3",
+ "pyo3-build-config",
 ]
 
 [[package]]
