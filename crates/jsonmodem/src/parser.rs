@@ -31,14 +31,7 @@ use alloc::{
 use core::{f64, fmt};
 
 use crate::{
-    JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
-    buffer::Buffer,
-    escape_buffer::UnicodeEscapeBuffer,
-    event::{ParseEvent, PathComponent},
-    event_stack::EventStack,
-    literal_buffer::{self, ExpectedLiteralBuffer},
-    options::{NonScalarValueMode, ParserOptions},
-    value_zipper::{ValueBuilder, ZipperError},
+    buffer::Buffer, escape_buffer::UnicodeEscapeBuffer, event::{ParseEvent, PathComponent}, event_stack::EventStack, literal_buffer::{self, ExpectedLiteralBuffer}, options::{NonScalarValueMode, ParserOptions}, value_zipper::{ValueBuilder, ZipperError}, JsonValue, JsonValueFactory, StdValueFactory, Str, StringValueMode, Value
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -152,7 +145,7 @@ pub enum Frame {
         next_index: usize, // slot for the next element
     },
     Object {
-        pending_key: Option<String>, // key waiting for its value
+        pending_key: Option<Str>, // key waiting for its value
     },
 }
 
@@ -1197,7 +1190,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 Token::PropertyName { value } => {
                     match self.frames.last_mut() {
                         Some(Frame::Object { pending_key }) => {
-                            *pending_key = Some(value);
+                            *pending_key = Some(value.into());
                         }
                         _ => Err(self
                             .syntax_error("Expected object frame for property name".to_string()))?,

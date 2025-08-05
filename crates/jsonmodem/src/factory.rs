@@ -75,7 +75,7 @@ pub trait JsonValueFactory {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: String,
+        key: Str,
         val: Self::Value,
     ) -> &'b mut Self::Value;
     fn array_push<'a, 'b: 'a>(
@@ -91,15 +91,15 @@ pub struct StdValueFactory;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use crate::value::Value;
+use crate::{value::Value, Array, Map, Str};
 
 impl JsonValue for Value {
-    type Str = String;
+    type Str = crate::Str;
     type Num = f64;
     type Bool = bool;
     type Null = ();
-    type Array = Vec<Value>;
-    type Object = BTreeMap<String, Value>;
+    type Array = crate::Array;
+    type Object = crate::Map;
 
     #[inline(always)]
     fn kind(v: &Self) -> ValueKind {
@@ -200,12 +200,12 @@ impl JsonValueFactory for StdValueFactory {
 
     #[inline(always)]
     fn new_array(&mut self) -> <self::Value as JsonValue>::Array {
-        Vec::new()
+        Array::new_sync()
     }
 
     #[inline(always)]
     fn new_object(&mut self) -> <self::Value as JsonValue>::Object {
-        BTreeMap::new()
+        Map::new_sync()
     }
 
     #[inline(always)]
@@ -224,7 +224,7 @@ impl JsonValueFactory for StdValueFactory {
 
     #[inline(always)]
     fn push_array(&mut self, array: &mut <self::Value as JsonValue>::Array, val: self::Value) {
-        array.push(val);
+        array.push_back_mut(val);
     }
 
     #[inline(always)]
@@ -271,19 +271,15 @@ impl JsonValueFactory for StdValueFactory {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <self::Value as JsonValue>::Object,
-        key: String,
+        key: Str,
         val: self::Value,
     ) -> &'b mut self::Value {
-        use alloc::collections::btree_map::Entry;
-
-        match obj.entry(key) {
-            Entry::Occupied(occ) => {
-                let slot = occ.into_mut();
-                *slot = val;
-                slot
-            }
-            Entry::Vacant(slot) => slot.insert(val),
+        if let Some(slot) = obj.get_mut(&key) {
+            *slot = val;
+        } else {
+            obj.insert_mut(key.clone(), val);
         }
+        unsafe { obj.get_mut(&key).unwrap_unchecked() }
     }
 
     #[inline(always)]
@@ -292,9 +288,10 @@ impl JsonValueFactory for StdValueFactory {
         arr: &'b mut <self::Value as JsonValue>::Array,
         val: self::Value,
     ) -> &'b mut self::Value {
-        arr.push(val);
+        arr.push_back_mut(val);
         // SAFETY: `arr` is guaranteed to be non-empty because we just pushed a value.
-        unsafe { arr.last_mut().unwrap_unchecked() }
+        let index = arr.len() - 1;
+        unsafe { arr.get_mut(index).unwrap_unchecked() }
     }
 }
 
@@ -394,7 +391,7 @@ impl<F: JsonValueFactory + ?Sized> JsonValueFactory for &mut F {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: String,
+        key: Str,
         val: Self::Value,
     ) -> &'b mut Self::Value {
         (**self).object_insert(obj, key, val)

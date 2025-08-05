@@ -2,10 +2,12 @@
 //!
 //! This module defines the [`Value`] enum, which represents any valid JSON
 //! value, and provides helper functions for escaping JSON strings.
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::string::String;
 
-pub type Map = BTreeMap<String, Value>;
-pub type Array = Vec<Value>;
+
+pub type Str = ecow::EcoString;
+pub type Map = rpds::RedBlackTreeMapSync<Str, Value>;
+pub type Array = rpds::VectorSync<Value>;
 
 /// A JSON value as defined by [RFC 8259].
 ///
@@ -43,7 +45,7 @@ pub enum Value {
     Null,
     Boolean(bool),
     Number(f64),
-    String(String),
+    String(Str),
     Array(Array),
     Object(Map),
 }
@@ -68,18 +70,18 @@ impl From<f64> for Value {
 
 impl From<String> for Value {
     fn from(v: String) -> Self {
-        Self::String(v)
+        Self::String(v.into())
     }
 }
 
-impl From<Vec<Value>> for Value {
-    fn from(v: Vec<Value>) -> Self {
+impl From<Array> for Value {
+    fn from(v: Array) -> Self {
         Self::Array(v)
     }
 }
 
-impl From<BTreeMap<String, Value>> for Value {
-    fn from(v: BTreeMap<String, Value>) -> Self {
+impl From<Map> for Value {
+    fn from(v: Map) -> Self {
         Self::Object(v)
     }
 }

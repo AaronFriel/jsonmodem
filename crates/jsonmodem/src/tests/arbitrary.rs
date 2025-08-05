@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 
 use quickcheck::{Arbitrary, Gen};
 
-use crate::{StringValueMode, Value, value::Map};
+use crate::{value::Map, Array, StringValueMode, Value};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct JsonNumber(f64);
@@ -26,29 +26,29 @@ impl Arbitrary for Value {
                     0 => Value::Null,
                     1 => Value::Boolean(bool::arbitrary(g)),
                     2 => Value::Number(JsonNumber::arbitrary(g).0),
-                    _ => Value::String(String::arbitrary(g)),
+                    _ => Value::String(String::arbitrary(g).into()),
                 }
             } else {
                 match usize::arbitrary(g) % 6 {
                     0 => Value::Null,
                     1 => Value::Boolean(bool::arbitrary(g)),
                     2 => Value::Number(JsonNumber::arbitrary(g).0),
-                    3 => Value::String(String::arbitrary(g)),
+                    3 => Value::String(String::arbitrary(g).into()),
                     4 => {
                         let len = usize::arbitrary(g) % 3;
-                        let mut vec = Vec::new();
+                        let mut vec = Array::new_sync();
                         for _ in 0..len {
-                            vec.push(gen_val(g, depth - 1));
+                            vec.push_back_mut(gen_val(g, depth - 1));
                         }
                         Value::Array(vec)
                     }
                     _ => {
                         let len = usize::arbitrary(g) % 3;
-                        let mut map = Map::new();
+                        let mut map = Map::new_sync();
                         for _ in 0..len {
-                            let key = String::arbitrary(g);
+                            let key = String::arbitrary(g).into();
                             let val = gen_val(g, depth - 1);
-                            map.insert(key, val);
+                            map = map.insert(key, val);
                         }
                         Value::Object(map)
                     }

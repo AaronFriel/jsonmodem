@@ -33,12 +33,11 @@
 //!     ]
 //! );
 //! ```
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 
-use crate::{JsonValue, Value};
+#[cfg(test)]
+use crate::Array;
+use crate::{JsonValue, Str, Value};
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
@@ -68,7 +67,7 @@ fn is_false(b: &bool) -> bool {
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathComponent {
-    Key(String),
+    Key(Str),
     Index(usize),
 }
 
@@ -90,13 +89,13 @@ impl_from_int_for_pathcomponent!(u8, u16, u32, u64, usize);
 
 impl From<&str> for PathComponent {
     fn from(s: &str) -> Self {
-        Self::Key(s.to_string())
+        Self::Key(s.into())
     }
 }
 
 impl From<String> for PathComponent {
     fn from(s: String) -> Self {
-        Self::Key(s)
+        Self::Key(s.into())
     }
 }
 
@@ -123,13 +122,13 @@ impl_integer_as_path_component!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usi
 
 impl PathComponentFrom<&str> for PathComponent {
     fn from_path_component(value: &str) -> Self {
-        PathComponent::Key(value.to_string())
+        PathComponent::Key(value.into())
     }
 }
 
 impl PathComponentFrom<String> for PathComponent {
     fn from_path_component(value: String) -> Self {
-        PathComponent::Key(value)
+        PathComponent::Key(value.into())
     }
 }
 
@@ -172,14 +171,14 @@ mod serde_impls {
         where
             E: Error,
         {
-            Ok(PathComponent::Key(value.to_string()))
+            Ok(PathComponent::Key(value.into()))
         }
 
         fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
         where
             E: Error,
         {
-            Ok(PathComponent::Key(value))
+            Ok(PathComponent::Key(value.into()))
         }
 
         fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -230,7 +229,7 @@ impl PathComponent {
 
     #[must_use]
     /// Returns the key if this component is a key, otherwise `None`.
-    pub fn as_key(&self) -> Option<&String> {
+    pub fn as_key(&self) -> Option<&Str> {
         if let Self::Key(v) = self {
             Some(v)
         } else {
@@ -393,106 +392,107 @@ pub enum ParseEvent<V: JsonValue = Value> {
 /// completion is required and unavoidable because the caller may retain the
 /// returned list while more events are fed in.
 #[cfg(test)]
-pub fn reconstruct_values<I>(events: I) -> Vec<Value>
+pub fn reconstruct_values<I>(events: I) -> Array
 where
     I: IntoIterator<Item = ParseEvent<Value>>,
 {
     use crate::value::Map;
+    todo!()
 
-    let mut finished_roots = Vec::new();
-    let mut current_root = Value::Null;
-    let mut building_root = false;
+    // let mut finished_roots = Vec::new();
+    // let mut current_root = Value::Null;
+    // let mut building_root = false;
 
-    for evt in events {
-        match &evt {
-            // ----------------------------------------------------------------------------------
-            // Container open – insert an empty placeholder so that later children have a slot to
-            // land in.
-            ParseEvent::ArrayStart { path } => {
-                insert_at_path(&mut current_root, path, Value::Array(Vec::new()));
-                if path.is_empty() {
-                    building_root = true;
-                }
-            }
-            ParseEvent::ObjectBegin { path } => {
-                insert_at_path(&mut current_root, path, Value::Object(Map::new()));
-                if path.is_empty() {
-                    building_root = true;
-                }
-            }
+    // for evt in events {
+    //     match &evt {
+    //         // ----------------------------------------------------------------------------------
+    //         // Container open – insert an empty placeholder so that later children have a slot to
+    //         // land in.
+    //         ParseEvent::ArrayStart { path } => {
+    //             insert_at_path(&mut current_root, path, Value::Array(Vec::new()));
+    //             if path.is_empty() {
+    //                 building_root = true;
+    //             }
+    //         }
+    //         ParseEvent::ObjectBegin { path } => {
+    //             insert_at_path(&mut current_root, path, Value::Object(Map::new()));
+    //             if path.is_empty() {
+    //                 building_root = true;
+    //             }
+    //         }
 
-            // ----------------------------------------------------------------------------------
-            // Leaf value – insert at its destination path.  If the path is empty we finish the
-            // root.
-            ParseEvent::Null { path } => {
-                insert_at_path(&mut current_root, path, Value::Null);
-                if path.is_empty() {
-                    finished_roots.push(Value::Null);
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            ParseEvent::Boolean { path, value } => {
-                insert_at_path(&mut current_root, path, Value::Boolean(*value));
-                if path.is_empty() {
-                    finished_roots.push(Value::Boolean(*value));
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            ParseEvent::Number { path, value } => {
-                insert_at_path(&mut current_root, path, Value::Number(*value));
-                if path.is_empty() {
-                    finished_roots.push(Value::Number(*value));
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            // ----------------------------------------------------------------------------------
-            // Streaming string fragments – accumulate string content and start a root on first
-            // fragment.
-            ParseEvent::String {
-                path,
-                value,
-                fragment,
-                is_final,
-                ..
-            } => {
-                if let Some(value) = value {
-                    insert_at_path(&mut current_root, path, Value::String(value.clone()));
-                } else {
-                    // Append or insert string fragment at the given path
-                    append_string_at_path(&mut current_root, path, fragment);
-                }
+    //         // ----------------------------------------------------------------------------------
+    //         // Leaf value – insert at its destination path.  If the path is empty we finish the
+    //         // root.
+    //         ParseEvent::Null { path } => {
+    //             insert_at_path(&mut current_root, path, Value::Null);
+    //             if path.is_empty() {
+    //                 finished_roots.push(Value::Null);
+    //                 current_root = Value::Null;
+    //                 building_root = false;
+    //             }
+    //         }
+    //         ParseEvent::Boolean { path, value } => {
+    //             insert_at_path(&mut current_root, path, Value::Boolean(*value));
+    //             if path.is_empty() {
+    //                 finished_roots.push(Value::Boolean(*value));
+    //                 current_root = Value::Null;
+    //                 building_root = false;
+    //             }
+    //         }
+    //         ParseEvent::Number { path, value } => {
+    //             insert_at_path(&mut current_root, path, Value::Number(*value));
+    //             if path.is_empty() {
+    //                 finished_roots.push(Value::Number(*value));
+    //                 current_root = Value::Null;
+    //                 building_root = false;
+    //             }
+    //         }
+    //         // ----------------------------------------------------------------------------------
+    //         // Streaming string fragments – accumulate string content and start a root on first
+    //         // fragment.
+    //         ParseEvent::String {
+    //             path,
+    //             value,
+    //             fragment,
+    //             is_final,
+    //             ..
+    //         } => {
+    //             if let Some(value) = value {
+    //                 insert_at_path(&mut current_root, path, Value::String(value.clone()));
+    //             } else {
+    //                 // Append or insert string fragment at the given path
+    //                 append_string_at_path(&mut current_root, path, fragment);
+    //             }
 
-                if *is_final && path.is_empty() {
-                    finished_roots.push(current_root.clone());
-                    current_root = Value::Null;
-                    building_root = false;
-                } else if path.is_empty() {
-                    building_root = true;
-                }
-            }
+    //             if *is_final && path.is_empty() {
+    //                 finished_roots.push(current_root.clone());
+    //                 current_root = Value::Null;
+    //                 building_root = false;
+    //             } else if path.is_empty() {
+    //                 building_root = true;
+    //             }
+    //         }
 
-            // ----------------------------------------------------------------------------------
-            // Container close – push the fully built root when the closed container sits at the top
-            // level.
-            ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
-                if path.is_empty() && building_root {
-                    finished_roots.push(current_root.clone());
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-        }
-    }
+    //         // ----------------------------------------------------------------------------------
+    //         // Container close – push the fully built root when the closed container sits at the top
+    //         // level.
+    //         ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+    //             if path.is_empty() && building_root {
+    //                 finished_roots.push(current_root.clone());
+    //                 current_root = Value::Null;
+    //                 building_root = false;
+    //             }
+    //         }
+    //     }
+    // }
 
-    // If a top-level string (or other root) was started but never terminated via
-    // Complete, treat it as finished at end-of-stream.
-    if building_root {
-        finished_roots.push(current_root);
-    }
-    finished_roots
+    // // If a top-level string (or other root) was started but never terminated via
+    // // Complete, treat it as finished at end-of-stream.
+    // if building_root {
+    //     finished_roots.push(current_root);
+    // }
+    // finished_roots
 }
 
 #[cfg(test)]
@@ -501,159 +501,165 @@ where
 /// an array index the underlying vector is automatically resized (filled with
 /// `Value::Null`).
 fn insert_at_path(target: &mut Value, path: &[PathComponent], val: Value) {
-    use crate::value::Map;
+    todo!()
 
-    if path.is_empty() {
-        *target = val;
-        return;
-    }
+    // use crate::value::Map;
 
-    let mut current = target;
-    // Traverse all but the last component, creating intermediate containers
-    // on-demand.
-    for comp in &path[..path.len() - 1] {
-        match comp {
-            PathComponent::Key(k) => {
-                if let Value::Object(map) = current {
-                    current = map.entry(k.clone()).or_insert(Value::Null);
-                } else {
-                    *current = Value::Object(Map::new());
-                    if let Value::Object(map) = current {
-                        current = map.entry(k.clone()).or_insert(Value::Null);
-                    }
-                }
-            }
-            PathComponent::Index(i) => {
-                if let Value::Array(vec) = current {
-                    if *i >= vec.len() {
-                        vec.resize(*i + 1, Value::Null);
-                    }
-                    current = &mut vec[*i];
-                } else {
-                    *current = Value::Array(Vec::new());
-                    if let Value::Array(vec) = current {
-                        if *i >= vec.len() {
-                            vec.resize(*i + 1, Value::Null);
-                        }
-                        current = &mut vec[*i];
-                    }
-                }
-            }
-        }
-    }
+    // if path.is_empty() {
+    //     *target = val;
+    //     return;
+    // }
 
-    // Set the final component.
-    match path.last().unwrap() {
-        PathComponent::Key(k) => {
-            if let Value::Object(map) = current {
-                map.insert(k.clone(), val);
-            } else {
-                // Replace the current slot with a new object containing the desired key/value.
-                let mut map = Map::new();
-                map.insert(k.clone(), val);
-                *current = Value::Object(map);
-            }
-        }
-        PathComponent::Index(i) => {
-            if let Value::Array(vec) = current {
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
-                }
-                vec[*i] = val;
-            } else {
-                let mut vec = Vec::new();
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
-                }
-                vec[*i] = val;
-                *current = Value::Array(vec);
-            }
-        }
-    }
+    // let mut current = target;
+    // // Traverse all but the last component, creating intermediate containers
+    // // on-demand.
+    // for comp in &path[..path.len() - 1] {
+    //     match comp {
+    //         PathComponent::Key(k) => {
+    //             if let Value::Object(map) = current {
+    //                 current = map.entry(k.clone()).or_insert(Value::Null);
+    //             } else {
+    //                 *current = Value::Object(Map::new());
+    //                 if let Value::Object(map) = current {
+    //                     current = map.entry(k.clone()).or_insert(Value::Null);
+    //                 }
+    //             }
+    //         }
+    //         PathComponent::Index(i) => {
+    //             if let Value::Array(vec) = current {
+    //                 if *i >= vec.len() {
+    //                     // vec.resize(*i + 1, Value::Null);
+    //                 }
+    //                 current = &mut vec[*i];
+    //             } else {
+    //                 *current = Value::Array(Array::new_sync());
+    //                 if let Value::Array(vec) = current {
+    //                     if *i >= vec.len() {
+    //                         // vec.resize(*i + 1, Value::Null);
+    //                     }
+    //                     current = &mut vec[*i];
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+
+    // // Set the final component.
+    // match path.last().unwrap() {
+    //     PathComponent::Key(k) => {
+    //         if let Value::Object(map) = current {
+    //             map.insert(k.clone(), val);
+    //         } else {
+    //             // Replace the current slot with a new object containing the desired key/value.
+    //             let mut map = Map::new_sync();
+    //             map.insert(k.clone(), val);
+    //             *current = Value::Object(map);
+    //         }
+    //     }
+    //     PathComponent::Index(i) => {
+    //         if let Value::Array(vec) = current {
+    //             if *i >= vec.len() {
+    //                 // vec.resize(*i + 1, Value::Null);
+    //             }
+    //             vec[*i] = val;
+    //         } else {
+    //             let mut vec = Array::new_sync();
+    //             if *i >= vec.len() {
+    //                 // vec.resize(*i + 1, Value::Null);
+    //             }
+    //             vec[*i] = val;
+    //             *current = Value::Array(vec);
+    //         }
+    //     }
+    // }
 }
 
 #[cfg(test)]
 /// Insert or append a string fragment into `target` at the given `path`.
 fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &str) {
     use crate::value::Map;
+    todo!()
 
-    if path.is_empty() {
-        if let Value::String(s) = target {
-            s.push_str(fragment);
-        } else {
-            *target = Value::String(String::from(fragment));
-        }
-        return;
-    }
-    let mut cur = target;
-    // Traverse to the container for the final component
-    for comp in &path[..path.len() - 1] {
-        match comp {
-            PathComponent::Key(k) => {
-                if let Value::Object(map) = cur {
-                    cur = map.entry(k.clone()).or_insert(Value::Null);
-                } else {
-                    *cur = Value::Object(Map::new());
-                    if let Value::Object(map) = cur {
-                        cur = map.entry(k.clone()).or_insert(Value::Null);
-                    }
-                }
-            }
-            PathComponent::Index(i) => {
-                if let Value::Array(vec) = cur {
-                    if *i >= vec.len() {
-                        vec.resize(*i + 1, Value::Null);
-                    }
-                    cur = &mut vec[*i];
-                } else {
-                    *cur = Value::Array(Vec::new());
-                    if let Value::Array(vec) = cur {
-                        if *i >= vec.len() {
-                            vec.resize(*i + 1, Value::Null);
-                        }
-                        cur = &mut vec[*i];
-                    }
-                }
-            }
-        }
-    }
-    // Append or insert at the final component
-    match path.last().unwrap() {
-        PathComponent::Key(k) => {
-            if let Value::Object(map) = cur {
-                if let Some(Value::String(s)) = map.get_mut(k) {
-                    s.push_str(fragment);
-                } else {
-                    map.insert(k.clone(), Value::String(String::from(fragment)));
-                }
-            } else {
-                let mut map = Map::new();
-                map.insert(k.clone(), Value::String(String::from(fragment)));
-                *cur = Value::Object(map);
-            }
-        }
-        PathComponent::Index(i) => {
-            if let Value::Array(vec) = cur {
-                if *i < vec.len() {
-                    if let Value::String(s) = &mut vec[*i] {
-                        s.push_str(fragment);
-                    } else {
-                        vec[*i] = Value::String(String::from(fragment));
-                    }
-                } else {
-                    vec.resize(*i + 1, Value::Null);
-                    vec[*i] = Value::String(String::from(fragment));
-                }
-            } else {
-                let mut vec = Vec::new();
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
-                }
-                vec[*i] = Value::String(String::from(fragment));
-                *cur = Value::Array(vec);
-            }
-        }
-    }
+    // if path.is_empty() {
+    //     if let Value::String(s) = target {
+    //         s.push_str(fragment);
+    //     } else {
+    //         *target = Value::String(fragment.into());
+    //     }
+    //     return;
+    // }
+    // let mut cur = target;
+    // // Traverse to the container for the final component
+    // for comp in &path[..path.len() - 1] {
+    //     match comp {
+    //         PathComponent::Key(k) => {
+    //             if let Value::Object(map) = cur {
+    //                 cur = map.entry(k.into()).or_insert(Value::Null);
+    //             } else {
+    //                 *cur = Value::Object(Map::new());
+    //                 if let Value::Object(map) = cur {
+    //                     cur = map.entry(k.into()).or_insert(Value::Null);
+    //                 }
+    //             }
+    //         }
+    //         PathComponent::Index(i) => {
+    //             if let Value::Array(vec) = cur {
+    //                 if *i >= vec.len() {
+    //                     vec.resize(*i + 1, Value::Null);
+    //                 }
+    //                 cur = &mut vec[*i];
+    //             } else {
+    //                 *cur = Value::Array(Vec::new());
+    //                 if let Value::Array(vec) = cur {
+    //                     if *i >= vec.len() {
+    //                         vec.resize(*i + 1, Value::Null);
+    //                     }
+    //                     cur = &mut vec[*i];
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+    // // Append or insert at the final component
+    // match path.last().unwrap() {
+    //     PathComponent::Key(k) => {
+    //         if let Value::Object(map) = cur {
+    //             if let Some(Value::String(s)) = map.get_mut(k) {
+    //                 s.push_str(fragment);
+    //             } else {
+    //                 map.insert(k.clone().into(), Value::String(fragment.into()));
+    //             }
+    //         } else {
+    //             todo!()
+    //             // let mut map = Map::new();
+    //             // map.insert(k.clone().into(), Value::String(fragment.into()));
+    //             // *cur = Value::Object(map);
+    //         }
+    //     }
+    //     PathComponent::Index(i) => {
+    //         if let Value::Array(vec) = cur {
+    //             if *i < vec.len() {
+    //                 if let Value::String(s) = &mut vec[*i] {
+    //                     s.push_str(fragment);
+    //                 } else {
+    //                     vec[*i] = Value::String(fragment.into());
+    //                 }
+    //             } else {
+    //                 todo!()
+    //                 // vec.resize(*i + 1, Value::Null);
+    //                 // vec[*i] = Value::String(fragment.into());
+    //             }
+    //         } else {
+    //             let mut vec = Vec::new();
+    //             if *i >= vec.len() {
+    //                 vec.resize(*i + 1, Value::Null);
+    //             }
+    //             vec[*i] = Value::String(fragment.into());
+    //             todo!()
+    //             // *cur = Value::Array(vec);
+    //         }
+    //     }
+    // }
 }
 
 #[cfg(test)]

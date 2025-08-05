@@ -96,7 +96,7 @@ fn main() {
             let evt = evt.expect("parser error");
 
             // Record a serialised copy of each event for the snapshot.
-            #[cfg(feature = "serde")]
+            #[cfg(any(test, feature = "serde"))]
             {
                 reference_value.push_str(&serde_json::to_string(&evt).unwrap());
                 reference_value.push('\n');
