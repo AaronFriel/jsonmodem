@@ -48,7 +48,7 @@ impl Arbitrary for Value {
                         for _ in 0..len {
                             let key = String::arbitrary(g);
                             let val = gen_val(g, depth - 1);
-                            map.insert(key, val);
+                            map.insert(key.into(), val);
                         }
                         Value::Object(map)
                     }

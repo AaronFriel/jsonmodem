@@ -34,7 +34,7 @@ use crate::{
     JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
-    event::{ParseEvent, PathComponent},
+    event::{Index, Key, ParseEvent, PathComponent},
     event_stack::EventStack,
     literal_buffer::{self, ExpectedLiteralBuffer},
     options::{NonScalarValueMode, ParserOptions},
@@ -149,10 +149,10 @@ impl From<ParseState> for LexState {
 #[derive(Clone, Debug)]
 pub enum Frame {
     Array {
-        next_index: usize, // slot for the next element
+        next_index: Index, // slot for the next element
     },
     Object {
-        pending_key: Option<String>, // key waiting for its value
+        pending_key: Option<Key>, // key waiting for its value
     },
 }
 
@@ -246,7 +246,11 @@ impl FrameStack {
 
     #[inline]
     pub fn to_path_components(&self) -> Vec<PathComponent> {
-        self.stack.iter().map(|(pc, _)| pc.clone()).collect()
+        let mut path = Vec::with_capacity(self.stack.len());
+        for (pc, _) in &self.stack {
+            path.push(pc.clone());
+        }
+        path
     }
 
     #[inline]
@@ -1205,7 +1209,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 Token::PropertyName { value } => {
                     match self.frames.last_mut() {
                         Some(Frame::Object { pending_key }) => {
-                            *pending_key = Some(value);
+                            *pending_key = Some(value.into());
                         }
                         _ => Err(self
                             .syntax_error("Expected object frame for property name".to_string()))?,

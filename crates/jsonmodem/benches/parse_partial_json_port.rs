@@ -436,6 +436,7 @@ mod tests {
         assert_eq!(state, ParseState::RepairedParse);
         assert_eq!(val.unwrap(), serde_json::json!({}));
     }
+
     #[test]
     fn unicode_inside_unterminated_string() {
         let inp = r#"{"msg":"¡Hola"#;

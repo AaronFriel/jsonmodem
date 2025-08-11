@@ -19,6 +19,6 @@ fn std_factory_roundtrip() {
     assert_eq!(v_arr, Value::Array(vec![Value::Boolean(true)]));
     assert_eq!(
         v_obj,
-        Value::Object([("n".to_string(), Value::Number(1.0))].into())
+        Value::Object([("n".into(), Value::Number(1.0))].into())
     );
 }
