@@ -84,10 +84,13 @@ the user with minimal latency.
 ---
 
 ## 📊 Performance
-**Streaming‑JSON benchmark (time *per chunk*)**
+
+**Streaming‑JSON benchmark**
 
 * 16 KiB JSON streamed in 100 / 1 000 / 5 000 pieces (the `response_large.json` file).
-* **Implementations**
+* Measured as time total time to parse all chunks, medians.
+
+**Implementations**:
 
   * `jsonmodem::StreamingParser`, emits parse events for values with low overhead.
   * `jsonmodem::StreamingValuesParser`, yields parsed values each chunk parsed. A drop-in replacement for `jiter`, `partial_json_fixer`.
@@ -96,13 +99,11 @@ the user with minimal latency.
   * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
 
 
-
-
-| chunks | StreamingParser | StreamingValuesParser | `parse_partial_json` | `fix_json_parse` |   `jiter`   |
-| -----: | --------------: | --------------------: | -------------------: | ---------------: | ----------: |
-|    100 |           115 μs|                673 μs |             5,350 μs |         3,920 μs |    1,750 μs |
-|  1 000 |           211 μs|              5,160 μs |            50,400 μs |        36,900 μs |   15,900 μs |
-|  5 000 |           589 μs|             22,900 μs |           222,000 μs |       164,000 μs |   67,100 μs |
+| chunks | `StreamingParser` | `StreamingValuesParser`  | `parse_partial_json`  | `fix_json_parse`  | `jiter`   |
+| -----: | ----------------: | -----------------------: | --------------------: | ----------------: | --------: |
+|    100 |            115 μs |                   426 μs |              5,293 μs |          3,945 μs |  1,897 μs |
+|  1 000 |            218 μs |                 3,078 μs |             50,126 μs |         37,061 μs | 17,483 μs |
+|  5 000 |            605 μs |                14,358 μs |            220,990 μs |        165,090 μs | 73,582 μs |
 
 ## 🔭 Roadmap
 
