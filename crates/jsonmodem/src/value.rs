@@ -4,7 +4,10 @@
 //! value, and provides helper functions for escaping JSON strings.
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
-pub type Map = BTreeMap<String, Value>;
+use crate::event::Key;
+
+pub type Str = String;
+pub type Map = BTreeMap<Key, Value>;
 pub type Array = Vec<Value>;
 
 /// A JSON value as defined by [RFC 8259].
@@ -25,7 +28,7 @@ pub type Array = Vec<Value>;
 ///
 /// // Creating a JSON object:
 /// let mut map = Map::new();
-/// map.insert("key".to_string(), Value::String("value".into()));
+/// map.insert("key".into(), Value::String("value".into()));
 /// let v = Value::Object(map);
 /// assert_eq!(v.to_string(), r#"{"key":"value"}"#);
 /// ```
@@ -43,7 +46,7 @@ pub enum Value {
     Null,
     Boolean(bool),
     Number(f64),
-    String(String),
+    String(Str),
     Array(Array),
     Object(Map),
 }
@@ -78,8 +81,8 @@ impl From<Vec<Value>> for Value {
     }
 }
 
-impl From<BTreeMap<String, Value>> for Value {
-    fn from(v: BTreeMap<String, Value>) -> Self {
+impl From<BTreeMap<Key, Value>> for Value {
+    fn from(v: BTreeMap<Key, Value>) -> Self {
         Self::Object(v)
     }
 }

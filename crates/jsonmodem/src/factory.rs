@@ -1,6 +1,5 @@
 #![allow(clippy::inline_always)]
 
-use alloc::string::String;
 use core::fmt::Debug;
 
 /// Kinds of JSON values.
@@ -28,7 +27,7 @@ pub trait JsonValue: Debug + Clone + PartialEq + Default {
     fn as_array_mut(v: &mut Self) -> Option<&mut Self::Array>;
     fn as_object_mut(v: &mut Self) -> Option<&mut Self::Object>;
     fn object_get_mut<'a>(obj: &'a mut Self::Object, key: &str) -> Option<&'a mut Self>;
-    fn array_get_mut(arr: &mut Self::Array, idx: usize) -> Option<&mut Self>;
+    fn array_get_mut(arr: &mut Self::Array, idx: Index) -> Option<&mut Self>;
     fn array_len(arr: &Self::Array) -> usize;
 
     fn into_array(v: Self) -> Option<Self::Array>
@@ -75,7 +74,7 @@ pub trait JsonValueFactory {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: String,
+        key: Key,
         val: Self::Value,
     ) -> &'b mut Self::Value;
     fn array_push<'a, 'b: 'a>(
@@ -91,15 +90,19 @@ pub struct StdValueFactory;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use crate::value::Value;
+use crate::{
+    Str,
+    event::{Index, Key},
+    value::Value,
+};
 
 impl JsonValue for Value {
-    type Str = String;
+    type Str = Str;
     type Num = f64;
     type Bool = bool;
     type Null = ();
     type Array = Vec<Value>;
-    type Object = BTreeMap<String, Value>;
+    type Object = BTreeMap<Key, Value>;
 
     #[inline(always)]
     fn kind(v: &Self) -> ValueKind {
@@ -149,7 +152,7 @@ impl JsonValue for Value {
     }
 
     #[inline(always)]
-    fn array_get_mut(arr: &mut <self::Value as JsonValue>::Array, idx: usize) -> Option<&mut Self> {
+    fn array_get_mut(arr: &mut <self::Value as JsonValue>::Array, idx: Index) -> Option<&mut Self> {
         arr.get_mut(idx)
     }
 
@@ -271,7 +274,7 @@ impl JsonValueFactory for StdValueFactory {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <self::Value as JsonValue>::Object,
-        key: String,
+        key: Key,
         val: self::Value,
     ) -> &'b mut self::Value {
         use alloc::collections::btree_map::Entry;
@@ -394,7 +397,7 @@ impl<F: JsonValueFactory + ?Sized> JsonValueFactory for &mut F {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: String,
+        key: Key,
         val: Self::Value,
     ) -> &'b mut Self::Value {
         (**self).object_insert(obj, key, val)

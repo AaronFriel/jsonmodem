@@ -1,7 +1,10 @@
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use core::{cmp::Ordering, ptr::NonNull};
 
-use crate::{JsonValue, JsonValueFactory, event::PathComponent};
+use crate::{
+    JsonValue, JsonValueFactory,
+    event::{Index, Key, PathComponent},
+};
 #[cfg(test)]
 use crate::{ParseEvent, ParserOptions, StdValueFactory, StreamingParser, Value};
 
@@ -180,7 +183,7 @@ impl<V: JsonValue> ValueZipper<V> {
     fn modify_or_insert_key<T, Init, Func, FFac>(
         &mut self,
         f: &mut FFac,
-        k: String,
+        k: Key,
         default: T,
         initializer: Init,
         func: Func,
@@ -209,7 +212,7 @@ impl<V: JsonValue> ValueZipper<V> {
     fn modify_or_insert_index<T, Init, Func, FFac>(
         &mut self,
         f: &mut FFac,
-        index: usize,
+        index: Index,
         default: T,
         initializer: Init,
         func: Func,
@@ -242,7 +245,7 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     fn enter_key_lazy<FN, FFac>(
         &mut self,
-        k: String,
+        k: Key,
         f: &mut FFac,
         make_child: FN,
     ) -> Result<(), ZipperError>
@@ -270,7 +273,7 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     fn enter_index_lazy<FN, FFac>(
         &mut self,
-        index: usize,
+        index: Index,
         f: &mut FFac,
         make_child: FN,
     ) -> Result<(), ZipperError>
@@ -524,10 +527,12 @@ impl StreamingParserBuilder {
                         .set(path.last(), (*value).into(), &mut StdValueFactory)?;
                 }
                 ParseEvent::String { fragment, path, .. } => {
+                    use crate::Str;
+
                     self.state.mutate_with(
                         &mut StdValueFactory,
                         path.last(),
-                        |_| Value::String(String::new()),
+                        |_| Value::String(Str::new()),
                         |v, _| {
                             if let Value::String(s) = v {
                                 s.push_str(fragment);
@@ -578,6 +583,7 @@ mod tests {
 
     use super::*; // bring StreamingParserBuilder etc.
     use crate::{
+        Str,
         event::PathComponent,
         value::{Map, Value},
     };
@@ -769,7 +775,7 @@ mod tests {
             .mutate_lazy(
                 PathComponent::Key("s".into()),
                 &mut StdValueFactory,
-                |_| Value::String(String::new()),
+                |_| Value::String(Str::new()),
                 |v, _| {
                     if let Value::String(s) = v {
                         s.push_str("hello");

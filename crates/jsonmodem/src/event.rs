@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! Basic streaming parse example:
-//!
+//!F
 //! ```
 //! use jsonmodem::{
 //!     ParseEvent, ParserError, ParserOptions, PathComponent, StreamingParser, Value,
@@ -23,7 +23,7 @@
 //!         Ok(ParseEvent::String {
 //!             path: vec![PathComponent::Index(0)],
 //!             value: None,
-//!             fragment: "foo".to_string(),
+//!             fragment: "foo".into(),
 //!             is_final: true,
 //!         }),
 //!         Ok(ParseEvent::ArrayEnd {
@@ -33,10 +33,7 @@
 //!     ]
 //! );
 //! ```
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{JsonValue, Value};
 
@@ -49,27 +46,18 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+pub type Key = Arc<str>;
+pub type Index = usize;
+
 /// A component in the path to a JSON value.
 ///
 /// Paths are sequences of keys or indices (for objects and arrays,
 /// respectively) used in `ParseEvent` to indicate the location of a value
 /// within a JSON document.
-///
-/// # Examples
-///
-/// ```
-/// use jsonmodem::PathComponent;
-///
-/// let key = PathComponent::Key("foo".to_string());
-/// assert_eq!(key.as_key(), Some(&"foo".to_string()));
-///
-/// let idx = PathComponent::Index(3);
-/// assert_eq!(idx.as_index(), Some(&3));
-/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathComponent {
-    Key(String),
-    Index(usize),
+    Key(Key),
+    Index(Index),
 }
 
 // Convenient conversions so users can write `path![0, "foo"]` etc.
@@ -79,7 +67,7 @@ macro_rules! impl_from_int_for_pathcomponent {
             impl From<$t> for PathComponent {
                 fn from(i: $t) -> Self {
                     #[allow(clippy::cast_possible_truncation)]
-                    PathComponent::Index(i as usize)
+                    PathComponent::Index(i as Index)
                 }
             }
         )*
@@ -90,13 +78,7 @@ impl_from_int_for_pathcomponent!(u8, u16, u32, u64, usize);
 
 impl From<&str> for PathComponent {
     fn from(s: &str) -> Self {
-        Self::Key(s.to_string())
-    }
-}
-
-impl From<String> for PathComponent {
-    fn from(s: String) -> Self {
-        Self::Key(s)
+        Self::Key(s.into())
     }
 }
 
@@ -113,7 +95,7 @@ macro_rules! impl_integer_as_path_component {
             impl PathComponentFrom<$t> for PathComponent {
                 fn from_path_component(value: $t) -> Self {
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    PathComponent::Index(value as usize)
+                    PathComponent::Index(value as Index)
                 }
             }
         )+
@@ -123,13 +105,7 @@ impl_integer_as_path_component!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usi
 
 impl PathComponentFrom<&str> for PathComponent {
     fn from_path_component(value: &str) -> Self {
-        PathComponent::Key(value.to_string())
-    }
-}
-
-impl PathComponentFrom<String> for PathComponent {
-    fn from_path_component(value: String) -> Self {
-        PathComponent::Key(value)
+        PathComponent::Key(value.into())
     }
 }
 
@@ -137,7 +113,7 @@ impl PathComponentFrom<String> for PathComponent {
 // `["foo", 0, "bar"]` instead of the default tagged representation.
 #[cfg(any(test, feature = "serde"))]
 mod serde_impls {
-    use alloc::string::{String, ToString};
+    use alloc::string::String;
     use core::fmt;
 
     use serde::{
@@ -146,6 +122,7 @@ mod serde_impls {
     };
 
     use super::PathComponent;
+    use crate::event::Index;
 
     impl Serialize for PathComponent {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -172,14 +149,14 @@ mod serde_impls {
         where
             E: Error,
         {
-            Ok(PathComponent::Key(value.to_string()))
+            Ok(PathComponent::Key(value.into()))
         }
 
         fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
         where
             E: Error,
         {
-            Ok(PathComponent::Key(value))
+            Ok(PathComponent::Key(value.into()))
         }
 
         fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -187,7 +164,7 @@ mod serde_impls {
             E: Error,
         {
             #[expect(clippy::cast_possible_truncation)]
-            Ok(PathComponent::Index(value as usize))
+            Ok(PathComponent::Index(value as Index))
         }
 
         fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
@@ -203,7 +180,7 @@ mod serde_impls {
 
             #[expect(clippy::cast_sign_loss)]
             #[expect(clippy::cast_possible_truncation)]
-            Ok(PathComponent::Index(value as usize))
+            Ok(PathComponent::Index(value as Index))
         }
     }
 
@@ -220,9 +197,9 @@ mod serde_impls {
 impl PathComponent {
     #[must_use]
     /// Returns the index if this component is an index, otherwise `None`.
-    pub fn as_index(&self) -> Option<&usize> {
+    pub fn as_index(&self) -> Option<Index> {
         if let Self::Index(v) = self {
-            Some(v)
+            Some(*v)
         } else {
             None
         }
@@ -230,9 +207,9 @@ impl PathComponent {
 
     #[must_use]
     /// Returns the key if this component is a key, otherwise `None`.
-    pub fn as_key(&self) -> Option<&String> {
+    pub fn as_key(&self) -> Option<Key> {
         if let Self::Key(v) = self {
-            Some(v)
+            Some(v.clone())
         } else {
             None
         }
@@ -524,18 +501,19 @@ fn insert_at_path(target: &mut Value, path: &[PathComponent], val: Value) {
                 }
             }
             PathComponent::Index(i) => {
+                let i = *i;
                 if let Value::Array(vec) = current {
-                    if *i >= vec.len() {
-                        vec.resize(*i + 1, Value::Null);
+                    if i >= vec.len() {
+                        vec.resize(i + 1, Value::Null);
                     }
-                    current = &mut vec[*i];
+                    current = &mut vec[i];
                 } else {
                     *current = Value::Array(Vec::new());
                     if let Value::Array(vec) = current {
-                        if *i >= vec.len() {
-                            vec.resize(*i + 1, Value::Null);
+                        if i >= vec.len() {
+                            vec.resize(i + 1, Value::Null);
                         }
-                        current = &mut vec[*i];
+                        current = &mut vec[i];
                     }
                 }
             }
@@ -555,17 +533,18 @@ fn insert_at_path(target: &mut Value, path: &[PathComponent], val: Value) {
             }
         }
         PathComponent::Index(i) => {
+            let i = *i;
             if let Value::Array(vec) = current {
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
+                if i >= vec.len() {
+                    vec.resize(i + 1, Value::Null);
                 }
-                vec[*i] = val;
+                vec[i] = val;
             } else {
                 let mut vec = Vec::new();
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
+                if i >= vec.len() {
+                    vec.resize(i + 1, Value::Null);
                 }
-                vec[*i] = val;
+                vec[i] = val;
                 *current = Value::Array(vec);
             }
         }
@@ -581,7 +560,7 @@ fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &
         if let Value::String(s) = target {
             s.push_str(fragment);
         } else {
-            *target = Value::String(String::from(fragment));
+            *target = Value::String(fragment.into());
         }
         return;
     }
@@ -600,18 +579,19 @@ fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &
                 }
             }
             PathComponent::Index(i) => {
+                let i = *i;
                 if let Value::Array(vec) = cur {
-                    if *i >= vec.len() {
-                        vec.resize(*i + 1, Value::Null);
+                    if i >= vec.len() {
+                        vec.resize(i + 1, Value::Null);
                     }
-                    cur = &mut vec[*i];
+                    cur = &mut vec[i];
                 } else {
                     *cur = Value::Array(Vec::new());
                     if let Value::Array(vec) = cur {
-                        if *i >= vec.len() {
-                            vec.resize(*i + 1, Value::Null);
+                        if i >= vec.len() {
+                            vec.resize(i + 1, Value::Null);
                         }
-                        cur = &mut vec[*i];
+                        cur = &mut vec[i];
                     }
                 }
             }
@@ -624,32 +604,33 @@ fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &
                 if let Some(Value::String(s)) = map.get_mut(k) {
                     s.push_str(fragment);
                 } else {
-                    map.insert(k.clone(), Value::String(String::from(fragment)));
+                    map.insert(k.clone(), Value::String(fragment.into()));
                 }
             } else {
                 let mut map = Map::new();
-                map.insert(k.clone(), Value::String(String::from(fragment)));
+                map.insert(k.clone(), Value::String(fragment.into()));
                 *cur = Value::Object(map);
             }
         }
         PathComponent::Index(i) => {
+            let i = *i;
             if let Value::Array(vec) = cur {
-                if *i < vec.len() {
-                    if let Value::String(s) = &mut vec[*i] {
+                if i < vec.len() {
+                    if let Value::String(s) = &mut vec[i] {
                         s.push_str(fragment);
                     } else {
-                        vec[*i] = Value::String(String::from(fragment));
+                        vec[i] = Value::String(fragment.into());
                     }
                 } else {
-                    vec.resize(*i + 1, Value::Null);
-                    vec[*i] = Value::String(String::from(fragment));
+                    vec.resize(i + 1, Value::Null);
+                    vec[i] = Value::String(fragment.into());
                 }
             } else {
                 let mut vec = Vec::new();
-                if *i >= vec.len() {
-                    vec.resize(*i + 1, Value::Null);
+                if i >= vec.len() {
+                    vec.resize(i + 1, Value::Null);
                 }
-                vec[*i] = Value::String(String::from(fragment));
+                vec[i] = Value::String(fragment.into());
                 *cur = Value::Array(vec);
             }
         }
@@ -663,7 +644,7 @@ mod tests {
     #[test]
     fn size_of_path_component() {
         use core::mem::size_of;
-        assert_eq!(size_of::<PathComponent>(), 24);
+        assert_eq!(size_of::<PathComponent>(), 16);
     }
 
     #[test]

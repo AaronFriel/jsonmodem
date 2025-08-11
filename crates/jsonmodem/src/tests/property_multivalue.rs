@@ -27,7 +27,7 @@ fn repro_multi_value_string_root() {
         &events,
         &[ParseEvent::String {
             path: vec![],
-            fragment: String::from("x"),
+            fragment: "x".into(),
             is_final: true,
             value: None,
         },]
@@ -35,7 +35,7 @@ fn repro_multi_value_string_root() {
     let reconstructed = reconstruct_values(events);
     // Expect one string root, but current implementation drops string roots
     // entirely.
-    assert_eq!(reconstructed, vec![Value::String(String::from("x"))]);
+    assert_eq!(reconstructed, vec![Value::String("x".into())]);
 }
 
 /// Property: A stream consisting of multiple JSON roots must round-trip through

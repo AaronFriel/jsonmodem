@@ -1,4 +1,4 @@
-use alloc::{string::ToString, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use crate::{
     ParseEvent, StreamingParser, Value,
@@ -55,25 +55,25 @@ fn test_empty_object() {
 #[test]
 fn test_single_property() {
     let mut map = Map::new();
-    map.insert("a".to_string(), Value::Number(1.0));
+    map.insert("a".into(), Value::Number(1.0));
     assert_eq!(finish_seq(&["{\"a\":1}"]), Value::Object(map));
 }
 
 #[test]
 fn test_multiple_properties() {
     let mut map = Map::new();
-    map.insert("abc".to_string(), Value::Number(1.0));
-    map.insert("def".to_string(), Value::Number(2.0));
+    map.insert("abc".into(), Value::Number(1.0));
+    map.insert("def".into(), Value::Number(2.0));
     assert_eq!(finish_seq(&["{\"abc\":1,\"def\":2}"]), Value::Object(map));
 }
 
 #[test]
 fn test_nested_objects() {
     let mut inner = Map::new();
-    inner.insert("b".to_string(), Value::Number(2.0));
+    inner.insert("b".into(), Value::Number(2.0));
 
     let mut outer = Map::new();
-    outer.insert("a".to_string(), Value::Object(inner));
+    outer.insert("a".into(), Value::Object(inner));
 
     assert_eq!(finish_seq(&["{\"a\":{\"b\":2}}"]), Value::Object(outer));
 }
@@ -148,7 +148,7 @@ fn test_numbers() {
 #[test]
 fn test_preserves_proto_property() {
     let mut map = Map::new();
-    map.insert("__proto__".to_string(), Value::Number(1.0));
+    map.insert("__proto__".into(), Value::Number(1.0));
     assert_eq!(finish_seq(&["{\"__proto__\":1}"]), Value::Object(map));
 }
 
