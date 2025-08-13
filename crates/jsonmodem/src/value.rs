@@ -4,7 +4,7 @@
 //! value, and provides helper functions for escaping JSON strings.
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
-use crate::event::Key;
+use crate::Key;
 
 pub type Str = String;
 pub type Map = BTreeMap<Key, Value>;

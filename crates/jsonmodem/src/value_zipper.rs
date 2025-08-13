@@ -2,18 +2,15 @@ use alloc::{boxed::Box, vec::Vec};
 use core::{cmp::Ordering, ptr::NonNull};
 
 use crate::{
-    JsonValue, JsonValueFactory,
-    event::{Index, Key, PathComponent},
+    JsonPath, JsonValue, JsonValueFactory, PathComponent, factory::JsonValuePathComponent,
 };
-#[cfg(test)]
-use crate::{ParseEvent, ParserOptions, StdValueFactory, StreamingParser, Value};
 
 #[derive(Debug)]
 pub struct ValueZipper<V: JsonValue> {
     root: Box<V>,
     path: Vec<NonNull<V>>, // 0 = root, last = current leaf
     #[cfg(test)]
-    path_components: Vec<PathComponent>,
+    path_components: Vec<JsonValuePathComponent<V>>,
 }
 
 impl<V: JsonValue> ValueZipper<V> {
@@ -50,7 +47,10 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     pub fn enter_lazy<FN, FFac>(
         &mut self,
-        pc: PathComponent,
+        pc: PathComponent<
+            <<V as JsonValue>::Path as JsonPath>::Key,
+            <<V as JsonValue>::Path as JsonPath>::Index,
+        >,
         f: &mut FFac,
         make_child: FN,
     ) -> Result<(), ZipperError>
@@ -67,7 +67,10 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     pub fn set_at<FFac: JsonValueFactory<Value = V>>(
         &mut self,
-        pc: PathComponent,
+        pc: PathComponent<
+            <<V as JsonValue>::Path as JsonPath>::Key,
+            <<V as JsonValue>::Path as JsonPath>::Index,
+        >,
         value: V,
         f: &mut FFac,
     ) -> Result<(), ZipperError> {
@@ -106,7 +109,10 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     pub fn mutate_lazy<D, M, FFac>(
         &mut self,
-        pc: PathComponent,
+        pc: PathComponent<
+            <<V as JsonValue>::Path as JsonPath>::Key,
+            <<V as JsonValue>::Path as JsonPath>::Index,
+        >,
         f: &mut FFac,
         make_default: D,
         mutator: M,
@@ -183,7 +189,7 @@ impl<V: JsonValue> ValueZipper<V> {
     fn modify_or_insert_key<T, Init, Func, FFac>(
         &mut self,
         f: &mut FFac,
-        k: Key,
+        k: <<V as JsonValue>::Path as JsonPath>::Key,
         default: T,
         initializer: Init,
         func: Func,
@@ -212,7 +218,7 @@ impl<V: JsonValue> ValueZipper<V> {
     fn modify_or_insert_index<T, Init, Func, FFac>(
         &mut self,
         f: &mut FFac,
-        index: Index,
+        index: <<V as JsonValue>::Path as JsonPath>::Index,
         default: T,
         initializer: Init,
         func: Func,
@@ -227,9 +233,10 @@ impl<V: JsonValue> ValueZipper<V> {
             return Err(ZipperError::ExpectedArray);
         };
 
-        match index.cmp(&V::array_len(arr)) {
+        let index_usize: usize = index.into();
+        match index_usize.cmp(&V::array_len(arr)) {
             core::cmp::Ordering::Less => {
-                let elem = V::array_get_mut(arr, index).expect("index checked");
+                let elem = V::array_get_mut(arr, index).ok_or(ZipperError::InvalidArrayIndex)?;
                 func(default, Some(elem), f)
             }
             core::cmp::Ordering::Equal => {
@@ -245,7 +252,7 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     fn enter_key_lazy<FN, FFac>(
         &mut self,
-        k: Key,
+        k: <<V as JsonValue>::Path as JsonPath>::Key,
         f: &mut FFac,
         make_child: FN,
     ) -> Result<(), ZipperError>
@@ -273,7 +280,7 @@ impl<V: JsonValue> ValueZipper<V> {
     #[inline]
     fn enter_index_lazy<FN, FFac>(
         &mut self,
-        index: Index,
+        index: <<V as JsonValue>::Path as JsonPath>::Index,
         f: &mut FFac,
         make_child: FN,
     ) -> Result<(), ZipperError>
@@ -286,9 +293,10 @@ impl<V: JsonValue> ValueZipper<V> {
 
         let arr = V::as_array_mut(self.current_mut()).ok_or(ZipperError::ExpectedArray)?;
 
-        let child_ptr = match index.cmp(&V::array_len(arr)) {
+        let index_usize: usize = index.into();
+        let child_ptr = match index_usize.cmp(&V::array_len(arr)) {
             Ordering::Less => {
-                let elem = V::array_get_mut(arr, index).expect("index verified");
+                let elem = V::array_get_mut(arr, index).ok_or(ZipperError::InvalidArrayIndex)?;
                 NonNull::from(elem)
             }
             Ordering::Equal => {
@@ -374,7 +382,7 @@ impl<V: JsonValue> ValueBuilder<V> {
     #[inline]
     pub fn enter_with<G, FFac>(
         &mut self,
-        pc: Option<&PathComponent>,
+        pc: Option<&JsonValuePathComponent<V>>,
         f: &mut FFac,
         make_child: G,
     ) -> Result<(), ZipperError>
@@ -400,7 +408,7 @@ impl<V: JsonValue> ValueBuilder<V> {
     #[inline]
     pub fn set<FFac: JsonValueFactory<Value = V>>(
         &mut self,
-        pc: Option<&PathComponent>,
+        pc: Option<&JsonValuePathComponent<V>>,
         value: V,
         f: &mut FFac,
     ) -> Result<(), ZipperError> {
@@ -421,7 +429,7 @@ impl<V: JsonValue> ValueBuilder<V> {
     pub fn mutate_with<D, M, FFac>(
         &mut self,
         f: &mut FFac,
-        pc: Option<&PathComponent>,
+        pc: Option<&JsonValuePathComponent<V>>,
         make_default: D,
         mutator: M,
     ) -> Result<(), ZipperError>
@@ -480,97 +488,103 @@ impl<V: JsonValue> ValueBuilder<V> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-pub struct StreamingParserBuilder {
-    parser: StreamingParser,
-    state: ValueBuilder<Value>,
-}
+pub mod test_util {
+    use alloc::vec::Vec;
 
-#[cfg(test)]
-impl StreamingParserBuilder {
-    pub fn new(options: ParserOptions) -> Self {
-        Self {
-            parser: StreamingParser::new(options),
-            state: ValueBuilder::default(),
-        }
+    use super::*;
+    use crate::*;
+
+    pub struct StreamingParserBuilder {
+        parser: DefaultStreamingParser,
+        state: ValueBuilder<Value>,
     }
 
-    /// Feed more bytes.  Returns `(root_ref, events)` if any event was
-    /// produced.
-    pub fn parse_incremental(
-        &mut self,
-        buffer: &str,
-    ) -> Result<Option<(&Value, Vec<ParseEvent>)>, ZipperError> {
-        let mut events: Vec<ParseEvent> = Vec::new();
-        for evt in self.parser.feed(buffer) {
-            match evt {
-                Ok(event) => events.push(event),
-                Err(_) => {
-                    // if the event is an error, we don't want to continue
-                    return Err(ZipperError::ParserError);
-                }
+    impl StreamingParserBuilder {
+        pub fn new(options: ParserOptions) -> Self {
+            Self {
+                parser: DefaultStreamingParser::new(options),
+                state: ValueBuilder::default(),
             }
         }
 
-        for evt in &events {
-            match evt {
-                // scalars
-                ParseEvent::Null { path } => {
-                    self.state
-                        .set(path.last(), Value::Null, &mut StdValueFactory)?;
-                }
-                ParseEvent::Boolean { path, value } => {
-                    self.state
-                        .set(path.last(), (*value).into(), &mut StdValueFactory)?;
-                }
-                ParseEvent::Number { path, value } => {
-                    self.state
-                        .set(path.last(), (*value).into(), &mut StdValueFactory)?;
-                }
-                ParseEvent::String { fragment, path, .. } => {
-                    use crate::Str;
-
-                    self.state.mutate_with(
-                        &mut StdValueFactory,
-                        path.last(),
-                        |_| Value::String(Str::new()),
-                        |v, _| {
-                            if let Value::String(s) = v {
-                                s.push_str(fragment);
-                                Ok(())
-                            } else {
-                                Err(ZipperError::ExpectedString)
-                            }
-                        },
-                    )?;
-                }
-
-                // ── container starts ───────────────────────────────────────
-                ParseEvent::ObjectBegin { path } => {
-                    use crate::value::Map;
-
-                    self.state
-                        .enter_with(path.last(), &mut StdValueFactory, |_| {
-                            Value::Object(Map::new())
-                        })?;
-                }
-                ParseEvent::ArrayStart { path } => {
-                    self.state
-                        .enter_with(path.last(), &mut StdValueFactory, |_| {
-                            Value::Array(Vec::new())
-                        })?;
-                }
-
-                // ── container ends ─────────────────────────────────────────
-                ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
-                    if !path.is_empty() {
-                        // don't pop past root
-                        self.state.pop()?;
+        /// Feed more bytes.  Returns `(root_ref, events)` if any event was
+        /// produced.
+        pub fn parse_incremental(
+            &mut self,
+            buffer: &str,
+        ) -> Result<Option<(&Value, Vec<ParseEvent>)>, ZipperError> {
+            let mut events: Vec<ParseEvent> = Vec::new();
+            for evt in self.parser.feed(buffer) {
+                match evt {
+                    Ok(event) => events.push(event),
+                    Err(_) => {
+                        // if the event is an error, we don't want to continue
+                        return Err(ZipperError::ParserError);
                     }
                 }
             }
-        }
 
-        Ok(self.state.read_root().map(|v| (v, events)))
+            for evt in &events {
+                match evt {
+                    // scalars
+                    ParseEvent::Null { path } => {
+                        self.state
+                            .set(path.last(), Value::Null, &mut StdValueFactory)?;
+                    }
+                    ParseEvent::Boolean { path, value } => {
+                        self.state
+                            .set(path.last(), (*value).into(), &mut StdValueFactory)?;
+                    }
+                    ParseEvent::Number { path, value } => {
+                        self.state
+                            .set(path.last(), (*value).into(), &mut StdValueFactory)?;
+                    }
+                    ParseEvent::String { fragment, path, .. } => {
+                        use crate::Str;
+
+                        self.state.mutate_with(
+                            &mut StdValueFactory,
+                            path.last(),
+                            |_| Value::String(Str::new()),
+                            |v, _| {
+                                if let Value::String(s) = v {
+                                    s.push_str(fragment);
+                                    Ok(())
+                                } else {
+                                    Err(ZipperError::ExpectedString)
+                                }
+                            },
+                        )?;
+                    }
+
+                    // ── container starts ───────────────────────────────────────
+                    ParseEvent::ObjectBegin { path } => {
+                        use crate::value::Map;
+
+                        self.state
+                            .enter_with(path.last(), &mut StdValueFactory, |_| {
+                                Value::Object(Map::new())
+                            })?;
+                    }
+                    ParseEvent::ArrayStart { path } => {
+                        self.state
+                            .enter_with(path.last(), &mut StdValueFactory, |_| {
+                                Value::Array(Vec::new())
+                            })?;
+                    }
+
+                    // ── container ends ─────────────────────────────────────────
+                    ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+                        if !path.is_empty() {
+                            // don't pop past root
+                            self.state.pop()?;
+                        }
+                    }
+                }
+            }
+
+            Ok(self.state.read_root().map(|v| (v, events)))
+        }
     }
 }
 
@@ -581,12 +595,8 @@ mod tests {
 
     use rstest::*;
 
-    use super::*; // bring StreamingParserBuilder etc.
-    use crate::{
-        Str,
-        event::PathComponent,
-        value::{Map, Value},
-    };
+    use super::*;
+    use crate::{value_zipper::test_util::StreamingParserBuilder, *};
 
     fn default_opts() -> ParserOptions {
         ParserOptions {
@@ -685,7 +695,7 @@ mod tests {
     #[rstest]
     #[timeout(Duration::from_millis(250))]
     fn root_number_single_chunk_repro_one() {
-        let mut parser = StreamingParser::new(default_opts());
+        let mut parser = DefaultStreamingParser::new(default_opts());
         let events: Vec<_> = parser.feed("123 ").collect();
         assert!(events.iter().all(Result::is_ok), "all events should be ok");
         assert_eq!(

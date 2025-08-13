@@ -22,12 +22,20 @@ pub trait JsonValue: Debug + Clone + PartialEq + Default {
     type Array: Debug + Clone + Default + PartialEq;
     type Object: Debug + Clone + Default + PartialEq;
 
+    type Path: JsonPath + Debug + Clone + Debug + PartialEq;
+
     fn kind(v: &Self) -> ValueKind;
     fn as_string_mut(v: &mut Self) -> Option<&mut Self::Str>;
     fn as_array_mut(v: &mut Self) -> Option<&mut Self::Array>;
     fn as_object_mut(v: &mut Self) -> Option<&mut Self::Object>;
-    fn object_get_mut<'a>(obj: &'a mut Self::Object, key: &str) -> Option<&'a mut Self>;
-    fn array_get_mut(arr: &mut Self::Array, idx: Index) -> Option<&mut Self>;
+    fn object_get_mut<'a>(
+        obj: &'a mut Self::Object,
+        key: &<Self::Path as JsonPath>::Key,
+    ) -> Option<&'a mut Self>;
+    fn array_get_mut(
+        arr: &mut Self::Array,
+        idx: <Self::Path as JsonPath>::Index,
+    ) -> Option<&mut Self>;
     fn array_len(arr: &Self::Array) -> usize;
 
     fn into_array(v: Self) -> Option<Self::Array>
@@ -38,6 +46,11 @@ pub trait JsonValue: Debug + Clone + PartialEq + Default {
     where
         Self: Sized;
 }
+
+pub type JsonValuePathComponent<V> = PathComponent<
+    <<V as JsonValue>::Path as JsonPath>::Key,
+    <<V as JsonValue>::Path as JsonPath>::Index,
+>;
 
 /// Factory trait that creates and mutates JSON values.
 pub trait JsonValueFactory {
@@ -74,7 +87,7 @@ pub trait JsonValueFactory {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: Key,
+        key: <<Self::Value as JsonValue>::Path as JsonPath>::Key,
         val: Self::Value,
     ) -> &'b mut Self::Value;
     fn array_push<'a, 'b: 'a>(
@@ -91,8 +104,8 @@ pub struct StdValueFactory;
 use alloc::{collections::BTreeMap, vec::Vec};
 
 use crate::{
-    Str,
-    event::{Index, Key},
+    JsonPath, Path, PathComponent, Str,
+    path_component::{Index, Key},
     value::Value,
 };
 
@@ -103,6 +116,8 @@ impl JsonValue for Value {
     type Null = ();
     type Array = Vec<Value>;
     type Object = BTreeMap<Key, Value>;
+
+    type Path = Path;
 
     #[inline(always)]
     fn kind(v: &Self) -> ValueKind {
@@ -146,7 +161,7 @@ impl JsonValue for Value {
     #[inline(always)]
     fn object_get_mut<'a>(
         obj: &'a mut <self::Value as JsonValue>::Object,
-        key: &str,
+        key: &Key,
     ) -> Option<&'a mut Self> {
         obj.get_mut(key)
     }
@@ -397,7 +412,7 @@ impl<F: JsonValueFactory + ?Sized> JsonValueFactory for &mut F {
     fn object_insert<'a, 'b: 'a>(
         &'a mut self,
         obj: &'b mut <Self::Value as JsonValue>::Object,
-        key: Key,
+        key: <<Self::Value as JsonValue>::Path as JsonPath>::Key,
         val: Self::Value,
     ) -> &'b mut Self::Value {
         (**self).object_insert(obj, key, val)

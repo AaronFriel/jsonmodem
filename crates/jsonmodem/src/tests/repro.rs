@@ -2,12 +2,12 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    ParseEvent, ParserOptions, StreamingParser, Value, event::reconstruct_values,
-    options::NonScalarValueMode,
+    DefaultStreamingParser, ParseEvent, ParserOptions, Path, Value,
+    event::test_util::reconstruct_values, options::NonScalarValueMode,
 };
 
 fn feed_and_reconstruct(payload: &str) -> (Vec<ParseEvent>, Vec<Value>) {
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
         non_scalar_values: NonScalarValueMode::All,
         panic_on_error: true,
@@ -32,13 +32,13 @@ fn repro_multi_value_string_roots() {
         events,
         vec![
             ParseEvent::String {
-                path: vec![],
+                path: Path::default(),
                 fragment: "a".into(),
                 is_final: true,
                 value: None,
             },
             ParseEvent::String {
-                path: vec![],
+                path: Path::default(),
                 fragment: "b".into(),
                 value: None,
                 is_final: true,

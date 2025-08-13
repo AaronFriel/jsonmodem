@@ -1,7 +1,7 @@
 use alloc::{vec, vec::Vec};
 
 use crate::{
-    ParseEvent, StreamingParser, Value,
+    DefaultStreamingParser, ParseEvent, Value,
     options::{NonScalarValueMode, ParserOptions},
     value::Map,
 };
@@ -11,7 +11,7 @@ use crate::{
 /// Value event, so we enable non-scalar-value building and inspect
 /// `current_value()` directly.
 fn finish_seq(chunks: &[&str]) -> Value {
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         non_scalar_values: NonScalarValueMode::All,
         string_value_mode: crate::StringValueMode::Values,
         ..Default::default()
@@ -196,7 +196,7 @@ fn test_continue_within_array_value() {
 
 #[test]
 fn test_continue_string_with_escape() {
-    let mut parser = StreamingParser::new(ParserOptions::default());
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
 
     // Feed the opening quote of the string – this is not enough to complete
     // a JSON value, so we should not receive any events yet and `current_value`
@@ -248,7 +248,7 @@ fn test_incremental_complete_after_three_feeds() {
 
 #[test]
 fn test_streaming_multiple_values() {
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
         ..Default::default()
     });
