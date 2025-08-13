@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::{ParseEvent, ParserOptions, StreamingParser};
+use crate::{DefaultStreamingParser, ParseEvent, ParserOptions};
 
 #[test]
 fn snapshot_complex_document() {
@@ -17,7 +17,7 @@ fn snapshot_complex_document() {
         "meta": {"count": 2}
     }"#;
 
-    let mut parser = StreamingParser::new(ParserOptions::default());
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
     parser.feed(json);
 
     let events: Vec<ParseEvent> = parser

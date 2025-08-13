@@ -1,10 +1,9 @@
 #![allow(clippy::inline_always)]
 
 use alloc::vec::Vec;
-use core::fmt::Debug;
 
 use crate::{
-    JsonValue, JsonValueFactory, ParseEvent,
+    JsonPath, JsonValue, JsonValueFactory, ParseEvent,
     value_zipper::{ValueBuilder, ZipperError},
 };
 

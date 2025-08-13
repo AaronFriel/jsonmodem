@@ -42,7 +42,7 @@
 #![expect(clippy::needless_raw_string_hashes)]
 #![expect(clippy::doc_markdown)]
 
-use jsonmodem::{ParseEvent, ParserOptions, StreamingParser, StringValueMode, path};
+use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions, StringValueMode, path};
 
 fn main() {
     // A *toy* assistant response streamed in ten tiny chunks.  The
@@ -75,7 +75,7 @@ fn main() {
 
     // Configure the parser so that every `ParseEvent::String` carries the full
     // *prefix* seen so far.  This enables super-low-latency decisions.
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         string_value_mode: StringValueMode::Prefixes,
         ..ParserOptions::default()
     });

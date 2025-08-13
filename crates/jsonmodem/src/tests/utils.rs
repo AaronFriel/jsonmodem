@@ -2,7 +2,9 @@ use alloc::string::{String, ToString};
 
 use quickcheck::QuickCheck;
 
-use crate::{ParserOptions, StreamingParser, Value, parser::Token, value::write_escaped_string};
+use crate::{
+    DefaultStreamingParser, ParserOptions, Value, parser::Token, value::write_escaped_string,
+};
 
 pub fn write_rendered_tokens<W: core::fmt::Write>(
     tokens: &[Token],
@@ -82,7 +84,7 @@ fn render_tokens(tokens: &[Token]) -> Result<String, core::fmt::Error> {
 fn roundtrip_rendered_tokens() {
     #[expect(clippy::needless_pass_by_value)]
     fn prop(value: Value) -> bool {
-        let mut parser = StreamingParser::new(ParserOptions::default());
+        let mut parser = DefaultStreamingParser::new(ParserOptions::default());
 
         let str_repr = value.to_string();
         parser.feed(&str_repr);

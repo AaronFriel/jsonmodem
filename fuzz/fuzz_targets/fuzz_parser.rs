@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 
 use arbitrary::Arbitrary;
-use jsonmodem::{ParserOptions, StreamingParser, StringValueMode};
+use jsonmodem::{DefaultStreamingParser, ParserOptions, StringValueMode};
 use libfuzzer_sys::{fuzz_mutator, fuzz_target, fuzzer_mutate};
 use rand::rngs::SmallRng; // faster than StdRng
 use rand::{Rng, RngCore, SeedableRng};
@@ -166,7 +166,7 @@ fn parser(data: &[u8]) {
 
     // Use the random number we chose to split the input into chunks:
     let chunks = split_into_safe_chunks(&str, split_seed);
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: flags & 1 != 0,
         non_scalar_values: if flags & 2 != 0 {
             jsonmodem::NonScalarValueMode::All

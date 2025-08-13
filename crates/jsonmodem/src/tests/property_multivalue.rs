@@ -7,8 +7,8 @@ use alloc::{
 use quickcheck::{QuickCheck, TestResult};
 
 use crate::{
-    ParseEvent, ParserOptions, StreamingParser, StringValueMode, Value, event::reconstruct_values,
-    options::NonScalarValueMode,
+    DefaultStreamingParser, ParseEvent, ParserOptions, Path, StringValueMode, Value,
+    event::test_util::reconstruct_values, options::NonScalarValueMode,
 };
 
 /// Repro for missing string roots in multi-value stream reconstruction.
@@ -17,7 +17,7 @@ use crate::{
 #[test]
 fn repro_multi_value_string_root() {
     let payload = "\"x\"";
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
         non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
@@ -26,7 +26,7 @@ fn repro_multi_value_string_root() {
     assert_eq!(
         &events,
         &[ParseEvent::String {
-            path: vec![],
+            path: Path::default(),
             fragment: "x".into(),
             is_final: true,
             value: None,
@@ -59,7 +59,7 @@ fn multi_value_roundtrip_quickcheck() {
             .collect::<Vec<_>>()
             .join(" ");
 
-        let mut parser = StreamingParser::new(ParserOptions {
+        let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             non_scalar_values: NonScalarValueMode::All,
             string_value_mode,
@@ -142,7 +142,7 @@ fn multi_value_roundtrip_quickcheck() {
 fn multi_value_roundtrip_repro() {
     let chunks = ["{\"/ꑆ\u{fff2}\u{4a9d3}‼\"", ":\"\u{e1cac}\",\">]\":false}"];
 
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
         non_scalar_values: NonScalarValueMode::All,
         panic_on_error: true,

@@ -6,8 +6,8 @@ use alloc::{
 use quickcheck::QuickCheck;
 
 use crate::{
-    StreamingParser, StringValueMode, Value,
-    event::reconstruct_values,
+    DefaultStreamingParser, StringValueMode, Value,
+    event::test_util::reconstruct_values,
     options::{NonScalarValueMode, ParserOptions},
 };
 
@@ -22,9 +22,9 @@ fn partition_roundtrip_quickcheck() {
             return true;
         }
 
-        // Stream parser in `stream` mode so that structural container events are
+        // Stream parser DefaultStreamingParsere so that structural container events are
         // emitted.
-        let mut parser = StreamingParser::new(ParserOptions {
+        let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             non_scalar_values: NonScalarValueMode::All,
             string_value_mode,

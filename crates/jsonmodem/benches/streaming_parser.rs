@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingParser};
+use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions};
 
 /// Produce a *deterministic* JSON document whose textual representation is at
 /// least `target_len` bytes (UTF-8 code units). The resulting string is
@@ -36,7 +36,7 @@ fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarValueMode) -
     assert!(parts > 0);
     let chunk_size = payload.len().div_ceil(parts); // ceiling division
 
-    let mut parser = StreamingParser::new(ParserOptions {
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
         non_scalar_values: mode,
         ..Default::default()
     });

@@ -23,6 +23,9 @@ mod options;
 mod parser;
 mod streaming_values;
 
+mod json_path;
+mod path;
+mod path_component;
 #[cfg(test)]
 mod tests;
 
@@ -31,10 +34,13 @@ pub use alloc::vec;
 
 pub use chunk_utils::{produce_chunks, produce_prefixes};
 pub use error::ParserError;
-pub use event::{ParseEvent, PathComponent, PathComponentFrom};
+pub use event::ParseEvent;
 pub use factory::{JsonValue, JsonValueFactory, StdValueFactory, ValueKind};
+pub use json_path::JsonPath;
 pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
-pub use parser::StreamingParser;
+pub use parser::{DefaultStreamingParser, StreamingParserImpl};
+pub use path::Path;
+pub use path_component::{Index, Key, PathComponent, PathComponentFrom};
 pub use streaming_values::{StreamingValue, StreamingValuesParser};
 pub use value::{Array, Map, Str, Value};
 
@@ -43,11 +49,13 @@ pub use value::{Array, Map, Str, Value};
 ///
 /// ```rust
 /// extern crate alloc;
-/// # use jsonmodem::{path, PathComponent};
+/// use std::ops::Deref;
+///
+/// use jsonmodem::{PathComponent, path};
 /// let p = path![0, "foo", 2];
 /// assert_eq!(
-///     p,
-///     vec![
+///     p.deref(),
+///     &vec![
 ///         PathComponent::Index(0),
 ///         PathComponent::Key("foo".into()),
 ///         PathComponent::Index(2)
@@ -57,6 +65,7 @@ pub use value::{Array, Map, Str, Value};
 #[macro_export]
 macro_rules! path {
     ( $( $elem:expr ),* $(,)? ) => {{
+        #[allow(unused_imports)]
         use $crate::PathComponentFrom;
         $crate::vec![$($crate::PathComponent::from_path_component($elem)),*]
     }};

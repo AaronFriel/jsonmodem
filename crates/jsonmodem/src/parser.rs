@@ -8,9 +8,9 @@
 //! Basic usage:
 //!
 //! ```rust
-//! use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+//! use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions};
 //!
-//! let mut parser = StreamingParser::new(ParserOptions::default());
+//! let mut parser = DefaultStreamingParser::new(ParserOptions::default());
 //! parser.feed(r#"{"key": [null, true, 3.14]}"#);
 //! for event in parser.finish() {
 //!     let event = event.unwrap();
@@ -31,11 +31,12 @@ use alloc::{
 use core::{f64, fmt};
 
 use crate::{
-    JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
+    JsonPath, JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
-    event::{Index, Key, ParseEvent, PathComponent},
+    event::ParseEvent,
     event_stack::EventStack,
+    json_path::Successor,
     literal_buffer::{self, ExpectedLiteralBuffer},
     options::{NonScalarValueMode, ParserOptions},
     value_zipper::{ValueBuilder, ZipperError},
@@ -147,124 +148,107 @@ impl From<ParseState> for LexState {
 
 /// Stack entry – one per open container
 #[derive(Clone, Debug)]
-pub enum Frame {
+pub enum Frame<P: JsonPath> {
     Array {
-        next_index: Index, // slot for the next element
+        next_index_usize: P::Index, // slot for the next element
     },
     Object {
-        pending_key: Option<Key>, // key waiting for its value
+        pending_key: Option<P::Key>, // key waiting for its value
     },
 }
 
-impl Frame {
-    pub fn new_array_frame() -> Self {
-        Frame::Array { next_index: 0 }
+impl<P: JsonPath> Frame<P> {
+    #[inline]
+    pub fn new_array() -> Self {
+        Frame::Array {
+            next_index_usize: P::Index::default(),
+        }
     }
 
-    pub fn new_object_frame() -> Self {
+    #[inline]
+    pub fn new_object() -> Self {
         Frame::Object { pending_key: None }
     }
 
-    pub fn to_path_component(&self) -> PathComponent {
+    #[inline]
+    pub fn append_component_to(&self, path: &mut P) {
         match self {
-            Frame::Array { next_index } => PathComponent::Index(*next_index),
+            Frame::Array { next_index_usize } => path.push_index(*next_index_usize),
             Frame::Object { pending_key } => {
-                PathComponent::Key(pending_key.clone().unwrap_or_default())
+                let k = pending_key
+                    .as_ref()
+                    .expect("pending_key must be set before path append");
+                path.push_key(k.clone());
             }
         }
     }
 }
 
 #[derive(Debug)]
-pub struct FrameStack {
-    root: Option<Frame>,
-    stack: Vec<(PathComponent, Frame)>,
+pub struct FrameStack<P: JsonPath> {
+    root: Option<Frame<P>>,
+    stack: Vec<Frame<P>>,
+    path: P,
 }
 
-impl Default for FrameStack {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clone for FrameStack {
-    fn clone(&self) -> Self {
-        let mut stack = Vec::with_capacity(self.stack.len());
-        stack.extend(self.stack.iter().cloned());
-        Self {
-            root: self.root.clone(),
-            stack,
-        }
-    }
-}
-
-impl FrameStack {
+impl<P: JsonPath> FrameStack<P> {
     pub fn new() -> Self {
         Self {
             root: None,
             stack: Vec::with_capacity(16),
+            path: P::default(),
         }
     }
 
     #[inline]
-    pub fn last(&self) -> Option<&Frame> {
-        if let Some((_, frame)) = self.stack.last() {
-            return Some(frame);
-        }
-        self.root.as_ref()
+    pub fn last(&self) -> Option<&Frame<P>> {
+        self.stack.last().or(self.root.as_ref())
     }
 
     #[inline]
-    pub fn last_mut(&mut self) -> Option<&mut Frame> {
-        if let Some((_, frame)) = self.stack.last_mut() {
+    pub fn last_mut(&mut self) -> Option<&mut Frame<P>> {
+        if self.stack.is_empty() {
+            self.root.as_mut()
+        } else {
+            self.stack.last_mut()
+        }
+    }
+
+    pub fn push(&mut self, frame: Frame<P>) {
+        if let Some(last) = self.last().cloned() {
+            last.append_component_to(&mut self.path);
+            self.stack.push(frame);
+        } else {
+            self.root = Some(frame);
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<Frame<P>> {
+        if let Some(frame) = self.stack.pop() {
+            self.path.pop();
             Some(frame)
         } else {
-            self.root.as_mut()
+            self.root.take()
         }
     }
 
     #[inline]
-    pub fn push(&mut self, frame: Frame) {
-        match self.last() {
-            Some(last_frame) => {
-                let next_path_component = last_frame.to_path_component();
-                self.stack.push((next_path_component, frame));
-            }
-            None => {
-                self.root = Some(frame);
-            }
-        }
-    }
-
-    #[inline]
-    pub fn pop(&mut self) -> Option<Frame> {
-        match self.stack.pop() {
-            Some((_, f)) => Some(f),
-            None => self.root.take(),
-        }
-    }
-
-    #[inline]
-    pub fn to_path_components(&self) -> Vec<PathComponent> {
-        let mut path = Vec::with_capacity(self.stack.len());
-        for (pc, _) in &self.stack {
-            path.push(pc.clone());
-        }
-        path
+    pub fn path_clone(&self) -> P {
+        self.path.clone()
     }
 
     #[inline]
     pub fn clear(&mut self) {
         self.root = None;
         self.stack.clear();
+        self.path = P::default();
     }
 }
 
-/// The streaming JSON parser. Uses the default `Value` type for JSON values.
-pub type StreamingParser = StreamingParserImpl<Value>;
+/// The streaming JSON parser. Uses the default `Value` type and path
+/// representation.
+pub type DefaultStreamingParser = StreamingParserImpl<Value>;
 
-#[derive(Debug)]
-/// The streaming JSON parser.
 ///
 /// `StreamingParser` can be fed partial or complete JSON input in chunks.
 /// It implements `Iterator` to yield `ParseEvent`s representing JSON tokens
@@ -273,9 +257,9 @@ pub type StreamingParser = StreamingParserImpl<Value>;
 /// # Examples
 ///
 /// ```rust
-/// use jsonmodem::{ParseEvent, ParserOptions, StreamingParser};
+/// use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions};
 ///
-/// let mut parser = StreamingParser::new(ParserOptions::default());
+/// let mut parser = DefaultStreamingParser::new(ParserOptions::default());
 /// parser.feed(r#"[{"key": "value"}, true, null]"#);
 /// let mut closed = parser.finish();
 /// while let Some(result) = closed.next() {
@@ -283,6 +267,7 @@ pub type StreamingParser = StreamingParserImpl<Value>;
 ///     println!("{:?}", event);
 /// }
 /// ```
+#[derive(Debug)]
 pub struct StreamingParserImpl<V: JsonValue = Value> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
@@ -305,7 +290,7 @@ pub struct StreamingParserImpl<V: JsonValue = Value> {
     partial_lex: bool, // true ← we returned an *incomplete* token
 
     /// Last token we produced
-    frames: FrameStack, // stack of open containers (arrays or objects)
+    frames: FrameStack<V::Path>, // stack of open containers (arrays or objects)
     events: EventStack<V>,
 
     multiple_values: bool,
@@ -380,9 +365,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     /// # Examples
     ///
     /// ```rust
-    /// use jsonmodem::{ParserOptions, StreamingParser};
+    /// use jsonmodem::{DefaultStreamingParser, ParserOptions};
     ///
-    /// let parser = StreamingParser::new(ParserOptions {
+    /// let parser = DefaultStreamingParser::new(ParserOptions {
     ///     allow_multiple_json_values: true,
     ///     ..Default::default()
     /// });
@@ -1209,7 +1194,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 Token::PropertyName { value } => {
                     match self.frames.last_mut() {
                         Some(Frame::Object { pending_key }) => {
-                            *pending_key = Some(value.into());
+                            *pending_key = Some(<<V as JsonValue>::Path as JsonPath>::Key::from(
+                                value.as_str(),
+                            ));
                         }
                         _ => Err(self
                             .syntax_error("Expected object frame for property name".to_string()))?,
@@ -1258,8 +1245,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
                 Token::Punctuator(b',') => {
                     match self.frames.last_mut() {
-                        Some(Frame::Array { next_index }) => {
-                            *next_index += 1; // increment index for next value
+                        Some(Frame::Array { next_index_usize }) => {
+                            *next_index_usize = next_index_usize.successor();
                         }
                         _ => Err(self.syntax_error(
                             "Expected array frame for after array value".to_string(),
@@ -1279,7 +1266,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
 
     #[inline(always)]
     fn pop<F: JsonValueFactory<Value = V>>(&mut self, f: &mut F) -> Result<(), ParserError> {
-        let path = self.frames.to_path_components();
+        let path = self.frames.path_clone();
         match self.frames.pop() {
             Some(Frame::Array { .. }) => {
                 self.events
@@ -1316,12 +1303,12 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     ) -> Result<(), ParserError> {
         match token {
             Token::Punctuator(b'{') => {
-                self.frames.push(Frame::new_object_frame());
+                self.frames.push(Frame::new_object());
                 self.events
                     .push(
                         f,
                         ParseEvent::ObjectBegin {
-                            path: self.frames.to_path_components(),
+                            path: self.frames.path_clone(),
                         },
                     )
                     .map_err(|err| self.zipper_error(err))?;
@@ -1329,12 +1316,12 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 return Ok(());
             }
             Token::Punctuator(b'[') => {
-                self.frames.push(Frame::new_array_frame());
+                self.frames.push(Frame::new_array());
                 self.events
                     .push(
                         f,
                         ParseEvent::ArrayStart {
-                            path: self.frames.to_path_components(),
+                            path: self.frames.path_clone(),
                         },
                     )
                     .map_err(|err| self.zipper_error(err))?;
@@ -1346,9 +1333,9 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             }
         }
 
-        let mut path = self.frames.to_path_components();
+        let mut path = self.frames.path_clone();
         if let Some(frame) = self.frames.last() {
-            path.push(frame.to_path_component());
+            frame.append_component_to(&mut path);
         }
 
         match (token, self.partial_lex) {
@@ -1499,21 +1486,21 @@ impl StreamingParserImpl<Value> {
     /// # Examples
     ///
     /// ```rust
-    /// # use jsonmodem::{StreamingParser, ParserOptions};
-    /// let mut parser = StreamingParser::new(ParserOptions::default());
+    /// # use jsonmodem::{DefaultStreamingParser, ParserOptions};
+    /// let mut parser = DefaultStreamingParser::new(ParserOptions::default());
     /// parser.feed("{\"hello\":");
     /// ```
-    pub fn feed<'a>(&'a mut self, text: &str) -> StreamingParserIteratorWith<'a, StdValueFactory> {
-        self.feed_with(StdValueFactory, text)
-    }
-
-    #[must_use]
     /// Marks the end of input and returns a closed parser to consume pending
     /// events.
     ///
     /// After calling `finish_with`, no further input can be fed. The returned
     /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
     /// and then ends.
+    pub fn feed<'a>(&'a mut self, text: &str) -> StreamingParserIteratorWith<'a, StdValueFactory> {
+        self.feed_with(StdValueFactory, text)
+    }
+
+    #[must_use]
     pub fn finish(self) -> ClosedStreamingParser<StdValueFactory> {
         self.finish_with(StdValueFactory)
     }
@@ -1542,12 +1529,12 @@ mod tests {
     #[test]
     fn size_of_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<StreamingParser>(), 280);
+        assert_eq!(size_of::<DefaultStreamingParser>(), 304);
     }
 
     #[test]
     fn size_of_closed_parser() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser<StdValueFactory>>(), 280);
+        assert_eq!(size_of::<ClosedStreamingParser<StdValueFactory>>(), 304);
     }
 }
