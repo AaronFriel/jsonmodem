@@ -15,11 +15,24 @@ serde_json = "1.0.140"
 
 [dependencies.jsonmodem]
 path = "../crates/jsonmodem"
-features = ["fuzzing"]
 
 [[bin]]
-name = "fuzz_parser"
-path = "fuzz_targets/fuzz_parser.rs"
+name = "fuzz_jsonmodem"
+path = "fuzz_targets/fuzz_jsonmodem.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_jsonmodem_buffers"
+path = "fuzz_targets/fuzz_jsonmodem_buffers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_jsonmodem_values"
+path = "fuzz_targets/fuzz_jsonmodem_values.rs"
 test = false
 doc = false
 bench = false

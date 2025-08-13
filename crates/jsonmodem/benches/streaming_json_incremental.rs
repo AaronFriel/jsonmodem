@@ -1,15 +1,13 @@
 //! Benchmarks for incremental streaming scenarios.
 #![expect(missing_docs)]
 mod streaming_json_common;
-use std::time::Duration;
+use std::{env, time::Duration};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::{
-    NonScalarValueMode, ParserOptions, StreamingParser, StreamingValuesParser, StringValueMode,
+    BufferOptions, JsonModem, JsonModemBuffers, JsonModemValues, ParserOptions, StdBackend,
 };
-#[cfg(feature = "comparison")]
-use streaming_json_common::partial_json_fixer;
-use streaming_json_common::{make_json_payload, parse_partial_json_port};
+use streaming_json_common::{make_json_payload, parse_partial_json_port, partial_json_fixer};
 
 #[expect(clippy::too_many_lines)]
 fn bench_streaming_json_incremental(c: &mut Criterion) {
@@ -32,37 +30,87 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
         let chunk_size = second_half.len().div_ceil(parts);
         let incremental_part = &second_half[..chunk_size];
 
-        for &mode in &[
-            NonScalarValueMode::None,
-            NonScalarValueMode::Roots,
-            NonScalarValueMode::All,
-        ] {
-            let name = format!("streaming_parser_inc_{mode:?}").to_lowercase();
-            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_events_inc", parts),
+            &parts,
+            |b, &_p| {
                 b.iter_batched(
                     || {
-                        // setup – not measured
-                        let mut parser = StreamingParser::new(ParserOptions {
-                            non_scalar_values: mode,
-                            ..Default::default()
-                        });
-                        // Drain all events produced so far so that the parser
-                        // is ready for the next chunk.
-                        for _ in &mut parser.feed(first_half) {}
+                        let mut parser = JsonModem::<StdBackend>::new(ParserOptions::default());
+                        for event in parser.feed(first_half).to_iter() {
+                            event.unwrap();
+                        }
                         parser
                     },
                     |mut parser| {
-                        // measured section – process *one* additional chunk
-                        let mut events = 0usize;
-                        for _ in &mut parser.feed(incremental_part) {
-                            events += 1;
+                        let mut produced = 0usize;
+                        let incremental_part = black_box(incremental_part);
+                        for event in parser.feed(incremental_part).to_iter() {
+                            event.unwrap();
+                            produced += 1;
                         }
-                        black_box(events);
+                        produced
                     },
                     BatchSize::SmallInput,
                 );
-            });
-        }
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_buffers_inc", parts),
+            &parts,
+            |b, &_p| {
+                b.iter_batched(
+                    || {
+                        let mut parser = JsonModemBuffers::new(
+                            ParserOptions::default(),
+                            BufferOptions::default(),
+                        );
+                        for event in parser.feed(first_half).to_iter() {
+                            event.unwrap();
+                        }
+                        parser
+                    },
+                    |mut parser| {
+                        let mut produced = 0usize;
+                        let incremental_part = black_box(incremental_part);
+                        for event in parser.feed(incremental_part).to_iter() {
+                            event.unwrap();
+                            produced += 1;
+                        }
+                        produced
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_values_inc", parts),
+            &parts,
+            |b, &_p| {
+                b.iter_batched(
+                    || {
+                        let mut parser = JsonModemValues::new(ParserOptions::default());
+                        for value in parser.feed(first_half) {
+                            value.unwrap();
+                        }
+                        parser
+                    },
+                    |mut parser| {
+                        let mut produced = 0usize;
+                        let incremental_part = black_box(incremental_part);
+                        for value in parser.feed(incremental_part) {
+                            if value.unwrap().is_final {
+                                produced += 1;
+                            }
+                        }
+                        produced
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
 
         group.bench_with_input(
             BenchmarkId::new("streaming_values_parser_inc", parts),
@@ -70,16 +118,21 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
             |b, &_p| {
                 b.iter_batched(
                     || {
-                        let mut parser = StreamingValuesParser::new(ParserOptions {
-                            non_scalar_values: NonScalarValueMode::Roots,
-                            string_value_mode: StringValueMode::Values,
-                            ..Default::default()
-                        });
-                        parser.feed(first_half).unwrap();
+                        let mut parser = JsonModemValues::new(ParserOptions::default());
+                        for value in parser.feed(first_half) {
+                            value.unwrap();
+                        }
                         parser
                     },
                     |mut parser| {
-                        let _ = parser.feed(incremental_part).unwrap();
+                        let mut produced = 0usize;
+                        let incremental_part = black_box(incremental_part);
+                        for value in parser.feed(incremental_part) {
+                            if value.unwrap().is_final {
+                                produced += 1;
+                            }
+                        }
+                        produced
                     },
                     BatchSize::SmallInput,
                 );
@@ -92,90 +145,92 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
             |b, &_p| {
                 b.iter_batched(
                     || {
-                        // Buffer pre-filled with the first half.
                         let mut buf = String::with_capacity(payload.len());
                         buf.push_str(first_half);
                         buf
                     },
                     |mut buf| {
-                        buf.push_str(incremental_part);
-                        let _ = parse_partial_json_port::parse_partial_json(Some(&buf));
+                        buf.push_str(black_box(incremental_part));
+                        let parsed = parse_partial_json_port::parse_partial_json(Some(&buf));
+                        let _ = black_box(parsed);
                     },
                     BatchSize::SmallInput,
                 );
             },
         );
 
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("fix_json_parse_inc", parts),
-            &parts,
-            |b, &_p| {
-                b.iter_batched(
-                    || {
-                        let mut buf = String::with_capacity(payload.len());
-                        buf.push_str(first_half);
-                        buf
-                    },
-                    |mut buf| {
-                        buf.push_str(incremental_part);
-                        let _ = partial_json_fixer::fix_json_parse(&buf);
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        if env::var_os("JSONMODEM_BENCH_COMPARISON").is_some() {
+            group.bench_with_input(
+                BenchmarkId::new("fix_json_parse_inc", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter_batched(
+                        || {
+                            let mut buf = String::with_capacity(payload.len());
+                            buf.push_str(first_half);
+                            buf
+                        },
+                        |mut buf| {
+                            buf.push_str(black_box(incremental_part));
+                            let parsed = partial_json_fixer::fix_json_parse(&buf);
+                            let _ = black_box(parsed);
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
 
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("jiter_partial_inc", parts),
-            &parts,
-            |b, &_p| {
-                b.iter_batched(
-                    || {
-                        let mut buf = String::with_capacity(payload.len());
-                        buf.push_str(first_half);
-                        buf
-                    },
-                    |mut buf| {
-                        buf.push_str(incremental_part);
-                        let _ = jiter::JsonValue::parse_with_config(
-                            buf.as_bytes(),
-                            false,
-                            jiter::PartialMode::TrailingStrings,
-                        )
-                        .unwrap();
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+            group.bench_with_input(
+                BenchmarkId::new("jiter_partial_inc", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter_batched(
+                        || {
+                            let mut buf = String::with_capacity(payload.len());
+                            buf.push_str(first_half);
+                            buf
+                        },
+                        |mut buf| {
+                            buf.push_str(black_box(incremental_part));
+                            let parsed = jiter::JsonValue::parse_with_config(
+                                black_box(buf.as_bytes()),
+                                false,
+                                jiter::PartialMode::TrailingStrings,
+                            )
+                            .unwrap();
+                            black_box(parsed);
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
 
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("jiter_partial_inc_owned", parts),
-            &parts,
-            |b, &_p| {
-                b.iter_batched(
-                    || {
-                        let mut buf = String::with_capacity(payload.len());
-                        buf.push_str(first_half);
-                        buf
-                    },
-                    |mut buf| {
-                        buf.push_str(incremental_part);
-                        let _ = jiter::JsonValue::parse_with_config(
-                            buf.as_bytes(),
-                            false,
-                            jiter::PartialMode::TrailingStrings,
-                        )
-                        .unwrap()
-                        .into_static();
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+            group.bench_with_input(
+                BenchmarkId::new("jiter_partial_inc_owned", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter_batched(
+                        || {
+                            let mut buf = String::with_capacity(payload.len());
+                            buf.push_str(first_half);
+                            buf
+                        },
+                        |mut buf| {
+                            buf.push_str(black_box(incremental_part));
+                            let parsed = jiter::JsonValue::parse_with_config(
+                                black_box(buf.as_bytes()),
+                                false,
+                                jiter::PartialMode::TrailingStrings,
+                            )
+                            .unwrap()
+                            .into_static();
+                            black_box(parsed);
+                        },
+                        BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
     }
 
     group.finish();
@@ -183,7 +238,7 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
 
 fn criterion() -> Criterion {
     let mut c = Criterion::default();
-    if cfg!(feature = "bench-fast") {
+    if env::var_os("JSONMODEM_BENCH_FAST").is_some() {
         c = c
             .warm_up_time(Duration::from_millis(10))
             .measurement_time(Duration::from_millis(100))

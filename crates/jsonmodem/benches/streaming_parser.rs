@@ -1,10 +1,14 @@
 //! Benchmark – `jsonmodem::StreamingParser`
 #![expect(missing_docs)]
 
-use std::time::Duration;
+use std::{env, time::Duration};
+
+mod streaming_json_common;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingParser};
+use streaming_json_common::{
+    produce_chunks, run_jsonmodem_buffers, run_jsonmodem_events, run_jsonmodem_values,
+};
 
 /// Produce a *deterministic* JSON document whose textual representation is at
 /// least `target_len` bytes (UTF-8 code units). The resulting string is
@@ -28,61 +32,48 @@ fn make_json_payload(target_len: usize) -> String {
     s
 }
 
-/// Run the parser by feeding it `parts` chunks that together form the full
-/// `payload`.  The function returns the number of `ParseEvent`s that the
-/// parser produced so that the result can be black-boxed by Criterion (to
-/// prevent the compiler from optimising the 'work' away).
-fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarValueMode) -> usize {
-    assert!(parts > 0);
-    let chunk_size = payload.len().div_ceil(parts); // ceiling division
-
-    let mut parser = StreamingParser::new(ParserOptions {
-        non_scalar_values: mode,
-        ..Default::default()
-    });
-    let mut produced = 0usize;
-
-    for chunk in payload.as_bytes().chunks(chunk_size) {
-        for _res in parser.feed(std::str::from_utf8(chunk).expect("chunk is valid UTF-8")) {
-            // drain any immediately-available events
-            produced += 1;
-        }
-    }
-
-    for res in parser.finish() {
-        let _ = res.unwrap();
-        produced += 1;
-    }
-
-    produced
-}
-
 fn bench_streaming_parser(c: &mut Criterion) {
     let payload = make_json_payload(10_000);
 
     let mut group = c.benchmark_group("streaming_parser_split");
 
     for &parts in &[100usize, 1_000, 5_000] {
-        for &mode in &[
-            NonScalarValueMode::None,
-            NonScalarValueMode::Roots,
-            NonScalarValueMode::All,
-        ] {
-            let name = format!("{mode:?}").to_lowercase();
-            group.bench_with_input(BenchmarkId::new(parts.to_string(), name), &mode, |b, &m| {
-                b.iter(|| {
-                    let count = run_streaming_parser(black_box(&payload), parts, m);
-                    black_box(count);
-                });
-            });
-        }
+        let chunks = produce_chunks(&payload, parts);
+
+        group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_events"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_events(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_buffers"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_buffers(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_values"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_values(black_box(&chunks)));
+            },
+        );
     }
     group.finish();
 }
 
+fn fast_mode() -> bool {
+    env::var_os("JSONMODEM_BENCH_FAST").is_some()
+}
+
 fn criterion() -> Criterion {
     let mut c = Criterion::default();
-    if cfg!(feature = "bench-fast") {
+    if fast_mode() {
         c = c
             .warm_up_time(Duration::from_millis(10))
             .measurement_time(Duration::from_millis(100))

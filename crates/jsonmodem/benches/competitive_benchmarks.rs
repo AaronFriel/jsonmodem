@@ -1,4 +1,3 @@
-#![cfg(feature = "comparison")]
 #![expect(missing_docs)]
 //! Benchmark comparison of jiter, `serde_json`, and jsonmodem
 //!
@@ -54,15 +53,13 @@
 //! test x100_serde_value                  ... bench:          83 ns/iter (+/- 3)
 //! ```
 
-use std::{fs::File, hint::black_box, io::Read, time::Duration};
+use std::{env, fs::File, hint::black_box, io::Read, time::Duration};
 
 use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
-use jiter::{Jiter, JsonValue, Peek};
-use jsonmodem::{
-    NonScalarValueMode, ParserOptions, StreamingValuesParser, StringValueMode, Value as ModemValue,
-};
+use jiter::{Jiter, JsonValue};
+use jsonmodem::{JsonModemValues, ParserOptions, Value as ModemValue};
 use serde_json::Value as SerdeValue;
 
 fn read_file(path: &str) -> String {
@@ -77,19 +74,17 @@ fn jiter_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json_data = json.as_bytes();
 
     group.bench_function("jiter_value", |b| {
-        b.iter(|| {
-            let v = JsonValue::parse(black_box(json_data), false).unwrap();
-            black_box(v)
-        });
+        b.iter(|| JsonValue::parse(black_box(json_data), false).unwrap());
     });
 }
 
 fn jiter_iter_big(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             jiter.next_array().unwrap();
             loop {
@@ -109,39 +104,26 @@ fn jiter_iter_big(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     });
 }
 
-fn find_string(jiter: &mut Jiter) -> String {
-    match jiter.peek().unwrap() {
-        Peek::String => jiter.known_str().unwrap().to_string(),
-        Peek::Array => {
-            assert!(jiter.known_array().unwrap().is_some());
-            let s = find_string(jiter).to_string();
-            assert!(jiter.array_step().unwrap().is_none());
-            s
-        }
-        _ => panic!("Expected string or array"),
-    }
-}
-
 fn jiter_iter_pass2(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
-            let string = find_string(&mut jiter);
             jiter.finish().unwrap();
-            black_box(string)
         });
     });
 }
 
 fn jiter_iter_string_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             jiter.next_array().unwrap();
             let i = jiter.known_str().unwrap();
@@ -157,10 +139,11 @@ fn jiter_iter_string_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>)
 
 fn jiter_iter_true_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
             let i = jiter.known_bool(first_peek).unwrap();
@@ -175,10 +158,11 @@ fn jiter_iter_true_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
 
 fn jiter_iter_true_object(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             if let Some(first_key) = jiter.next_object().unwrap() {
                 let first_key = first_key.to_string();
@@ -196,10 +180,11 @@ fn jiter_iter_true_object(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) 
 
 fn jiter_iter_ints_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
             let i = jiter.known_int(first_peek).unwrap();
@@ -214,10 +199,11 @@ fn jiter_iter_ints_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
 
 fn jiter_iter_floats_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             let first_peek = jiter.next_array().unwrap().unwrap();
             let i = jiter.known_float(first_peek).unwrap();
@@ -232,10 +218,11 @@ fn jiter_iter_floats_array(path: &str, group: &mut BenchmarkGroup<'_, WallTime>)
 
 fn jiter_string(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jiter_iter", |b| {
         b.iter(|| {
+            let json_data = black_box(json_data);
             let mut jiter = Jiter::new(json_data);
             let string = jiter.next_str().unwrap();
             black_box(string);
@@ -246,45 +233,52 @@ fn jiter_string(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
 
 fn serde_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("serde_value", |b| {
         b.iter(|| {
-            let value: SerdeValue = serde_json::from_slice(json_data).unwrap();
-            black_box(value);
+            let json_data = black_box(json_data);
+            serde_json::from_slice::<SerdeValue>(json_data).unwrap()
         });
     });
 }
 
 fn serde_str(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("serde_iter", |b| {
         b.iter(|| {
-            let value: String = serde_json::from_slice(json_data).unwrap();
-            black_box(value);
+            let json_data = black_box(json_data);
+            serde_json::from_slice::<String>(json_data).unwrap()
         });
     });
 }
 
 fn jsonmodem_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
     let json = read_file(path);
-    let json_data = black_box(json.as_bytes());
+    let json_data = json.as_bytes();
 
     group.bench_function("jsonmodem_value", |b| {
         b.iter(|| {
-            let mut parser = StreamingValuesParser::new(ParserOptions {
-                non_scalar_values: NonScalarValueMode::Roots,
-                string_value_mode: StringValueMode::Values,
-                ..Default::default()
-            });
-            let mut values = parser
-                .feed(core::str::from_utf8(json_data).unwrap())
-                .unwrap();
-            values.extend(parser.finish().unwrap());
-            let v: ModemValue = values.pop().unwrap().value;
-            black_box(v);
+            let json_data = black_box(json_data);
+            let mut parser =
+                JsonModemValues::new(ParserOptions::default().with_panic_on_error(true));
+            let mut produced: Option<ModemValue> = None;
+            let input = core::str::from_utf8(json_data).unwrap();
+            for value in parser.feed(input) {
+                let value = value.expect("stream parse failure");
+                if value.is_final {
+                    produced = Some(value.value);
+                }
+            }
+            for value in parser.finish() {
+                let value = value.expect("stream finish failure");
+                if value.is_final {
+                    produced = Some(value.value);
+                }
+            }
+            produced.expect("at least one value")
         });
     });
 }
@@ -315,6 +309,11 @@ fn bench_dataset(cfg: &Dataset, c: &mut Criterion) {
 }
 
 pub fn competitive_benches(c: &mut Criterion) {
+    if env::var_os("JSONMODEM_BENCH_COMPARISON").is_none() {
+        eprintln!("Skipping comparison benchmarks (set JSONMODEM_BENCH_COMPARISON=1 to run)");
+        return;
+    }
+
     let datasets = [
         Dataset {
             name: "pass1",
@@ -393,20 +392,17 @@ pub fn competitive_benches(c: &mut Criterion) {
     }
 }
 
-fn criterion() -> Criterion {
+criterion_group! { name = benches; config = criterion_with_env(); targets = competitive_benches }
+
+fn criterion_with_env() -> Criterion {
     let mut c = Criterion::default();
-    if cfg!(feature = "bench-fast") {
+    if env::var_os("JSONMODEM_BENCH_FAST").is_some() {
         c = c
             .warm_up_time(Duration::from_millis(10))
             .measurement_time(Duration::from_millis(100))
             .sample_size(10);
-    } else {
-        c = c
-            .warm_up_time(Duration::from_secs(1))
-            .measurement_time(Duration::from_secs(3));
     }
     c
 }
 
-criterion_group! { name = benches; config = criterion(); targets = competitive_benches }
 criterion_main!(benches);

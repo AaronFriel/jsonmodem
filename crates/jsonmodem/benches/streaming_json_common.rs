@@ -1,11 +1,30 @@
+#![allow(dead_code)]
+
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;
 use jsonmodem::{
-    NonScalarValueMode, ParserOptions, StreamingParser, StreamingValuesParser, StringValueMode,
+    BufferOptions, JsonModem, JsonModemBuffers, JsonModemValues, ParserOptions, StdBackend,
+    lending_iterator::LendingIterator,
 };
 
+pub fn produce_chunks(payload: &str, parts: usize) -> Vec<&str> {
+    assert!(parts > 0);
+    let len = payload.len();
+    let chunk_size = len.div_ceil(parts);
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < len {
+        let mut end = core::cmp::min(start + chunk_size, len);
+        while end < len && !payload.is_char_boundary(end) {
+            end += 1;
+        }
+        chunks.push(&payload[start..end]);
+        start = end;
+    }
+    chunks
+}
+
 /// Deterministically create a JSON document of exactly `target_len` bytes.
-#[allow(dead_code)]
 pub fn make_json_payload(target_len: usize) -> String {
     let overhead = "{\"data\":\"\"}".len();
     assert!(target_len >= overhead);
@@ -18,47 +37,74 @@ pub fn make_json_payload(target_len: usize) -> String {
     s
 }
 
-#[allow(dead_code)]
-pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize {
-    let mut parser = StreamingParser::new(ParserOptions {
-        non_scalar_values: mode,
-        ..Default::default()
-    });
+pub fn run_jsonmodem_events(chunks: &[&str]) -> usize {
+    let mut parser = JsonModem::<StdBackend>::new(ParserOptions::default());
     let mut events = 0usize;
 
     for &chunk in chunks {
-        for _ in parser.feed(chunk) {
+        let mut iter = parser.feed(chunk);
+        while let Some(event) = iter.next() {
+            event.unwrap();
             events += 1;
         }
     }
 
-    for res in parser.finish() {
-        let _ = res.unwrap();
+    let mut iter = parser.finish();
+    while let Some(event) = iter.next() {
+        event.unwrap();
         events += 1;
     }
 
     events
 }
 
-#[allow(dead_code)]
-pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
-    let mut parser = StreamingValuesParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::Roots,
-        string_value_mode: StringValueMode::Values,
-        ..Default::default()
-    });
+pub fn run_jsonmodem_buffers(chunks: &[&str]) -> usize {
+    let mut parser =
+        JsonModemBuffers::<StdBackend, _>::new(ParserOptions::default(), BufferOptions::default());
+    let mut events = 0usize;
+
+    for &chunk in chunks {
+        let mut iter = parser.feed(chunk);
+        while let Some(event) = iter.next() {
+            event.unwrap();
+            events += 1;
+        }
+    }
+
+    let mut iter = parser.finish();
+    while let Some(event) = iter.next() {
+        event.unwrap();
+        events += 1;
+    }
+
+    events
+}
+
+pub fn run_jsonmodem_values(chunks: &[&str]) -> usize {
+    let mut parser = JsonModemValues::<StdBackend, _>::new(ParserOptions::default());
     let mut produced = 0usize;
 
     for &chunk in chunks {
-        let values = parser.feed(chunk).unwrap();
-        produced += values.iter().filter(|v| v.is_final).count();
+        let mut iter = parser.feed(chunk);
+        while let Some(value) = LendingIterator::next(&mut iter) {
+            let value = value.expect("values parse failure");
+            if value.is_final {
+                produced += 1;
+            }
+        }
     }
 
-    let values = parser.finish().unwrap();
-    produced + values.iter().filter(|v| v.is_final).count()
+    let mut iter = parser.finish();
+    while let Some(value) = LendingIterator::next(&mut iter) {
+        let value = value.expect("values finish failure");
+        if value.is_final {
+            produced += 1;
+        }
+    }
+
+    produced
 }
 
-#[allow(dead_code)]
 pub fn run_parse_partial_json(chunks: &[&str]) -> usize {
     let mut calls = 0usize;
     let mut prefix = String::new();
@@ -72,7 +118,6 @@ pub fn run_parse_partial_json(chunks: &[&str]) -> usize {
     calls
 }
 
-#[cfg(feature = "comparison")]
 pub mod partial_json_fixer {
     use serde_json::Value;
 
@@ -85,8 +130,6 @@ pub mod partial_json_fixer {
     }
 }
 
-#[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_fix_json_parse(chunks: &[&str]) -> usize {
     let mut calls = 0usize;
     let mut prefix = String::new();
@@ -100,8 +143,6 @@ pub fn run_fix_json_parse(chunks: &[&str]) -> usize {
     calls
 }
 
-#[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_jiter_partial(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;
@@ -118,8 +159,6 @@ pub fn run_jiter_partial(chunks: &[&str]) -> usize {
     calls
 }
 
-#[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_jiter_partial_owned(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;

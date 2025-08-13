@@ -37,24 +37,25 @@ run_step "rustfmt (check)"  cargo +nightly fmt --all -- --check
 EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-py)
 # Speed up local iteration by enabling lighter-weight test and benchmark
 # configurations. CI runs without these features for full coverage.
-FAST_FEATURES=(--features bench-fast --features test-fast)
+FAST_ENV=(JSONMODEM_TEST_FAST=1 JSONMODEM_BENCH_FAST=1)
 
-run_step "build (release)"  cargo build  --workspace --release              "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}"
-run_step "tests"            cargo test   --workspace --verbose              "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}"
-run_step "clippy"           cargo clippy --workspace --all-targets          "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}" \
+run_step "build (release)"  env "${FAST_ENV[@]}" cargo build  --workspace --release              "${EXCLUDE_ARGS[@]}"
+run_step "tests"            env "${FAST_ENV[@]}" cargo test   --workspace --verbose              "${EXCLUDE_ARGS[@]}"
+run_step "clippy"           env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets          "${EXCLUDE_ARGS[@]}" \
                                -- -D warnings
+run_step "docs (public)"    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps "${EXCLUDE_ARGS[@]}"
 
 # Extra clippy pass that compiles under the same cfg flags Miri uses.
 run_step "clippy (cfg=miri)" \
          env RUSTFLAGS="--cfg miri" \
-         cargo clippy --workspace --all-targets "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}" \
+         env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets "${EXCLUDE_ARGS[@]}" \
            -- -D warnings
 
 ###############################################################################
 # 3. Optional Miri (cfg via env var)
 ###############################################################################
-if [[ "${AGENT_CHECK_MIRI_DISABLE:-false}" != "true" ]]; then
-  run_step "miri test"      cargo +nightly miri test --workspace --features miri
+if [[ "${AGENT_CHECK_MIRI_DISABLE:-true}" != "true" ]]; then
+  run_step "miri test"      env JSONMODEM_TEST_FAST=1 JSONMODEM_BENCH_FAST=1 cargo +nightly miri test --workspace
 else
   echo "⚠️  AGENT_CHECK_MIRI_DISABLE=true – skipping Miri checks."
 fi

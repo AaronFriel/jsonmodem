@@ -1,41 +1,12 @@
 //! Types and events emitted by the streaming JSON parser.
 //!
 //! `ParseEvent` enumerates parser outputs, indicating the JSON value type and
-//! its path within the document. `PathComponent` represents a key or index in a
+//! its path within the document. `PathItem` represents a key or index in a
 //! JSON path.
-//!
-//! # Examples
-//!
-//! Basic streaming parse example:
-//!F
-//! ```
-//! use jsonmodem::{
-//!     ParseEvent, ParserError, ParserOptions, PathComponent, StreamingParser, Value,
-//! };
-//!
-//! let mut parser = StreamingParser::new(ParserOptions::default());
-//! parser.feed("[\"foo\"]");
-//! let events: Vec<_> = parser.finish().into_iter().collect();
-//! assert_eq!(
-//!     events,
-//!     vec![
-//!         Ok(ParseEvent::ArrayStart { path: vec![] }),
-//!         Ok(ParseEvent::String {
-//!             path: vec![PathComponent::Index(0)],
-//!             value: None,
-//!             fragment: "foo".into(),
-//!             is_final: true,
-//!         }),
-//!         Ok(ParseEvent::ArrayEnd {
-//!             path: vec![],
-//!             value: None,
-//!         }),
-//!     ]
-//! );
-//! ```
-use alloc::{sync::Arc, vec::Vec};
 
-use crate::{JsonValue, Value};
+use core::fmt::Debug;
+
+use crate::{StdBackend, backend::StdPath, context::ValueCtx};
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
@@ -45,193 +16,13 @@ use crate::{JsonValue, Value};
 fn is_false(b: &bool) -> bool {
     !*b
 }
-
-pub type Key = Arc<str>;
-pub type Index = usize;
-
-/// A component in the path to a JSON value.
-///
-/// Paths are sequences of keys or indices (for objects and arrays,
-/// respectively) used in `ParseEvent` to indicate the location of a value
-/// within a JSON document.
-#[derive(Debug, Clone, PartialEq)]
-pub enum PathComponent {
-    Key(Key),
-    Index(Index),
-}
-
-// Convenient conversions so users can write `path![0, "foo"]` etc.
-macro_rules! impl_from_int_for_pathcomponent {
-    ($($t:ty),*) => {
-        $(
-            impl From<$t> for PathComponent {
-                fn from(i: $t) -> Self {
-                    #[allow(clippy::cast_possible_truncation)]
-                    PathComponent::Index(i as Index)
-                }
-            }
-        )*
-    };
-}
-
-impl_from_int_for_pathcomponent!(u8, u16, u32, u64, usize);
-
-impl From<&str> for PathComponent {
-    fn from(s: &str) -> Self {
-        Self::Key(s.into())
-    }
-}
-
-#[doc(hidden)]
-pub trait PathComponentFrom<T> {
-    fn from_path_component(value: T) -> PathComponent;
-}
-
-// use macro_rules to implement for i8..i64, u8..u64, isize, usize, &str and
-// String
-macro_rules! impl_integer_as_path_component {
-    ($($t:ty),+) => {
-        $(
-            impl PathComponentFrom<$t> for PathComponent {
-                fn from_path_component(value: $t) -> Self {
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    PathComponent::Index(value as Index)
-                }
-            }
-        )+
-    };
-}
-impl_integer_as_path_component!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
-
-impl PathComponentFrom<&str> for PathComponent {
-    fn from_path_component(value: &str) -> Self {
-        PathComponent::Key(value.into())
-    }
-}
-
-// Custom (de)serialization so that a `Vec<PathComponent>` becomes e.g.
-// `["foo", 0, "bar"]` instead of the default tagged representation.
-#[cfg(any(test, feature = "serde"))]
-mod serde_impls {
-    use alloc::string::String;
-    use core::fmt;
-
-    use serde::{
-        Deserialize, Deserializer, Serialize, Serializer,
-        de::{Error, Unexpected, Visitor},
-    };
-
-    use super::PathComponent;
-    use crate::event::Index;
-
-    impl Serialize for PathComponent {
-        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: Serializer,
-        {
-            match self {
-                PathComponent::Key(k) => serializer.serialize_str(k),
-                PathComponent::Index(i) => serializer.serialize_u64(*i as u64),
-            }
-        }
-    }
-
-    struct PathComponentVisitor;
-
-    impl Visitor<'_> for PathComponentVisitor {
-        type Value = PathComponent;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a string or unsigned integer")
-        }
-
-        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(PathComponent::Key(value.into()))
-        }
-
-        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(PathComponent::Key(value.into()))
-        }
-
-        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            #[expect(clippy::cast_possible_truncation)]
-            Ok(PathComponent::Index(value as Index))
-        }
-
-        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            if value < 0 {
-                return Err(Error::invalid_value(
-                    Unexpected::Signed(value),
-                    &"non-negative index",
-                ));
-            }
-
-            #[expect(clippy::cast_sign_loss)]
-            #[expect(clippy::cast_possible_truncation)]
-            Ok(PathComponent::Index(value as Index))
-        }
-    }
-
-    impl<'de> Deserialize<'de> for PathComponent {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            deserializer.deserialize_any(PathComponentVisitor)
-        }
-    }
-}
-
-impl PathComponent {
-    #[must_use]
-    /// Returns the index if this component is an index, otherwise `None`.
-    pub fn as_index(&self) -> Option<Index> {
-        if let Self::Index(v) = self {
-            Some(*v)
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    /// Returns the key if this component is a key, otherwise `None`.
-    pub fn as_key(&self) -> Option<Key> {
-        if let Self::Key(v) = self {
-            Some(v.clone())
-        } else {
-            None
-        }
-    }
-}
-
 /// An event generated by the streaming JSON parser.
 ///
 /// Represents a JSON parsing event, indicating the type of value, any relevant
 /// data, and the path to that value within the document.
 ///
-/// The `path` is a sequence of `PathComponent` starting at the root. For
-/// example, the first element in an array has path `[PathComponent::Index(0)]`.
-///
-/// # Examples
-///
-/// ```
-/// use jsonmodem::{ParseEvent, PathComponent, Value};
-///
-/// let evt = ParseEvent::<Value>::Null { path: Vec::new() };
-/// assert_eq!(evt, ParseEvent::Null { path: Vec::new() });
-/// ```
+/// The `path` is a sequence of `PathItem` starting at the root. For example,
+/// the first element in an array has path `[PathItem::Index(0)]`.
 #[cfg_attr(
     any(test, feature = "serde"),
     derive(serde::Serialize, serde::Deserialize)
@@ -241,28 +32,28 @@ impl PathComponent {
     serde(
         tag = "kind",
         bound = "
-            V::Str   : serde::Serialize + serde::de::DeserializeOwned,
-            V::Num   : serde::Serialize + serde::de::DeserializeOwned,
-            V::Bool  : serde::Serialize + serde::de::DeserializeOwned,
-            V::Null  : serde::Serialize + serde::de::DeserializeOwned,
-            V::Array : serde::Serialize + serde::de::DeserializeOwned,
-            V::Object: serde::Serialize + serde::de::DeserializeOwned
+        P : serde::Serialize + serde::de::DeserializeOwned,
+        <B as ValueCtx>::Null       : serde::Serialize + serde::de::DeserializeOwned,
+        <B as ValueCtx>::Bool       : serde::Serialize + serde::de::DeserializeOwned,
+        <B as ValueCtx>::Num<'src>  : serde::Serialize + serde::de::DeserializeOwned,
+        <B as ValueCtx>::Str<'src>  : serde::Serialize + serde::de::DeserializeOwned,
+        <B as ValueCtx>::Value      : serde::Serialize + serde::de::DeserializeOwned
         "
     )
 )]
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParseEvent<V: JsonValue = Value> {
+#[derive(PartialEq)]
+pub enum ParseEvent<'src, P: Debug = StdPath, B: ValueCtx = StdBackend> {
     /// A JSON `null` value.
     Null {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: P,
     },
     /// A JSON `true` or `false` value.
     Boolean {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: P,
         /// The boolean value.
-        value: V::Bool,
+        value: B::Bool,
     },
     /// A JSON number value.
     ///
@@ -270,27 +61,23 @@ pub enum ParseEvent<V: JsonValue = Value> {
     /// be an arbitrarily large.
     Number {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: P,
         /// The number value.
-        value: V::Num,
+        value: B::Num<'src>,
     },
     /// A JSON string value.
     String {
         /// The path to the string value.
-        path: Vec<PathComponent>,
-        /// The value of the string. The interpretation of this value depends on
-        /// the `string_value_mode` used to create the parser.
-        ///
-        /// This value is not set when the mode is `StringValueMode::None`.
+        path: P,
+        /// Fragment of the string value.
+        fragment: B::Str<'src>,
+        /// Whether this is the first fragment of a string value.
         #[cfg_attr(
             any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
+            serde(skip_serializing_if = "crate::event::is_false")
         )]
-        value: Option<V::Str>,
-        /// A fragment of a string value.
-        fragment: V::Str,
-        /// Whether this is the final fragment of a string value. Implied when
-        /// `value` is set.
+        is_initial: bool,
+        /// Whether this is the last fragment of a string value.
         #[cfg_attr(
             any(test, feature = "serde"),
             serde(skip_serializing_if = "crate::event::is_false")
@@ -298,340 +85,438 @@ pub enum ParseEvent<V: JsonValue = Value> {
         is_final: bool,
     },
     /// Marks the start of a JSON array.
-    ArrayStart {
+    ArrayBegin {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: P,
     },
     /// Marks the end of a JSON array, optionally including its value.
     ArrayEnd {
         /// The path to the value.
-        path: Vec<PathComponent>,
-        /// The value of the array.
-        ///
-        /// This value is not set when option `non_scalar_values` is `None`.
-        #[cfg_attr(
-            any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
-        )]
-        value: Option<V::Array>,
+        path: P,
     },
     /// Marks the start of a JSON object.
     ObjectBegin {
         /// The path to the value.
-        path: Vec<PathComponent>,
+        path: P,
     },
     /// Marks the end of a JSON object, optionally including its value.
     ObjectEnd {
         /// The path to the value.
-        path: Vec<PathComponent>,
-        /// The value of the object.
-        ///
-        /// This value is not set when option `non_scalar_values` is `None`.
-        #[cfg_attr(
-            any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
-        )]
-        value: Option<V::Object>,
+        path: P,
     },
 }
 
-/// Reconstructs the fully materialised JSON root values from a stream of
-/// `ParseEvent`s.
-///
-/// The returned vector contains **one entry per root** in the order they
-/// appeared in the input. For example `1 2 [3]` yields `[Value::Number(1.0),
-/// Value::Number(2.0), Value::Array([3])]`.
-///
-/// ---
-///
-/// The streaming parser purposefully avoids building up complete `Value` trees
-/// while it tokenises the input.  For use-cases that need the fully
-/// materialised document (e.g. property-based round- trip tests) the crate
-/// exposes a small, allocation-friendly helper that rebuilds one or more
-/// `Value`s from the flat `ParseEvent` stream.
-///
-/// The algorithm is deliberately simple:
-/// 1. Maintain a single mutable `Value` representing the *current* root that is
-///    under construction.  A `Vec<Value>` is used to collect finished roots so
-///    that multi-value streams like `1 2 3` are supported.
-/// 2. For every `StartArray` / `StartObject` and `PrimitiveValue` event we
-///    *insert* the matching placeholder / leaf at the provided `path`.  A
-///    lightweight `insert_at_path` routine grows intermediate structures
-///    on-demand and resizes arrays when necessary.
-/// 3. A root is considered *finished* when we receive either
-///
-///     - `PrimitiveValue` with an empty `path` (primitive roots), or
-///     - `EndArray` / `EndObject` with an empty `path` (composite roots).
-///
-///    At that point a clone of the currently built value is pushed onto the
-///    result vector and the buffer is reset.
-///
-/// This avoids any expensive deep copies – only the final `clone()` at root
-/// completion is required and unavoidable because the caller may retain the
-/// returned list while more events are fed in.
-#[cfg(test)]
-pub fn reconstruct_values<I>(events: I) -> Vec<Value>
+impl<P: Debug, B: ValueCtx> Debug for ParseEvent<'_, P, B> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Null { path } => f.debug_struct("Null").field("path", path).finish(),
+            Self::Boolean { path, value } => f
+                .debug_struct("Boolean")
+                .field("path", path)
+                .field("value", value)
+                .finish(),
+            Self::Number { path, value } => f
+                .debug_struct("Number")
+                .field("path", path)
+                .field("value", value)
+                .finish(),
+            Self::String {
+                path,
+                fragment,
+                is_initial,
+                is_final,
+            } => f
+                .debug_struct("String")
+                .field("path", path)
+                .field("fragment", fragment)
+                .field("is_initial", is_initial)
+                .field("is_final", is_final)
+                .finish(),
+            Self::ArrayBegin { path } => f.debug_struct("ArrayBegin").field("path", path).finish(),
+            Self::ArrayEnd { path } => f.debug_struct("ArrayEnd").field("path", path).finish(),
+            Self::ObjectBegin { path } => {
+                f.debug_struct("ObjectBegin").field("path", path).finish()
+            }
+            Self::ObjectEnd { path } => f.debug_struct("ObjectEnd").field("path", path).finish(),
+        }
+    }
+}
+
+impl<'src, P: Debug, B: ValueCtx> From<ParseEvent<'src, &'_ P, B>> for ParseEvent<'src, P, B>
 where
-    I: IntoIterator<Item = ParseEvent<Value>>,
+    P: Clone,
 {
-    use crate::value::Map;
-
-    let mut finished_roots = Vec::new();
-    let mut current_root = Value::Null;
-    let mut building_root = false;
-
-    for evt in events {
-        match &evt {
-            // ----------------------------------------------------------------------------------
-            // Container open – insert an empty placeholder so that later children have a slot to
-            // land in.
-            ParseEvent::ArrayStart { path } => {
-                insert_at_path(&mut current_root, path, Value::Array(Vec::new()));
-                if path.is_empty() {
-                    building_root = true;
-                }
-            }
-            ParseEvent::ObjectBegin { path } => {
-                insert_at_path(&mut current_root, path, Value::Object(Map::new()));
-                if path.is_empty() {
-                    building_root = true;
-                }
-            }
-
-            // ----------------------------------------------------------------------------------
-            // Leaf value – insert at its destination path.  If the path is empty we finish the
-            // root.
-            ParseEvent::Null { path } => {
-                insert_at_path(&mut current_root, path, Value::Null);
-                if path.is_empty() {
-                    finished_roots.push(Value::Null);
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            ParseEvent::Boolean { path, value } => {
-                insert_at_path(&mut current_root, path, Value::Boolean(*value));
-                if path.is_empty() {
-                    finished_roots.push(Value::Boolean(*value));
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            ParseEvent::Number { path, value } => {
-                insert_at_path(&mut current_root, path, Value::Number(*value));
-                if path.is_empty() {
-                    finished_roots.push(Value::Number(*value));
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
-            // ----------------------------------------------------------------------------------
-            // Streaming string fragments – accumulate string content and start a root on first
-            // fragment.
+    fn from(value: ParseEvent<'src, &'_ P, B>) -> Self {
+        match value {
+            ParseEvent::Null { path } => ParseEvent::Null { path: path.clone() },
+            ParseEvent::Boolean { path, value } => ParseEvent::Boolean {
+                path: path.clone(),
+                value,
+            },
+            ParseEvent::Number { path, value } => ParseEvent::Number {
+                path: path.clone(),
+                value,
+            },
             ParseEvent::String {
                 path,
-                value,
                 fragment,
+                is_initial,
                 is_final,
-                ..
-            } => {
-                if let Some(value) = value {
-                    insert_at_path(&mut current_root, path, Value::String(value.clone()));
-                } else {
-                    // Append or insert string fragment at the given path
-                    append_string_at_path(&mut current_root, path, fragment);
-                }
+            } => ParseEvent::String {
+                path: path.clone(),
+                fragment,
+                is_initial,
+                is_final,
+            },
+            ParseEvent::ArrayBegin { path } => ParseEvent::ArrayBegin { path: path.clone() },
+            ParseEvent::ArrayEnd { path } => ParseEvent::ArrayEnd { path: path.clone() },
+            ParseEvent::ObjectBegin { path } => ParseEvent::ObjectBegin { path: path.clone() },
+            ParseEvent::ObjectEnd { path } => ParseEvent::ObjectEnd { path: path.clone() },
+        }
+    }
+}
 
-                if *is_final && path.is_empty() {
-                    finished_roots.push(current_root.clone());
-                    current_root = Value::Null;
-                    building_root = false;
-                } else if path.is_empty() {
-                    building_root = true;
-                }
-            }
-
-            // ----------------------------------------------------------------------------------
-            // Container close – push the fully built root when the closed container sits at the top
-            // level.
-            ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
-                if path.is_empty() && building_root {
-                    finished_roots.push(current_root.clone());
-                    current_root = Value::Null;
-                    building_root = false;
-                }
-            }
+impl<'src, P: Debug, Ctx: ValueCtx> ParseEvent<'src, P, Ctx> {
+    /// Returns the path to the value.
+    pub fn path(&self) -> &P {
+        match self {
+            ParseEvent::Null { path }
+            | ParseEvent::Boolean { path, .. }
+            | ParseEvent::Number { path, .. }
+            | ParseEvent::String { path, .. }
+            | ParseEvent::ArrayBegin { path }
+            | ParseEvent::ArrayEnd { path, .. }
+            | ParseEvent::ObjectBegin { path }
+            | ParseEvent::ObjectEnd { path, .. } => path,
         }
     }
 
-    // If a top-level string (or other root) was started but never terminated via
-    // Complete, treat it as finished at end-of-stream.
-    if building_root {
-        finished_roots.push(current_root);
+    /// Sets the path to a new value.
+    pub fn with_path<U: Debug>(self, path: U) -> ParseEvent<'src, U, Ctx> {
+        match self {
+            ParseEvent::Null { .. } => ParseEvent::Null { path },
+            ParseEvent::Boolean { value, .. } => ParseEvent::Boolean { path, value },
+            ParseEvent::Number { value, .. } => ParseEvent::Number { path, value },
+            ParseEvent::String {
+                fragment,
+                is_initial,
+                is_final,
+                ..
+            } => ParseEvent::String {
+                path,
+                fragment,
+                is_initial,
+                is_final,
+            },
+            ParseEvent::ArrayBegin { .. } => ParseEvent::ArrayBegin { path },
+            ParseEvent::ArrayEnd { .. } => ParseEvent::ArrayEnd { path },
+            ParseEvent::ObjectBegin { .. } => ParseEvent::ObjectBegin { path },
+            ParseEvent::ObjectEnd { .. } => ParseEvent::ObjectEnd { path },
+        }
     }
-    finished_roots
 }
 
 #[cfg(test)]
-/// Inserts `val` into `target` at the location described by `path`, creating
-/// intermediate containers as necessary.  When the final path component denotes
-/// an array index the underlying vector is automatically resized (filled with
-/// `Value::Null`).
-fn insert_at_path(target: &mut Value, path: &[PathComponent], val: Value) {
-    use crate::value::Map;
+#[doc(hidden)]
+pub mod test_util {
+    #![allow(dead_code)]
+    use alloc::vec::Vec;
+    /// Reconstructs the fully materialised JSON root values from a stream of
+    /// `ParseEvent`s.
+    ///
+    /// The returned vector contains **one entry per root** in the order they
+    /// appeared in the input. For example `1 2 [3]` yields
+    /// `[Value::Number(1.0), Value::Number(2.0), Value::Array([3])]`.
+    ///
+    /// ---
+    ///
+    /// The streaming parser purposefully avoids building up complete `Value`
+    /// trees while it tokenises the input.  For use-cases that need the
+    /// fully materialised document (e.g. property-based round- trip tests)
+    /// the crate exposes a small, allocation-friendly helper that rebuilds
+    /// one or more `Value`s from the flat `ParseEvent` stream.
+    ///
+    /// The algorithm is deliberately simple:
+    /// 1. Maintain a single mutable `Value` representing the *current* root
+    ///    that is under construction.  A `Vec<Value>` is used to collect
+    ///    finished roots so that multi-value streams like `1 2 3` are
+    ///    supported.
+    /// 2. For every `StartArray` / `StartObject` and `PrimitiveValue` event we
+    ///    *insert* the matching placeholder / leaf at the provided `path`.  A
+    ///    lightweight `insert_at_path` routine grows intermediate structures
+    ///    on-demand and resizes arrays when necessary.
+    /// 3. A root is considered *finished* when we receive either
+    ///
+    ///     - `PrimitiveValue` with an empty `path` (primitive roots), or
+    ///     - `EndArray` / `EndObject` with an empty `path` (composite roots).
+    ///
+    ///    At that point a clone of the currently built value is pushed onto the
+    ///    result vector and the buffer is reset.
+    ///
+    /// This avoids any expensive deep copies – only the final `clone()` at root
+    /// completion is required and unavoidable because the caller may retain the
+    /// returned list while more events are fed in.
+    use alloc::{collections::BTreeMap, sync::Arc};
 
-    if path.is_empty() {
-        *target = val;
-        return;
-    }
+    use super::*;
+    use crate::*;
 
-    let mut current = target;
-    // Traverse all but the last component, creating intermediate containers
-    // on-demand.
-    for comp in &path[..path.len() - 1] {
-        match comp {
-            PathComponent::Key(k) => {
-                if let Value::Object(map) = current {
-                    current = map.entry(k.clone()).or_insert(Value::Null);
-                } else {
-                    *current = Value::Object(Map::new());
-                    if let Value::Object(map) = current {
-                        current = map.entry(k.clone()).or_insert(Value::Null);
+    type Map = BTreeMap<Arc<str>, Value>;
+
+    pub fn reconstruct_values<'a, I>(events: I) -> Vec<Value>
+    where
+        I: IntoIterator<Item = ParseEvent<'a, Vec<PathItem>, StdBackend>>,
+    {
+        let mut finished_roots = Vec::new();
+        let mut current_root = Value::Null;
+        let mut building_root = false;
+
+        for evt in events {
+            match &evt {
+                // ----------------------------------------------------------------------------------
+                // Container open – insert an empty placeholder so that later children have a slot
+                // to land in.
+                ParseEvent::ArrayBegin { path } => {
+                    insert_at_path(&mut current_root, path, Value::Array(Vec::new()));
+                    if path.is_empty() {
+                        building_root = true;
+                    }
+                }
+                ParseEvent::ObjectBegin { path } => {
+                    insert_at_path(&mut current_root, path, Value::Object(Map::new()));
+                    if path.is_empty() {
+                        building_root = true;
+                    }
+                }
+
+                // ----------------------------------------------------------------------------------
+                // Leaf value – insert at its destination path.  If the path is empty we finish the
+                // root.
+                ParseEvent::Null { path } => {
+                    insert_at_path(&mut current_root, path, Value::Null);
+                    if path.is_empty() {
+                        finished_roots.push(Value::Null);
+                        current_root = Value::Null;
+                        building_root = false;
+                    }
+                }
+                ParseEvent::Boolean { path, value } => {
+                    insert_at_path(&mut current_root, path, Value::Boolean(*value));
+                    if path.is_empty() {
+                        finished_roots.push(Value::Boolean(*value));
+                        current_root = Value::Null;
+                        building_root = false;
+                    }
+                }
+                ParseEvent::Number { path, value } => {
+                    insert_at_path(&mut current_root, path, Value::Number(*value));
+                    if path.is_empty() {
+                        finished_roots.push(Value::Number(*value));
+                        current_root = Value::Null;
+                        building_root = false;
+                    }
+                }
+                // ----------------------------------------------------------------------------------
+                // Streaming string fragments – accumulate string content and start a root on first
+                // fragment.
+                ParseEvent::String {
+                    path,
+                    fragment,
+                    is_final,
+                    ..
+                } => {
+                    append_string_at_path(&mut current_root, path, fragment.as_ref());
+
+                    if *is_final && path.is_empty() {
+                        finished_roots.push(current_root.clone());
+                        current_root = Value::Null;
+                        building_root = false;
+                    } else if path.is_empty() {
+                        building_root = true;
+                    }
+                }
+
+                // ----------------------------------------------------------------------------------
+                // Container close – push the fully built root when the closed container sits at the
+                // top level.
+                ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+                    if path.is_empty() && building_root {
+                        finished_roots.push(current_root.clone());
+                        current_root = Value::Null;
+                        building_root = false;
                     }
                 }
             }
-            PathComponent::Index(i) => {
-                let i = *i;
-                if let Value::Array(vec) = current {
-                    if i >= vec.len() {
-                        vec.resize(i + 1, Value::Null);
+        }
+
+        // If a top-level string (or other root) was started but never terminated via
+        // Complete, treat it as finished at end-of-stream.
+        if building_root {
+            finished_roots.push(current_root);
+        }
+        finished_roots
+    }
+
+    /// Inserts `val` into `target` at the location described by `path`,
+    /// creating intermediate containers as necessary.  When the final path
+    /// component denotes an array index the underlying vector is
+    /// automatically resized (filled with `Value::Null`).
+    fn insert_at_path(target: &mut Value, path: &Path, val: Value) {
+        use crate::PathItem;
+
+        if path.is_empty() {
+            *target = val;
+            return;
+        }
+
+        let mut current = target;
+        // Traverse all but the last component, creating intermediate containers
+        // on-demand.
+        for comp in &path[..path.len() - 1] {
+            match comp {
+                PathItem::Key(k) => {
+                    if let Value::Object(map) = current {
+                        current = map.entry(k.clone()).or_insert(Value::Null);
+                    } else {
+                        *current = Value::Object(Map::new());
+                        if let Value::Object(map) = current {
+                            current = map.entry(k.clone()).or_insert(Value::Null);
+                        }
                     }
-                    current = &mut vec[i];
-                } else {
-                    *current = Value::Array(Vec::new());
+                }
+                PathItem::Index(i) => {
+                    let i = *i;
                     if let Value::Array(vec) = current {
                         if i >= vec.len() {
                             vec.resize(i + 1, Value::Null);
                         }
                         current = &mut vec[i];
+                    } else {
+                        *current = Value::Array(Vec::new());
+                        if let Value::Array(vec) = current {
+                            if i >= vec.len() {
+                                vec.resize(i + 1, Value::Null);
+                            }
+                            current = &mut vec[i];
+                        }
                     }
                 }
             }
         }
-    }
 
-    // Set the final component.
-    match path.last().unwrap() {
-        PathComponent::Key(k) => {
-            if let Value::Object(map) = current {
-                map.insert(k.clone(), val);
-            } else {
-                // Replace the current slot with a new object containing the desired key/value.
-                let mut map = Map::new();
-                map.insert(k.clone(), val);
-                *current = Value::Object(map);
-            }
-        }
-        PathComponent::Index(i) => {
-            let i = *i;
-            if let Value::Array(vec) = current {
-                if i >= vec.len() {
-                    vec.resize(i + 1, Value::Null);
-                }
-                vec[i] = val;
-            } else {
-                let mut vec = Vec::new();
-                if i >= vec.len() {
-                    vec.resize(i + 1, Value::Null);
-                }
-                vec[i] = val;
-                *current = Value::Array(vec);
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-/// Insert or append a string fragment into `target` at the given `path`.
-fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &str) {
-    use crate::value::Map;
-
-    if path.is_empty() {
-        if let Value::String(s) = target {
-            s.push_str(fragment);
-        } else {
-            *target = Value::String(fragment.into());
-        }
-        return;
-    }
-    let mut cur = target;
-    // Traverse to the container for the final component
-    for comp in &path[..path.len() - 1] {
-        match comp {
-            PathComponent::Key(k) => {
-                if let Value::Object(map) = cur {
-                    cur = map.entry(k.clone()).or_insert(Value::Null);
+        // Set the final component.
+        match path.last().unwrap() {
+            PathItem::Key(k) => {
+                if let Value::Object(map) = current {
+                    map.insert(k.clone(), val);
                 } else {
-                    *cur = Value::Object(Map::new());
-                    if let Value::Object(map) = cur {
-                        cur = map.entry(k.clone()).or_insert(Value::Null);
-                    }
+                    // Replace the current slot with a new object containing the desired key/value.
+                    let mut map = Map::new();
+                    map.insert(k.clone(), val);
+                    *current = Value::Object(map);
                 }
             }
-            PathComponent::Index(i) => {
+            PathItem::Index(i) => {
                 let i = *i;
-                if let Value::Array(vec) = cur {
+                if let Value::Array(vec) = current {
                     if i >= vec.len() {
                         vec.resize(i + 1, Value::Null);
                     }
-                    cur = &mut vec[i];
+                    vec[i] = val;
                 } else {
-                    *cur = Value::Array(Vec::new());
+                    let mut vec = Vec::new();
+                    if i >= vec.len() {
+                        vec.resize(i + 1, Value::Null);
+                    }
+                    vec[i] = val;
+                    *current = Value::Array(vec);
+                }
+            }
+        }
+    }
+
+    /// Insert or append a string fragment into `target` at the given `path`.
+    fn append_string_at_path(target: &mut Value, path: &Path, fragment: &str) {
+        use crate::PathItem;
+
+        if path.is_empty() {
+            if let Value::String(s) = target {
+                s.push_str(fragment);
+            } else {
+                *target = Value::String(fragment.into());
+            }
+            return;
+        }
+        let mut cur = target;
+        // Traverse to the container for the final component
+        let len = path.len();
+        for comp in &path[..len - 1] {
+            match comp {
+                PathItem::Key(k) => {
+                    if let Value::Object(map) = cur {
+                        cur = map.entry(k.clone()).or_insert(Value::Null);
+                    } else {
+                        *cur = Value::Object(Map::new());
+                        if let Value::Object(map) = cur {
+                            cur = map.entry(k.clone()).or_insert(Value::Null);
+                        }
+                    }
+                }
+                PathItem::Index(i) => {
+                    let i = *i;
                     if let Value::Array(vec) = cur {
                         if i >= vec.len() {
                             vec.resize(i + 1, Value::Null);
                         }
                         cur = &mut vec[i];
+                    } else {
+                        *cur = Value::Array(Vec::new());
+                        if let Value::Array(vec) = cur {
+                            if i >= vec.len() {
+                                vec.resize(i + 1, Value::Null);
+                            }
+                            cur = &mut vec[i];
+                        }
                     }
                 }
             }
         }
-    }
-    // Append or insert at the final component
-    match path.last().unwrap() {
-        PathComponent::Key(k) => {
-            if let Value::Object(map) = cur {
-                if let Some(Value::String(s)) = map.get_mut(k) {
-                    s.push_str(fragment);
-                } else {
-                    map.insert(k.clone(), Value::String(fragment.into()));
-                }
-            } else {
-                let mut map = Map::new();
-                map.insert(k.clone(), Value::String(fragment.into()));
-                *cur = Value::Object(map);
-            }
-        }
-        PathComponent::Index(i) => {
-            let i = *i;
-            if let Value::Array(vec) = cur {
-                if i < vec.len() {
-                    if let Value::String(s) = &mut vec[i] {
+        // Append or insert at the final component
+        match path.last().unwrap() {
+            PathItem::Key(k) => {
+                if let Value::Object(map) = cur {
+                    if let Some(Value::String(s)) = map.get_mut(k) {
                         s.push_str(fragment);
                     } else {
+                        map.insert(k.clone(), Value::String(fragment.into()));
+                    }
+                } else {
+                    let mut map = Map::new();
+                    map.insert(k.clone(), Value::String(fragment.into()));
+                    *cur = Value::Object(map);
+                }
+            }
+            PathItem::Index(i) => {
+                let i = *i;
+                if let Value::Array(vec) = cur {
+                    if i < vec.len() {
+                        if let Value::String(s) = &mut vec[i] {
+                            s.push_str(fragment);
+                        } else {
+                            vec[i] = Value::String(fragment.into());
+                        }
+                    } else {
+                        vec.resize(i + 1, Value::Null);
                         vec[i] = Value::String(fragment.into());
                     }
                 } else {
-                    vec.resize(i + 1, Value::Null);
+                    let mut vec = Vec::new();
+                    if i >= vec.len() {
+                        vec.resize(i + 1, Value::Null);
+                    }
                     vec[i] = Value::String(fragment.into());
+                    *cur = Value::Array(vec);
                 }
-            } else {
-                let mut vec = Vec::new();
-                if i >= vec.len() {
-                    vec.resize(i + 1, Value::Null);
-                }
-                vec[i] = Value::String(fragment.into());
-                *cur = Value::Array(vec);
             }
         }
     }
@@ -640,16 +525,14 @@ fn append_string_at_path(target: &mut Value, path: &[PathComponent], fragment: &
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn size_of_path_component() {
-        use core::mem::size_of;
-        assert_eq!(size_of::<PathComponent>(), 16);
-    }
+    use crate::backend::{PathCtx, StdBackend};
 
     #[test]
     fn size_of_parse_event() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ParseEvent>(), 80);
+        assert_eq!(
+            size_of::<ParseEvent<<StdBackend as PathCtx>::Path, StdBackend>>(),
+            56
+        );
     }
 }

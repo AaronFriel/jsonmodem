@@ -42,23 +42,19 @@ The full runnable program lives at
 [`examples/llm_tool_call.rs`](crates/jsonmodem/examples/llm_tool_call.rs).
 
 ```rust
-use jsonmodem::{
-    StreamingParser, ParserOptions, StringValueMode, ParseEvent
-};
+use jsonmodem::{JsonModemBuffers, ParserOptions, BufferOptions, BufferedEvent, path};
 
-let mut parser = StreamingParser::new(ParserOptions {
-    // Emit string *prefixes* so we can act on partial values
-    string_value_mode: StringValueMode::Prefixes,
-    ..Default::default()
-});
+let mut parser = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions::default()
+);
 
 for chunk in llm_stream() {           // ← bytes from the model
-    parser.feed(&chunk);
-
-    for ev in &mut parser {
-        match ev? {
+    let mut it = parser.feed(&chunk); // lending iterator over buffered events
+    while let Some(ev) = it.next() {
+        match ev.unwrap() {
             // 1️⃣ Abort early if the model flags a policy violation
-            ParseEvent::String { path, value: Some(prefix), .. }
+            BufferedEvent::String { path, value: Some(prefix), .. }
                 if path == path!["moderation", "decision"]
                    && prefix.starts_with("block") =>
             {
@@ -66,7 +62,7 @@ for chunk in llm_stream() {           // ← bytes from the model
             }
 
             // 2️⃣ Forward code fragments to the UI immediately
-            ParseEvent::String { path, fragment, .. }
+            BufferedEvent::String { path, fragment, .. }
                 if path == path!["code"] =>
             {
                 ui_write(fragment);   // render incrementally
@@ -92,8 +88,8 @@ the user with minimal latency.
 
 **Implementations**:
 
-  * `jsonmodem::StreamingParser`, emits parse events for values with low overhead.
-  * `jsonmodem::StreamingValuesParser`, yields parsed values each chunk parsed. A drop-in replacement for `jiter`, `partial_json_fixer`.
+  * `jsonmodem::JsonModem` (events) — emits low‑overhead parse events.
+  * `jsonmodem::JsonModemValues` (values) — yields partial/complete values per chunk.
   * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with `serde_json`.
   * `fix_json_parse` – helper from Vercel AI's library.
   * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
@@ -101,9 +97,11 @@ the user with minimal latency.
 
 | chunks | `StreamingParser` | `StreamingValuesParser`  | `parse_partial_json`  | `fix_json_parse`  | `jiter`   |
 | -----: | ----------------: | -----------------------: | --------------------: | ----------------: | --------: |
-|    100 |            115 μs |                   426 μs |              5,293 μs |          3,945 μs |  1,897 μs |
-|  1 000 |            218 μs |                 3,078 μs |             50,126 μs |         37,061 μs | 17,483 μs |
-|  5 000 |            605 μs |                14,358 μs |            220,990 μs |        165,090 μs | 73,582 μs |
+|    100 |            180 μs |                   184 μs |              4,113 μs |          2,957 μs |  1,239 μs |
+|  1 000 |            203 μs |                   212 μs |             38,320 μs |         27,637 μs | 11,493 μs |
+|  5 000 |            266 μs |                   350 μs |            163,510 μs |        119,810 μs | 48,477 μs |
+
+_Benchmarks recorded on an AMD Ryzen Threadripper PRO 5975WX (64 cores @ 4.56 GHz) running Fedora Linux 42._
 
 ## 🔭 Roadmap
 
@@ -126,3 +124,95 @@ will land before the first non‑Rust release.
 ## 📝 License
 
 MIT or Apache 2 © 2025 Aaron Friel
+## 🧱 Architecture
+
+- `JsonModem` is the minimal, low‑overhead event core. It emits fragment‑only string events and never builds composite values. Internally it now uses a single `Vec<ParseEvent>` buffer (no `EventsOut`), which the iterators drain.
+- `JsonModemBuffers` is an adapter over the core that coalesces consecutive string fragments per path and optionally attaches a full value or growing prefix.
+- `JsonModemValues` is an adapter that maintains its own `ValueBuilder` and a small per‑feed output queue to emit partial/complete values with low overhead.
+
+This separation keeps the core lean and predictable while enabling higher‑level behaviors via small, focused adapters.
+
+### Streaming Values Example
+
+```rust
+use jsonmodem::{JsonModemValues, ParserOptions};
+
+let mut vals = JsonModemValues::new(ParserOptions::default());
+
+// Multi-root stream: two objects back-to-back
+let out: Vec<_> = vals
+    .feed("{\"a\":1}{\"b\":2}")
+    .map(|r| r.unwrap())
+    .collect();
+assert!(out.iter().all(|sv| sv.is_final));
+assert_eq!(out.len(), 2);
+
+// Split across chunks: only emits once the root completes
+let partial: Vec<_> = vals.feed("{\"msg\":\"he").collect();
+assert!(partial.is_empty());
+let done: Vec<_> = vals
+    .feed("llo\"}")
+    .map(|r| r.unwrap())
+    .collect();
+assert_eq!(done.len(), 1);
+```
+
+### Buffered Strings Example
+
+```rust
+use jsonmodem::{
+    JsonModemBuffers, ParserOptions, BufferOptions, BufferedEvent, path
+};
+
+// Values mode: attach the full string only when it ends
+let mut b = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions::default()
+);
+
+// No event until string completes across chunks
+let mut seen = false;
+{
+    let mut it = b.feed("{\"a\":\"he");
+    while let Some(_ev) = it.next() {
+        seen = true;
+    }
+}
+assert!(!seen);
+
+let mut matched = false;
+{
+    let mut it = b.feed("llo\"}");
+    while let Some(ev) = it.next() {
+        match ev.unwrap() {
+            BufferedEvent::String { path, value: Some(v), is_final: true, .. }
+                if path == path!["a"] && v.as_ref() == "hello" =>
+            {
+                matched = true;
+            }
+            _ => {}
+        }
+    }
+}
+assert!(matched);
+
+// Prefixes mode: attach the growing prefix on every flush
+let mut p = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions::default()
+);
+
+// End-of-chunk flush emits current prefix with is_final=false
+let mut saw_prefix = false;
+{
+    let mut it = p.feed("{\"code\":\"ab");
+    while let Some(ev) = it.next() {
+        if let BufferedEvent::String { path, fragment, value: Some(v), is_final: false } = ev.unwrap() {
+            if path == path!["code"] && fragment.as_ref() == "ab" && v.as_ref() == "ab" {
+                saw_prefix = true;
+            }
+        }
+    }
+}
+assert!(saw_prefix);
+```

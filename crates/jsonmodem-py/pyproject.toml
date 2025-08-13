@@ -1,10 +1,36 @@
 [build-system]
-requires = ["maturin>=1.0"]
+requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
 name = "jsonmodem"
-version = "0.1.0"
+description = "High-performance streaming JSON parser/buffer bindings for Python (Rust-powered)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+authors = [
+  { name = "Aaron Friel" },
+]
+keywords = ["json", "parser", "streaming", "rust", "pyo3", "maturin"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Rust",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/aaronfriel/jsonmodem"
+Repository = "https://github.com/aaronfriel/jsonmodem"
+Issues = "https://github.com/aaronfriel/jsonmodem/issues"
 
 [tool.maturin]
-module-name = "jsonmodem"
+bindings = "pyo3"
+python-source = "python"
+# Build the extension as a submodule of the package: jsonmodem._jsonmodem
+module-name = "jsonmodem._jsonmodem"

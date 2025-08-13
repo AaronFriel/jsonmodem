@@ -1,0 +1,16 @@
+[profile.default]
+slow-timeout = { period = "1s", terminate-after = 5 }
+
+[[profile.default.overrides]]
+filter = 'test(/prop_.*/)'
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.default-miri]
+slow-timeout = { period = "150s", terminate-after = 2 }
+
+[profile.ci]
+slow-timeout = { period = "3s", terminate-after = 20 }
+
+[[profile.ci.overrides]]
+filter = 'test(/prop_.*/)'
+slow-timeout = { period = "15s", terminate-after = 4 }

@@ -1,7 +1,11 @@
 use pyo3::prelude::*;
 
+/// jsonmodem Python bindings
 #[pymodule]
-pub fn jsonmodem(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // empty for now
+#[pyo3(name = "_jsonmodem")]
+fn jsonmodem(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Expose package version from Cargo metadata
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     Ok(())
 }

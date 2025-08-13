@@ -1,12 +1,16 @@
 #![expect(clippy::inline_always)]
 
+#[cfg(debug_assertions)]
+use alloc::vec::Vec;
 use alloc::{collections::VecDeque, string::String};
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct Buffer {
     data: VecDeque<char>,
 }
 
+#[allow(dead_code)]
 impl Buffer {
     pub(crate) fn new() -> Self {
         Self {
@@ -68,6 +72,19 @@ impl Buffer {
         }
         copied
     }
+
+    #[inline]
+    pub(crate) fn copy_n(&mut self, dst: &mut String, n: usize) -> usize {
+        let to_copy = core::cmp::min(n, self.data.len());
+        for _ in 0..to_copy {
+            if let Some(ch) = self.consume_char() {
+                dst.push(ch);
+            } else {
+                break;
+            }
+        }
+        to_copy
+    }
 }
 
 impl Iterator for Buffer {
@@ -76,5 +93,14 @@ impl Iterator for Buffer {
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         self.consume_char()
+    }
+}
+
+impl Buffer {
+    #[cfg(debug_assertions)]
+    #[allow(dead_code)]
+    pub(crate) fn debug_bytes(&self) -> Vec<u8> {
+        // Collect chars into a String, then return its UTF-8 bytes.
+        self.data.iter().collect::<String>().into_bytes()
     }
 }

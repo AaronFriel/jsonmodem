@@ -12,7 +12,7 @@ pub enum Step {
     /// Character matched, but the literal is not finished yet.
     NeedMore,
     /// Character matched *and* we consumed the last byte of the literal.
-    Done(Token),
+    Done(Token<'static>),
     /// Character did **not** match the expected byte.
     Reject,
 }

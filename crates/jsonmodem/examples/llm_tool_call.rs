@@ -1,3 +1,4 @@
+
 //! Demonstrates how to react **immediately** to content-moderation feedback
 //! while incrementally streaming a tool-call response from an LLM.
 //!
@@ -42,7 +43,7 @@
 #![expect(clippy::needless_raw_string_hashes)]
 #![expect(clippy::doc_markdown)]
 
-use jsonmodem::{ParseEvent, ParserOptions, StreamingParser, StringValueMode, path};
+use jsonmodem::{BufferOptions, BufferedEvent, JsonModem, JsonModemBuffers, ParserOptions, path};
 
 fn main() {
     // A *toy* assistant response streamed in ten tiny chunks.  The
@@ -75,36 +76,20 @@ fn main() {
 
     // Configure the parser so that every `ParseEvent::String` carries the full
     // *prefix* seen so far.  This enables super-low-latency decisions.
-    let mut parser = StreamingParser::new(ParserOptions {
-        string_value_mode: StringValueMode::Prefixes,
-        ..ParserOptions::default()
-    });
+    let mut parser = JsonModemBuffers::new(ParserOptions::default(), BufferOptions::default());
 
     // Keep track whether we are currently inside the `code` field so that we
     // can stream it to the user.
     let mut in_code_field = false;
 
-    // Snapshot accumulator – we want one JSON line per `ParseEvent` so that
-    // `cargo insta` can show meaningful diffs whenever the event stream
-    // changes.
-    #[allow(unused_mut, unused_variables)]
-    let mut reference_value = String::from("\n");
-
     for chunk in simulated_stream {
         // Drain all events currently available.
-        for evt in parser.feed(chunk) {
+        for evt in parser.feed(chunk).to_iter() {
             let evt = evt.expect("parser error");
-
-            // Record a serialised copy of each event for the snapshot.
-            #[cfg(feature = "serde")]
-            {
-                reference_value.push_str(&serde_json::to_string(&evt).unwrap());
-                reference_value.push('\n');
-            }
 
             match evt {
                 // -------------------------------- moderaton ---------------------------------
-                ParseEvent::String {
+                BufferedEvent::String {
                     path,
                     value: Some(prefix),
                     is_final,
@@ -121,7 +106,7 @@ fn main() {
                 }
 
                 // ---------------------------------- code ------------------------------------
-                ParseEvent::String {
+                BufferedEvent::String {
                     path,
                     fragment,
                     is_final,
@@ -133,7 +118,7 @@ fn main() {
                 }
 
                 // When we reach the end of the JSON object we are done.
-                ParseEvent::ObjectEnd { path, .. } if path.is_empty() => {
+                BufferedEvent::ObjectEnd { path, .. } if path.is_empty() => {
                     println!();
                 }
 
@@ -148,24 +133,8 @@ fn main() {
         eprintln!("⚠️  Stream ended before code snippet was complete");
     }
 
-    // Finally, verify that the produced event stream stays stable.  Run
-    // `cargo insta review` after the first execution to approve the snapshot.
-    #[cfg(not(miri))]
-    insta::assert_snapshot!(reference_value, @r#"
-    {"kind":"ObjectBegin","path":[]}
-    {"kind":"ObjectBegin","path":["moderation"]}
-    {"kind":"String","path":["moderation","decision"],"value":"al","fragment":"al"}
-    {"kind":"String","path":["moderation","decision"],"value":"allo","fragment":"lo"}
-    {"kind":"String","path":["moderation","decision"],"value":"allow","fragment":"w","is_final":true}
-    {"kind":"Null","path":["moderation","reason"]}
-    {"kind":"ObjectEnd","path":["moderation"]}
-    {"kind":"String","path":["filename"],"value":"example.rs","fragment":"example.rs","is_final":true}
-    {"kind":"String","path":["language"],"value":"rust","fragment":"rust","is_final":true}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ","fragment":"use jsonmodem::{StreamingParser, "}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n","fragment":"ParserOptions};\nfn main() {\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n","fragment":"    let _parser = StreamingParser::new(ParserOptions::default());\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n    println!(\"Hello from jsonmodem!\");\n}\n","fragment":"    println!(\"Hello from jsonmodem!\");\n}\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n    println!(\"Hello from jsonmodem!\");\n}\n","fragment":"","is_final":true}
-    {"kind":"ObjectEnd","path":[]}
-    "#);
+    // Compare the three layers on the same input to show output shapes.
+    // Snapshots are generated in tests (see below).
 }
+
+// Snapshot tests for the layers live in `tests/snapshots_layers.rs`.

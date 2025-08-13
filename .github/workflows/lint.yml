@@ -18,7 +18,12 @@ jobs:
           components: clippy
 
       - name: Run clippy
-        run: cargo clippy --workspace --exclude jsonmodem-fuzz --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude jsonmodem-fuzz --exclude jsonmodem-py --all-targets -- -D warnings
+
+      - name: Run clippy (cfg=miri)
+        env:
+          RUSTFLAGS: --cfg miri
+        run: cargo clippy --workspace --exclude jsonmodem-fuzz --exclude jsonmodem-py --all-targets -- -D warnings
 
 
   format:

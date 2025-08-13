@@ -1,8 +1,17 @@
-use crate::{StreamingParser, ParserOptions};
+use crate::{ParserOptions, StdBackend};
+use crate::parser::JsonModem;
+
+type DefaultJsonModem = JsonModem<StdBackend>;
+
 #[test]
-fn manual_number(){
- let mut p=StreamingParser::new(ParserOptions::default());
- let ev=p.parse_incremental("123").unwrap();
- println!("events len {}", ev.len());
- assert!(!ev.is_empty());
+fn manual_number() {
+    let mut parser = DefaultJsonModem::new(ParserOptions::default());
+    let events: Vec<_> = parser
+        .feed("123")
+        .to_iter()
+        .collect::<Result<_, _>>()
+        .expect("parse events");
+
+    println!("events len {}", events.len());
+    assert!(!events.is_empty());
 }

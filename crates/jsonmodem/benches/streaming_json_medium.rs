@@ -1,14 +1,12 @@
 //! Benchmarks for streaming medium-sized JSON inputs.
 #![expect(missing_docs)]
 mod streaming_json_common;
-use std::time::Duration;
+use std::{env, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{NonScalarValueMode, produce_chunks};
-#[cfg(feature = "comparison")]
-use streaming_json_common::{run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned};
 use streaming_json_common::{
-    run_parse_partial_json, run_streaming_parser, run_streaming_values_parser,
+    produce_chunks, run_fix_json_parse, run_jiter_partial, run_jiter_partial_owned,
+    run_jsonmodem_buffers, run_jsonmodem_events, run_jsonmodem_values, run_parse_partial_json,
 };
 
 fn bench_streaming_json_medium(c: &mut Criterion) {
@@ -22,77 +20,63 @@ fn bench_streaming_json_medium(c: &mut Criterion) {
 
     for &parts in &[100usize, 1_000, 5_000] {
         let chunks = produce_chunks(&payload, parts);
-        for &mode in &[
-            NonScalarValueMode::None,
-            NonScalarValueMode::Roots,
-            NonScalarValueMode::All,
-        ] {
-            let name = format!("streaming_parser_{mode:?}").to_lowercase();
-            group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
-                b.iter(|| {
-                    let v = run_streaming_parser(black_box(&chunks), mode);
-                    black_box(v);
-                });
-            });
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_events", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_events(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_buffers", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_buffers(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_values", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_values(black_box(&chunks)));
+            },
+        );
+
+        if env::var_os("JSONMODEM_BENCH_COMPARISON").is_some() {
+            group.bench_with_input(
+                BenchmarkId::new("parse_partial_json", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter(|| run_parse_partial_json(black_box(&chunks)));
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("fix_json_parse", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter(|| run_fix_json_parse(black_box(&chunks)));
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("jiter_partial", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter(|| run_jiter_partial(black_box(&chunks)));
+                },
+            );
+
+            group.bench_with_input(
+                BenchmarkId::new("jiter_partial_owned", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter(|| run_jiter_partial_owned(black_box(&chunks)));
+                },
+            );
         }
-
-        group.bench_with_input(
-            BenchmarkId::new("streaming_values_parser", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| {
-                    let v = run_streaming_values_parser(black_box(&chunks));
-                    black_box(v);
-                });
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("parse_partial_json", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| {
-                    let v = run_parse_partial_json(black_box(&chunks));
-                    black_box(v);
-                });
-            },
-        );
-
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("fix_json_parse", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| {
-                    let v = run_fix_json_parse(black_box(&chunks));
-                    black_box(v);
-                });
-            },
-        );
-
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("jiter_partial", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| {
-                    let v = run_jiter_partial(black_box(&chunks));
-                    black_box(v);
-                });
-            },
-        );
-
-        #[cfg(feature = "comparison")]
-        group.bench_with_input(
-            BenchmarkId::new("jiter_partial_owned", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| {
-                    let v = run_jiter_partial_owned(black_box(&chunks));
-                    black_box(v);
-                });
-            },
-        );
     }
 
     group.finish();
@@ -100,7 +84,7 @@ fn bench_streaming_json_medium(c: &mut Criterion) {
 
 fn criterion() -> Criterion {
     let mut c = Criterion::default();
-    if cfg!(feature = "bench-fast") {
+    if env::var_os("JSONMODEM_BENCH_FAST").is_some() {
         c = c
             .warm_up_time(Duration::from_millis(10))
             .measurement_time(Duration::from_millis(100))

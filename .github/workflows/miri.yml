@@ -17,7 +17,12 @@ jobs:
           toolchain: nightly
           components: miri
 
-      - name: Run tests under Miri
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Run tests under Miri (nextest)
         run: |
-          cargo miri setup
-          cargo miri test --workspace --features miri
+          cargo +nightly miri setup
+          cargo +nightly miri nextest run --workspace --profile default-miri --exclude jsonmodem-fuzz --exclude jsonmodem-py

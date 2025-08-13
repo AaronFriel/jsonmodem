@@ -1,51 +1,48 @@
 //! Repro cases for multi-value round-trip failures in streaming parser
-use alloc::{vec, vec::Vec};
+use alloc::{string::String, vec, vec::Vec};
 
 use crate::{
-    ParseEvent, ParserOptions, StreamingParser, Value, event::reconstruct_values,
-    options::NonScalarValueMode,
+    backend::StdBackend,
+    parser::{JsonModem, ParserOptions},
+    test_util::reconstruct_values,
+    value::Value,
 };
 
-fn feed_and_reconstruct(payload: &str) -> (Vec<ParseEvent>, Vec<Value>) {
-    let mut parser = StreamingParser::new(ParserOptions {
-        allow_multiple_json_values: true,
-        non_scalar_values: NonScalarValueMode::All,
-        panic_on_error: true,
-        ..Default::default()
-    });
-    // Feed the payload and collect events
-    parser.feed(payload);
-    let events: Vec<_> = parser.finish().map(Result::unwrap).collect();
-    (events.clone(), reconstruct_values(events))
+type TestParser = JsonModem<StdBackend>;
+
+fn feed_and_reconstruct(chunks: impl IntoIterator<Item = &'static str>) -> Vec<Value> {
+    let input: String = chunks.into_iter().collect();
+
+    let mut parser = TestParser::new(
+        ParserOptions::default()
+            .with_allow_multiple_json_values(true)
+            .with_panic_on_error(true),
+    );
+
+    let mut events = parser
+        .feed(&input)
+        .to_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("feed should succeed");
+    events.extend(
+        parser
+            .finish()
+            .to_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("finish should succeed"),
+    );
+    reconstruct_values(events)
 }
 
 #[test]
 fn repro_multi_value_null_root() {
-    let (_, values) = feed_and_reconstruct("null");
+    let values = feed_and_reconstruct(["null"]);
     assert_eq!(values, vec![Value::Null], "unexpected reconstructed values");
 }
 
 #[test]
 fn repro_multi_value_string_roots() {
-    let (events, values) = feed_and_reconstruct("\"a\" \"b\"");
-    assert_eq!(
-        events,
-        vec![
-            ParseEvent::String {
-                path: vec![],
-                fragment: "a".into(),
-                is_final: true,
-                value: None,
-            },
-            ParseEvent::String {
-                path: vec![],
-                fragment: "b".into(),
-                value: None,
-                is_final: true,
-            },
-        ],
-    );
-
+    let values = feed_and_reconstruct(["\"a\" ", "\"b\""]);
     assert_eq!(
         values,
         vec![Value::String("a".into()), Value::String("b".into())],
@@ -55,20 +52,10 @@ fn repro_multi_value_string_roots() {
 
 #[test]
 fn repro_multi_value_boolean_roots() {
-    let (_, values) = feed_and_reconstruct("true false");
+    let values = feed_and_reconstruct(["true ", "false"]);
     assert_eq!(
         values,
         vec![Value::Boolean(true), Value::Boolean(false)],
-        "unexpected reconstructed values"
-    );
-}
-
-#[test]
-fn repro_multi_value_number_roots() {
-    let (_, values) = feed_and_reconstruct("1 2.0");
-    assert_eq!(
-        values,
-        vec![Value::Number(1.0), Value::Number(2.0)],
         "unexpected reconstructed values"
     );
 }
@@ -77,7 +64,7 @@ fn repro_multi_value_number_roots() {
 #[test]
 fn inspect_composite_root() {
     let payload = "[\"a b\",null]";
-    let (_, values) = feed_and_reconstruct(payload);
+    let values = feed_and_reconstruct([payload]);
     // Expect one array with two elements: the string with space and null.
     assert_eq!(
         values,

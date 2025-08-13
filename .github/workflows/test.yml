@@ -18,7 +18,7 @@ jobs:
           components: llvm-tools
 
       - name: Build
-        run: cargo build --all --release --workspace --exclude jsonmodem-fuzz
+        run: cargo build --all --release --workspace --exclude jsonmodem-fuzz --exclude jsonmodem-py
 
   tests:
     runs-on: ubuntu-latest
@@ -30,5 +30,25 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Run test suite
-        run: cargo test --all --workspace --exclude jsonmodem-fuzz --verbose
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Run test suite (nextest, CI profile)
+        run: cargo nextest run --profile ci --workspace --exclude jsonmodem-fuzz --exclude jsonmodem-py --verbose
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build public docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --verbose --exclude jsonmodem-fuzz --exclude jsonmodem-py
