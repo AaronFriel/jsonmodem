@@ -4,10 +4,7 @@ mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{
-    DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser,
-    StringValueMode,
-};
+use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser};
 #[cfg(feature = "comparison")]
 use streaming_json_common::partial_json_fixer;
 use streaming_json_common::{make_json_payload, parse_partial_json_port};
@@ -73,7 +70,6 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                     || {
                         let mut parser = StreamingValuesParser::new(ParserOptions {
                             non_scalar_values: NonScalarValueMode::Roots,
-                            string_value_mode: StringValueMode::Values,
                             ..Default::default()
                         });
                         parser.feed(first_half).unwrap();

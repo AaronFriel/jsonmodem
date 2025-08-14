@@ -42,7 +42,10 @@
 #![expect(clippy::needless_raw_string_hashes)]
 #![expect(clippy::doc_markdown)]
 
-use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions, StringValueMode, path};
+use jsonmodem::{
+    BufferOptions, BufferStringMode, BufferedEvent, JsonModem, JsonModemBuffers, JsonModemValues,
+    ParserOptions, path,
+};
 
 fn main() {
     // A *toy* assistant response streamed in ten tiny chunks.  The
@@ -75,36 +78,25 @@ fn main() {
 
     // Configure the parser so that every `ParseEvent::String` carries the full
     // *prefix* seen so far.  This enables super-low-latency decisions.
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        string_value_mode: StringValueMode::Prefixes,
-        ..ParserOptions::default()
-    });
+    let mut parser = JsonModemBuffers::new(
+        ParserOptions::default(),
+        BufferOptions {
+            string_values: BufferStringMode::Prefixes,
+        },
+    );
 
     // Keep track whether we are currently inside the `code` field so that we
     // can stream it to the user.
     let mut in_code_field = false;
-
-    // Snapshot accumulator – we want one JSON line per `ParseEvent` so that
-    // `cargo insta` can show meaningful diffs whenever the event stream
-    // changes.
-    #[allow(unused_mut, unused_variables)]
-    let mut reference_value = String::from("\n");
 
     for chunk in simulated_stream {
         // Drain all events currently available.
         for evt in parser.feed(chunk) {
             let evt = evt.expect("parser error");
 
-            // Record a serialised copy of each event for the snapshot.
-            #[cfg(feature = "serde")]
-            {
-                reference_value.push_str(&serde_json::to_string(&evt).unwrap());
-                reference_value.push('\n');
-            }
-
             match evt {
                 // -------------------------------- moderaton ---------------------------------
-                ParseEvent::String {
+                BufferedEvent::String {
                     path,
                     value: Some(prefix),
                     is_final,
@@ -121,7 +113,7 @@ fn main() {
                 }
 
                 // ---------------------------------- code ------------------------------------
-                ParseEvent::String {
+                BufferedEvent::String {
                     path,
                     fragment,
                     is_final,
@@ -133,7 +125,7 @@ fn main() {
                 }
 
                 // When we reach the end of the JSON object we are done.
-                ParseEvent::ObjectEnd { path, .. } if path.is_empty() => {
+                BufferedEvent::ObjectEnd { path } if path.is_empty() => {
                     println!();
                 }
 
@@ -148,24 +140,108 @@ fn main() {
         eprintln!("⚠️  Stream ended before code snippet was complete");
     }
 
-    // Finally, verify that the produced event stream stays stable.  Run
-    // `cargo insta review` after the first execution to approve the snapshot.
+    // Compare the three layers on the same input to show output shapes.
     #[cfg(not(miri))]
-    insta::assert_snapshot!(reference_value, @r#"
-    {"kind":"ObjectBegin","path":[]}
-    {"kind":"ObjectBegin","path":["moderation"]}
-    {"kind":"String","path":["moderation","decision"],"value":"al","fragment":"al"}
-    {"kind":"String","path":["moderation","decision"],"value":"allo","fragment":"lo"}
-    {"kind":"String","path":["moderation","decision"],"value":"allow","fragment":"w","is_final":true}
-    {"kind":"Null","path":["moderation","reason"]}
-    {"kind":"ObjectEnd","path":["moderation"]}
-    {"kind":"String","path":["filename"],"value":"example.rs","fragment":"example.rs","is_final":true}
-    {"kind":"String","path":["language"],"value":"rust","fragment":"rust","is_final":true}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ","fragment":"use jsonmodem::{StreamingParser, "}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n","fragment":"ParserOptions};\nfn main() {\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n","fragment":"    let _parser = StreamingParser::new(ParserOptions::default());\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n    println!(\"Hello from jsonmodem!\");\n}\n","fragment":"    println!(\"Hello from jsonmodem!\");\n}\n"}
-    {"kind":"String","path":["code"],"value":"use jsonmodem::{StreamingParser, ParserOptions};\nfn main() {\n    let _parser = StreamingParser::new(ParserOptions::default());\n    println!(\"Hello from jsonmodem!\");\n}\n","fragment":"","is_final":true}
-    {"kind":"ObjectEnd","path":[]}
-    "#);
+    snapshot_three_layers(&simulated_stream);
+}
+
+#[cfg(not(miri))]
+fn snapshot_three_layers(stream: &[&str]) {
+    use core::fmt::Write;
+
+    // A small input with nested structure and strings, split across chunks.
+    // 1) Core: JsonModem events (fragment-only strings)
+    let mut core = JsonModem::new(ParserOptions::default());
+    let mut core_lines = String::new();
+    for ch in stream {
+        for ev in core.feed(ch) {
+            let ev = ev.expect("core error");
+            #[cfg(feature = "serde")]
+            {
+                core_lines.push_str(&serde_json::to_string(&ev).unwrap());
+                core_lines.push('\n');
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                writeln!(core_lines, "{ev:?}").unwrap();
+            }
+        }
+    }
+
+    // 2) Buffers: JsonModemBuffers in Values mode (emit full string on final)
+    let mut buf = JsonModemBuffers::new(
+        ParserOptions::default(),
+        BufferOptions {
+            string_values: BufferStringMode::Values,
+        },
+    );
+    let mut buf_lines = String::new();
+    for ch in stream {
+        for ev in buf.feed(ch) {
+            let ev = ev.expect("buffers error");
+            #[cfg(feature = "serde")]
+            {
+                buf_lines.push_str(&serde_json::to_string(&ev).unwrap());
+                buf_lines.push('\n');
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                writeln!(buf_lines, "{ev:?}").unwrap();
+            }
+        }
+    }
+
+    // 3) Values: JsonModemValues emits completed roots
+    let mut vals = JsonModemValues::new(ParserOptions::default());
+    let mut val_lines = String::new();
+    for ch in stream {
+        for sv in vals.feed(ch) {
+            let sv = sv.expect("values error");
+            // Minimal, stable-ish representation
+            writeln!(
+                val_lines,
+                "{{\"index\":{},\"is_final\":{},\"value\":{:?}}}",
+                sv.index, sv.is_final, sv.value
+            )
+            .unwrap();
+        }
+    }
+
+    let mut snapshot = String::new();
+    snapshot.push_str("-- JsonModem (core) --\n");
+    snapshot.push_str(&core_lines);
+    snapshot.push_str("\n-- JsonModemBuffers (Values) --\n");
+    snapshot.push_str(&buf_lines);
+    snapshot.push_str("\n-- JsonModemValues --\n");
+    snapshot.push_str(&val_lines);
+
+    // Buffers in Prefixes mode to showcase both buffering policies
+    let mut bufp = JsonModemBuffers::new(
+        ParserOptions::default(),
+        BufferOptions { string_values: BufferStringMode::Prefixes },
+    );
+    let mut bufp_lines = String::new();
+    for ch in stream {
+        for ev in bufp.feed(ch) {
+            let ev = ev.expect("buffers error");
+            #[cfg(feature = "serde")]
+            {
+                bufp_lines.push_str(&serde_json::to_string(&ev).unwrap());
+                bufp_lines.push('
+');
+            }
+            #[cfg(not(feature = "serde"))]
+            {
+                use core::fmt::Write;
+                writeln!(bufp_lines, "{ev:?}").unwrap();
+            }
+        }
+    }
+
+    // Separate snapshots per parser/mode
+    insta::assert_snapshot!("tool_call_core", core_lines);
+    insta::assert_snapshot!("tool_call_buffers_values", buf_lines);
+    insta::assert_snapshot!("tool_call_buffers_prefixes", bufp_lines);
+    insta::assert_snapshot!("tool_call_values", val_lines);
+
 }

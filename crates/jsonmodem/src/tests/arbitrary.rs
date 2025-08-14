@@ -2,7 +2,7 @@ use alloc::{string::String, vec::Vec};
 
 use quickcheck::{Arbitrary, Gen};
 
-use crate::{StringValueMode, Value, value::Map};
+use crate::{Value, value::Map};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct JsonNumber(f64);
@@ -61,12 +61,4 @@ impl Arbitrary for Value {
     }
 }
 
-impl Arbitrary for StringValueMode {
-    fn arbitrary(g: &mut Gen) -> Self {
-        match usize::arbitrary(g) % 3 {
-            0 => StringValueMode::None,
-            1 => StringValueMode::Prefixes,
-            _ => StringValueMode::Values,
-        }
-    }
-}
+// StringValueMode removed; buffering policy is in JsonModemBuffers

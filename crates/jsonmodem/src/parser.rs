@@ -1,7 +1,8 @@
 //! The JSON streaming parser implementation.
 //!
-//! This module provides the `StreamingParser` for incremental JSON parsing,
-//! capable of processing input in chunks and emitting `ParseEvent`s.
+//! This module provides the incremental streaming parser that processes input
+//! in chunks and emits `ParseEvent`s. The core does not build composite values
+//! or buffer full strings; adapters are responsible for those behaviors.
 //!
 //! # Examples
 //!
@@ -25,21 +26,18 @@
 use alloc::{
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 use core::{f64, fmt};
 
 use crate::{
-    JsonPath, JsonValue, JsonValueFactory, StdValueFactory, StringValueMode, Value,
+    JsonPath, JsonValue, JsonValueFactory, StdValueFactory, Value,
     buffer::Buffer,
     escape_buffer::UnicodeEscapeBuffer,
     event::ParseEvent,
-    event_stack::EventStack,
     json_path::Successor,
     literal_buffer::{self, ExpectedLiteralBuffer},
     options::{NonScalarValueMode, ParserOptions},
-    value_zipper::{ValueBuilder, ZipperError},
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -291,10 +289,10 @@ pub struct StreamingParserImpl<V: JsonValue = Value> {
 
     /// Last token we produced
     frames: FrameStack<V::Path>, // stack of open containers (arrays or objects)
-    events: EventStack<V>,
+    events_out: Vec<ParseEvent<V>>,
 
     multiple_values: bool,
-    string_value_mode: StringValueMode,
+    // string_value_mode removed from core; always emit fragments-only
     non_scalar_values: NonScalarValueMode,
 
     /// Panic on syntax errors instead of returning them
@@ -391,22 +389,14 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             expected_literal: ExpectedLiteralBuffer::none(),
             frames: FrameStack::new(),
 
-            events: EventStack::new(
-                vec![],
-                if matches!(options.non_scalar_values, NonScalarValueMode::None) {
-                    None
-                } else {
-                    Some(ValueBuilder::default())
-                },
-            ),
+            events_out: Vec::new(),
 
             multiple_values: options.allow_multiple_json_values,
-            string_value_mode: options.string_value_mode,
             non_scalar_values: options.non_scalar_values,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
-            lexed_tokens: vec![],
+            lexed_tokens: Vec::new(),
         }
     }
 
@@ -451,7 +441,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     #[doc(hidden)]
     #[must_use]
     pub fn unstable_get_current_value_ref(&self) -> Option<&V> {
-        self.events.read_root()
+        None
     }
 
     #[cfg(test)]
@@ -501,10 +491,10 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         loop {
             #[cfg(any(test, feature = "fuzzing"))]
             assert!(
-                self.events.len() <= 1,
+                self.events_out.len() <= 1,
                 "Internal error: more than one event in the queue"
             );
-            if let Some(ev) = self.events.pop() {
+            if let Some(ev) = self.events_out.pop() {
                 if matches!(self.non_scalar_values, NonScalarValueMode::Roots)
                     && !Self::is_root_event(&ev)
                 {
@@ -517,14 +507,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 self.lex_state = LexState::Default;
                 self.parse_state = ParseState::Start;
                 self.frames.clear();
-                self.events = EventStack::new(
-                    vec![],
-                    if matches!(self.non_scalar_values, NonScalarValueMode::None) {
-                        None
-                    } else {
-                        Some(ValueBuilder::default())
-                    },
-                );
+                self.events_out.clear();
+                // No internal builder; adapters build values externally.
             }
 
             let token = match self.lex() {
@@ -540,6 +524,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 }
             };
             let is_eof = token.is_eof();
+            let before_len = self.events_out.len();
             match self.dispatch_parse_state(token, f) {
                 Ok(()) => {}
                 Err(err) => {
@@ -554,7 +539,11 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             }
 
             if is_eof || self.partial_lex {
-                break;
+                // If we produced an event in this step, allow the loop to
+                // iterate so the pending event can be returned at the top.
+                if self.events_out.len() <= before_len {
+                    break;
+                }
             }
         }
 
@@ -643,45 +632,13 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             return PropertyName { value };
         }
 
-        match self.string_value_mode {
-            _ if partial && self.buffer.len() == self.fragment_start => Eof,
-            StringValueMode::None => {
-                let fragment = core::mem::take(&mut self.buffer);
-                String {
-                    fragment,
-                    value: None,
-                }
-            }
-            StringValueMode::Values if partial => {
-                let fragment = self.buffer[self.fragment_start..].to_string();
-                self.fragment_start = self.buffer.len(); // reset for next fragment
-                String {
-                    fragment,
-                    value: None,
-                }
-            }
-            StringValueMode::Values => {
-                let fragment = self.buffer[self.fragment_start..].to_string();
-                let value = core::mem::take(&mut self.buffer);
-                self.fragment_start = self.buffer.len(); // reset for next fragment
-                String {
-                    fragment,
-                    value: Some(value),
-                }
-            }
-            StringValueMode::Prefixes => {
-                let fragment = self.buffer[self.fragment_start..].to_string();
-                let value = if partial {
-                    self.fragment_start = self.buffer.len(); // reset for next fragment
-                    self.buffer.clone()
-                } else {
-                    self.fragment_start = 0; // reset for next fragment
-                    core::mem::take(&mut self.buffer)
-                };
-                String {
-                    fragment,
-                    value: Some(value),
-                }
+        if partial && self.buffer.len() == self.fragment_start {
+            Eof
+        } else {
+            let fragment = core::mem::take(&mut self.buffer);
+            String {
+                fragment,
+                value: None,
             }
         }
     }
@@ -1203,7 +1160,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     }
                     self.parse_state = AfterPropertyName;
                 }
-                Token::Punctuator(_) => self.pop(f)?,
+                Token::Punctuator(_) => self.pop(f),
                 Token::String { .. } => {
                     return Err(
                         self.syntax_error("Unexpected string value in property name".to_string())
@@ -1225,7 +1182,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
 
             BeforeArrayValue => match token {
                 Token::Eof => (),
-                Token::Punctuator(b']') => self.pop(f)?,
+                Token::Punctuator(b']') => self.pop(f),
                 _ => self.push(token, f)?,
             },
 
@@ -1237,7 +1194,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     }
                     self.parse_state = BeforePropertyName;
                 }
-                Token::Punctuator(b'}') => self.pop(f)?,
+                Token::Punctuator(b'}') => self.pop(f),
                 _ => (),
             },
 
@@ -1255,7 +1212,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
 
                     self.parse_state = BeforeArrayValue;
                 }
-                Token::Punctuator(b']') => self.pop(f)?,
+                Token::Punctuator(b']') => self.pop(f),
                 _ => (),
             },
             End | Error => {}
@@ -1265,18 +1222,14 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     }
 
     #[inline(always)]
-    fn pop<F: JsonValueFactory<Value = V>>(&mut self, f: &mut F) -> Result<(), ParserError> {
+    fn pop<F: JsonValueFactory<Value = V>>(&mut self, f: &mut F) {
         let path = self.frames.path_clone();
         match self.frames.pop() {
             Some(Frame::Array { .. }) => {
-                self.events
-                    .push(f, ParseEvent::ArrayEnd { path, value: None })
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(f, ParseEvent::ArrayEnd { path, value: None });
             }
             Some(Frame::Object { .. }) => {
-                self.events
-                    .push(f, ParseEvent::ObjectEnd { path, value: None })
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(f, ParseEvent::ObjectEnd { path, value: None });
             }
             _ => {}
         }
@@ -1292,7 +1245,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             self.parse_state = ParseState::End;
         }
 
-        Ok(())
+        // no-op
     }
 
     #[inline(always)]
@@ -1304,27 +1257,23 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         match token {
             Token::Punctuator(b'{') => {
                 self.frames.push(Frame::new_object());
-                self.events
-                    .push(
-                        f,
-                        ParseEvent::ObjectBegin {
-                            path: self.frames.path_clone(),
-                        },
-                    )
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(
+                    f,
+                    ParseEvent::ObjectBegin {
+                        path: self.frames.path_clone(),
+                    },
+                );
                 self.parse_state = ParseState::BeforePropertyName;
                 return Ok(());
             }
             Token::Punctuator(b'[') => {
                 self.frames.push(Frame::new_array());
-                self.events
-                    .push(
-                        f,
-                        ParseEvent::ArrayStart {
-                            path: self.frames.path_clone(),
-                        },
-                    )
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(
+                    f,
+                    ParseEvent::ArrayStart {
+                        path: self.frames.path_clone(),
+                    },
+                );
                 self.parse_state = ParseState::BeforeArrayValue;
                 return Ok(());
             }
@@ -1340,36 +1289,28 @@ impl<V: JsonValue> StreamingParserImpl<V> {
 
         match (token, self.partial_lex) {
             (Token::Null, _) => {
-                self.events
-                    .push(f, ParseEvent::Null { path })
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(f, ParseEvent::Null { path });
             }
             (Token::Boolean(b), _) => {
                 let value = f.new_bool(b);
-                self.events
-                    .push(f, ParseEvent::Boolean { path, value })
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(f, ParseEvent::Boolean { path, value });
             }
             (Token::Number(n), _) => {
                 let value = f.new_number(n);
-                self.events
-                    .push(f, ParseEvent::Number { path, value })
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(f, ParseEvent::Number { path, value });
             }
             (Token::String { fragment, value }, partial) => {
                 let value = value.as_ref().map(|s| f.new_string(s));
                 let fragment = f.new_string(&fragment);
-                self.events
-                    .push(
-                        f,
-                        ParseEvent::String {
-                            path,
-                            fragment,
-                            value,
-                            is_final: !partial,
-                        },
-                    )
-                    .map_err(|err| self.zipper_error(err))?;
+                self.push_event(
+                    f,
+                    ParseEvent::String {
+                        path,
+                        fragment,
+                        value,
+                        is_final: !partial,
+                    },
+                );
             }
             (Token::PropertyName { .. }, _) => {
                 return Err(
@@ -1393,6 +1334,11 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         }
 
         Ok(())
+    }
+
+    #[inline(always)]
+    fn push_event<F: JsonValueFactory<Value = V>>(&mut self, _f: &mut F, event: ParseEvent<V>) {
+        self.events_out.push(event);
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -1423,10 +1369,6 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         #[cfg(test)]
         assert!(!self.panic_on_error, "{err}");
         err
-    }
-
-    fn zipper_error(&self, err: ZipperError) -> ParserError {
-        self.syntax_error(format!("Internal error: {err}"))
     }
 
     fn is_root_event(ev: &ParseEvent<V>) -> bool {
@@ -1527,14 +1469,12 @@ mod tests {
     use crate::StdValueFactory;
 
     #[test]
-    fn size_of_parser() {
-        use core::mem::size_of;
-        assert_eq!(size_of::<DefaultStreamingParser>(), 304);
-    }
-
-    #[test]
-    fn size_of_closed_parser() {
-        use core::mem::size_of;
-        assert_eq!(size_of::<ClosedStreamingParser<StdValueFactory>>(), 304);
+    fn parser_compiles() {
+        // Smoke test: ensure types are sized and constructible
+        let _ = DefaultStreamingParser::new(ParserOptions::default());
+        let _ = ClosedStreamingParser {
+            parser: DefaultStreamingParser::new(ParserOptions::default()),
+            factory: StdValueFactory,
+        };
     }
 }

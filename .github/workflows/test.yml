@@ -32,3 +32,18 @@ jobs:
 
       - name: Run test suite
         run: cargo test --all --workspace --exclude jsonmodem-fuzz --verbose
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Build public docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --verbose

@@ -1,9 +1,6 @@
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;
-use jsonmodem::{
-    DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser,
-    StringValueMode,
-};
+use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser};
 
 /// Deterministically create a JSON document of exactly `target_len` bytes.
 #[allow(dead_code)]
@@ -45,7 +42,6 @@ pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize 
 pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
     let mut parser = StreamingValuesParser::new(ParserOptions {
         non_scalar_values: NonScalarValueMode::Roots,
-        string_value_mode: StringValueMode::Values,
         ..Default::default()
     });
     let mut produced = 0usize;

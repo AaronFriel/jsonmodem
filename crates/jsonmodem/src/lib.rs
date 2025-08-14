@@ -1,5 +1,15 @@
-//! A faithful 1‑for‑1 Rust port of the incremental / online JSON parser
-//! originally written in TypeScript (see source file in the prompt).
+//! Streaming JSON parsing with a lean event core and small adapters.
+//!
+//! Layers:
+//! - `JsonModem`: minimal, low‑overhead event parser. Emits fragment‑only
+//!   strings and never builds composite values.
+//! - `JsonModemBuffers`: adapter that coalesces string fragments per path and
+//!   can attach either the full value (on final) or a growing prefix.
+//! - `JsonModemValues`: adapter that incrementally builds low‑overhead partial
+//!   values and yields them via an iterator.
+//!
+//! Most users only need these three types plus `ParseEvent`, `Path`, and
+//! `Value`.
 
 #![no_std]
 #![expect(missing_docs)]
@@ -18,7 +28,9 @@ mod value_zipper;
 
 mod chunk_utils;
 mod error;
-mod event_stack;
+mod jsonmodem;
+mod jsonmodem_buffers;
+mod jsonmodem_values;
 mod options;
 mod parser;
 mod streaming_values;
@@ -37,7 +49,13 @@ pub use error::ParserError;
 pub use event::ParseEvent;
 pub use factory::{JsonValue, JsonValueFactory, StdValueFactory, ValueKind};
 pub use json_path::JsonPath;
-pub use options::{NonScalarValueMode, ParserOptions, StringValueMode};
+// New core and adapters
+pub use jsonmodem::{JsonModem, JsonModemClosed, JsonModemIter};
+pub use jsonmodem_buffers::{
+    BufferOptions, BufferStringMode, BufferedEvent, JsonModemBuffers, JsonModemBuffersIter,
+};
+pub use jsonmodem_values::{JsonModemValues, StreamingValue as JsonModemStreamingValue};
+pub use options::{NonScalarValueMode, ParserOptions};
 pub use parser::{DefaultStreamingParser, StreamingParserImpl};
 pub use path::Path;
 pub use path_component::{Index, Key, PathComponent, PathComponentFrom};

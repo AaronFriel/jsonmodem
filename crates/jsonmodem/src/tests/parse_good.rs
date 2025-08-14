@@ -2,49 +2,27 @@ use alloc::{vec, vec::Vec};
 
 use crate::{
     DefaultStreamingParser, ParseEvent, Value,
+    event::test_util::reconstruct_values,
     options::{NonScalarValueMode, ParserOptions},
     value::Map,
 };
 
-/// Helper to feed JSON chunks and return the final Value via builder-based
-/// `current_value()`. Unlike the TS parser, we do _not_ emit a complete string
-/// Value event, so we enable non-scalar-value building and inspect
-/// `current_value()` directly.
+/// Helper to feed JSON chunks and return the final `Value`.
+///
+/// The core parser emits low-overhead `ParseEvent`s; tests reconstruct the
+/// materialized `Value` tree from the event stream for verification.
 fn finish_seq(chunks: &[&str]) -> Value {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         non_scalar_values: NonScalarValueMode::All,
-        string_value_mode: crate::StringValueMode::Values,
         ..Default::default()
     });
     for &chunk in chunks {
         parser.feed(chunk);
     }
-    let parser = parser.finish();
-
-    let mut events = parser.collect::<Vec<_>>();
-
-    // Use the fact that the final event will have a value
-    let last_event = events
-        .last_mut()
-        .expect("must have at least one event")
-        .as_mut()
-        .expect("expected non-err event");
-    match last_event {
-        ParseEvent::Null { .. } => Value::Null,
-        ParseEvent::Boolean { value, .. } => Value::Boolean(*value),
-        ParseEvent::Number { value, .. } => Value::Number(*value),
-        ParseEvent::String { value, .. } => Value::String(core::mem::take(
-            value.as_mut().expect("expected string value"),
-        )),
-        ParseEvent::ArrayStart { .. } => Value::Array(Vec::new()),
-        ParseEvent::ArrayEnd { value, .. } => Value::Array(core::mem::take(
-            value.as_mut().expect("expected array value"),
-        )),
-        ParseEvent::ObjectBegin { .. } => Value::Object(Map::new()),
-        ParseEvent::ObjectEnd { value, .. } => Value::Object(core::mem::take(
-            value.as_mut().expect("expected object value"),
-        )),
-    }
+    let events: Vec<_> = parser.finish().map(|r| r.unwrap()).collect();
+    let mut vals = reconstruct_values(events);
+    assert_eq!(vals.len(), 1, "expected one root value");
+    vals.remove(0)
 }
 
 #[test]

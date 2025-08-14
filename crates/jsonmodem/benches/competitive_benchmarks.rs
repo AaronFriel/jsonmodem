@@ -60,9 +60,7 @@ use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 use jiter::{Jiter, JsonValue, Peek};
-use jsonmodem::{
-    NonScalarValueMode, ParserOptions, StreamingValuesParser, StringValueMode, Value as ModemValue,
-};
+use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingValuesParser, Value as ModemValue};
 use serde_json::Value as SerdeValue;
 
 fn read_file(path: &str) -> String {
@@ -276,7 +274,6 @@ fn jsonmodem_value(path: &str, group: &mut BenchmarkGroup<'_, WallTime>) {
         b.iter(|| {
             let mut parser = StreamingValuesParser::new(ParserOptions {
                 non_scalar_values: NonScalarValueMode::Roots,
-                string_value_mode: StringValueMode::Values,
                 ..Default::default()
             });
             let mut values = parser

@@ -179,6 +179,7 @@ impl<V: JsonValue> ValueZipper<V> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn into_value(self) -> V {
         *self.root
     }
@@ -317,12 +318,14 @@ impl<V: JsonValue> ValueZipper<V> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ZipperError {
     ExpectedObject,
     ExpectedArray,
     InvalidArrayIndex,
     ExpectedEmptyPath,
     ExpectedNonEmptyPath,
+    #[allow(dead_code)]
     ExpectedString,
     #[cfg(test)]
     ParserError,
@@ -475,6 +478,7 @@ impl<V: JsonValue> ValueBuilder<V> {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn into_value(self) -> Option<V> {
         match self.state {
             BuilderState::Ready(z) => Some(z.into_value()),

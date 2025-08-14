@@ -1,8 +1,6 @@
 use alloc::{format, string::ToString, vec::Vec};
 
-use crate::{
-    DefaultStreamingParser, ParserOptions, Value, options::NonScalarValueMode, value::Map,
-};
+use crate::{DefaultStreamingParser, ParserOptions, Value, value::Map, vec};
 
 #[test]
 fn error_empty_document() {
@@ -226,24 +224,18 @@ fn error_control_characters_escaped_in_message() {
 
 #[test]
 fn unclosed_objects_before_property_names() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
-    // Drive the parser to process the already-fed chunk so that the builder is
-    // updated with the partial value.
-    assert!(parser.feed("{").all(|r| r.is_ok()));
-    assert_eq!(parser.current_value(), Some(Value::Object(Map::new())));
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+    let events: Vec<_> = parser.feed("{").map(Result::unwrap).collect();
+    let vals = crate::event::test_util::reconstruct_values(events);
+    assert_eq!(vals, vec![Value::Object(Map::new())]);
 }
 
 #[test]
 fn unclosed_objects_after_property_names() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
-    assert!(parser.feed("{\"a\"").all(|r| r.is_ok()));
-    assert_eq!(parser.current_value(), Some(Value::Object(Map::new())));
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+    let events: Vec<_> = parser.feed("{\"a\"").map(Result::unwrap).collect();
+    let vals = crate::event::test_util::reconstruct_values(events);
+    assert_eq!(vals, vec![Value::Object(Map::new())]);
 }
 
 #[test]
@@ -266,22 +258,18 @@ fn error_unclosed_objects_after_property_values() {
 
 #[test]
 fn unclosed_arrays_before_values() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
-    assert!(parser.feed("[").all(|r| r.is_ok()));
-    assert_eq!(parser.current_value(), Some(Value::Array(Vec::new())));
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+    let events: Vec<_> = parser.feed("[").map(Result::unwrap).collect();
+    let vals = crate::event::test_util::reconstruct_values(events);
+    assert_eq!(vals, vec![Value::Array(Vec::new())]);
 }
 
 #[test]
 fn unclosed_arrays_after_values() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
-    assert!(parser.feed("[").all(|r| r.is_ok()));
-    assert_eq!(parser.current_value(), Some(Value::Array(Vec::new())));
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+    let events: Vec<_> = parser.feed("[").map(Result::unwrap).collect();
+    let vals = crate::event::test_util::reconstruct_values(events);
+    assert_eq!(vals, vec![Value::Array(Vec::new())]);
 }
 
 #[test]
@@ -344,12 +332,10 @@ fn error_leading_plus_in_number() {
 
 #[test]
 fn error_incorrectly_completed_partial_string() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
-    assert!(parser.feed("\"abc").all(|r| r.is_ok()));
-    assert_eq!(parser.current_value(), Some(Value::String("abc".into())));
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+    let events: Vec<_> = parser.feed("\"abc").map(Result::unwrap).collect();
+    let vals = crate::event::test_util::reconstruct_values(events);
+    assert_eq!(vals, vec![Value::String("abc".into())]);
     parser.feed("\"{}");
     let err = parser.finish().last().unwrap().unwrap_err();
     // error: invalid character '{' at position 6 of the stream
@@ -361,12 +347,10 @@ fn error_incorrectly_completed_partial_string() {
 #[test]
 fn error_incorrectly_completed_partial_string_with_suffixes() {
     for &suffix in &["null", "\"", "1", "true", "{}", "[]"] {
-        let mut parser = DefaultStreamingParser::new(ParserOptions {
-            non_scalar_values: NonScalarValueMode::All,
-            ..Default::default()
-        });
-        assert!(parser.feed("\"abc").all(|r| r.is_ok()));
-        assert_eq!(parser.current_value(), Some(Value::String("abc".into())));
+        let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+        let events: Vec<_> = parser.feed("\"abc").map(Result::unwrap).collect();
+        let vals = crate::event::test_util::reconstruct_values(events);
+        assert_eq!(vals, vec![Value::String("abc".into())]);
         let error_char = if suffix == "\"" {
             "\\\""
         } else {

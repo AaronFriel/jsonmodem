@@ -115,10 +115,9 @@ pub enum ParseEvent<V: JsonValue = Value> {
     String {
         /// The path to the string value.
         path: V::Path,
-        /// The value of the string. The interpretation of this value depends on
-        /// the `string_value_mode` used to create the parser.
-        ///
-        /// This value is not set when the mode is `StringValueMode::None`.
+        /// The value of the string. In the core parser this is always `None`
+        /// (fragment-only emission). Adapters like `JsonModemBuffers` may
+        /// provide full or prefix values in their own event types.
         #[cfg_attr(
             any(test, feature = "serde"),
             serde(skip_serializing_if = "Option::is_none")

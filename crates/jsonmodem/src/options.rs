@@ -1,52 +1,11 @@
-/// Determines the meaning of the `value` field in the `String` token.
-///
-/// This setting determines the memory and network overhead for parsing string
-/// values.
-///
-/// | mode       | memory overhead         | network overhead         |
-/// | -----      | ----------------------- | ------------------------ |
-/// | `None`     | None                    | None                     |
-/// | `Values`   | O(largest string value) | O(total string length)   |
-/// | `Prefixes` | O(largest string value) | O(total string length^2) |
-///
-/// In `None` mode, partially parsed strings are not buffered and only the
-/// incremental fragments are returned.
-///
-/// In `Values` mode, the full string is returned only when it is fully parsed.
-/// This incurs memory proportional to the size of the largest string value, and
-/// network overhead proportional to the total size of all string values.
-///
-/// In `Prefixes` mode, for each fragment parsed, the parser returns the prefix
-/// of the string that has been parsed so far. This incurs memory overhead
-/// proportional to the size of the largest string value, and network overhead
-/// proportional to the square of the total size of all string values - as each
-/// prefix may be transmitted many times.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StringValueMode {
-    /// The `value` field is always `None`.
-    None,
-    /// The `value` field contains the full string, and is emitted only when the
-    /// string has been fully parsed.
-    Values,
-    /// The `value` field contains the string prefix that has been parsed thus
-    /// far, and is emitted incrementally as the string is parsed.
-    Prefixes,
-}
-
-impl Default for StringValueMode {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-/// Controls emission of composite values during parsing.
+/// Controls emission of container events during parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NonScalarValueMode {
-    /// Do not emit composite values.
+    /// Do not emit container events beyond the default minimal set.
     None,
-    /// Emit events for all composite values.
+    /// Emit container events for all objects and arrays.
     All,
-    /// Emit events only for root values (those with an empty path).
+    /// Emit container events only for root values (those with an empty path).
     Roots,
 }
 
@@ -58,9 +17,9 @@ impl Default for NonScalarValueMode {
 
 /// Configuration options for the JSON streaming parser.
 ///
-/// These options control parser behavior such as whitespace handling,
-/// multiple value support, and how string or composite values are
-/// emitted during parsing.
+/// These options control parser behavior such as whitespace handling and
+/// multiple value support. Buffering and value building are handled by adapters
+/// (`JsonModemBuffers`, `JsonModemValues`) layered on top of the core.
 ///
 /// # Examples
 ///
@@ -113,33 +72,12 @@ pub struct ParserOptions {
     /// `false`
     pub allow_multiple_json_values: bool,
 
-    /// Determines how string values are emitted during parsing.
+    /// Whether and how to emit container events (objects and arrays).
     ///
-    /// This option configures the parser's behavior for emitting string tokens,
-    /// controlling memory and network overhead. See [`StringValueMode`] for
-    /// details:
-    ///
-    /// - `None`: The `value` field is always `None`. Only incremental fragments
-    ///   are returned.
-    /// - `Values`: The full string is returned only when fully parsed.
-    /// - `Prefixes`: Each fragment returns the prefix parsed so far, emitted
-    ///   incrementally.
-    ///
-    /// See [`StringValueMode`] for a detailed explanation of each mode and
-    /// their trade-offs.
-    ///
-    /// # Default
-    ///
-    /// `StringValueMode::None`
-    pub string_value_mode: StringValueMode,
-
-    /// Whether and how to emit complete composite values (objects and arrays).
-    ///
-    /// `None` disables emitting composite values. `All` emits events for all
-    /// composite values, and `Roots` only emits events for values whose path is
-    /// empty (root values). Emitting composite values buffers each full object
-    /// or array, increasing memory usage up to the size of the largest
-    /// composite value.
+    /// `None` disables additional container events. `All` emits container
+    /// events for all objects and arrays, and `Roots` limits container events
+    /// to root values (empty path). Building complete composite values is not
+    /// performed by the core; use adapters for that functionality.
     ///
     /// # Default
     ///

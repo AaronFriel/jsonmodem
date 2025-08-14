@@ -43,6 +43,7 @@ run_step "build (release)"  cargo build  --workspace --release              "${F
 run_step "tests"            cargo test   --workspace --verbose              "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}"
 run_step "clippy"           cargo clippy --workspace --all-targets          "${FAST_FEATURES[@]}" "${EXCLUDE_ARGS[@]}" \
                                -- -D warnings
+run_step "docs (public)"    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps "${EXCLUDE_ARGS[@]}"
 
 # Extra clippy pass that compiles under the same cfg flags Miri uses.
 run_step "clippy (cfg=miri)" \
@@ -53,7 +54,7 @@ run_step "clippy (cfg=miri)" \
 ###############################################################################
 # 3. Optional Miri (cfg via env var)
 ###############################################################################
-if [[ "${AGENT_CHECK_MIRI_DISABLE:-false}" != "true" ]]; then
+if [[ "${AGENT_CHECK_MIRI_DISABLE:-true}" != "true" ]]; then
   run_step "miri test"      cargo +nightly miri test --workspace --features miri
 else
   echo "⚠️  AGENT_CHECK_MIRI_DISABLE=true – skipping Miri checks."

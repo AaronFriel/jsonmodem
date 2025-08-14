@@ -7,7 +7,7 @@ use alloc::{
 use quickcheck::{QuickCheck, TestResult};
 
 use crate::{
-    DefaultStreamingParser, ParseEvent, ParserOptions, Path, StringValueMode, Value,
+    DefaultStreamingParser, ParseEvent, ParserOptions, Path, Value,
     event::test_util::reconstruct_values, options::NonScalarValueMode,
 };
 
@@ -43,11 +43,7 @@ fn repro_multi_value_string_root() {
 #[test]
 fn multi_value_roundtrip_quickcheck() {
     #[expect(clippy::needless_pass_by_value)]
-    fn prop(
-        values: Vec<Value>,
-        splits: Vec<usize>,
-        string_value_mode: StringValueMode,
-    ) -> TestResult {
+    fn prop(values: Vec<Value>, splits: Vec<usize>) -> TestResult {
         if values.is_empty() {
             return TestResult::discard();
         }
@@ -62,7 +58,6 @@ fn multi_value_roundtrip_quickcheck() {
         let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             non_scalar_values: NonScalarValueMode::All,
-            string_value_mode,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
@@ -135,7 +130,7 @@ fn multi_value_roundtrip_quickcheck() {
 
     QuickCheck::new()
         .tests(tests)
-        .quickcheck(prop as fn(Vec<Value>, Vec<usize>, StringValueMode) -> TestResult);
+        .quickcheck(prop as fn(Vec<Value>, Vec<usize>) -> TestResult);
 }
 
 #[test]

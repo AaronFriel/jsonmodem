@@ -42,23 +42,18 @@ The full runnable program lives at
 [`examples/llm_tool_call.rs`](crates/jsonmodem/examples/llm_tool_call.rs).
 
 ```rust
-use jsonmodem::{
-    StreamingParser, ParserOptions, StringValueMode, ParseEvent
-};
+use jsonmodem::{JsonModemBuffers, ParserOptions, BufferOptions, BufferStringMode, BufferedEvent};
 
-let mut parser = StreamingParser::new(ParserOptions {
-    // Emit string *prefixes* so we can act on partial values
-    string_value_mode: StringValueMode::Prefixes,
-    ..Default::default()
-});
+let mut parser = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions { string_values: BufferStringMode::Prefixes }
+);
 
 for chunk in llm_stream() {           // ← bytes from the model
-    parser.feed(&chunk);
-
-    for ev in &mut parser {
-        match ev? {
+    for ev in parser.feed(&chunk) {
+        match ev.unwrap() {
             // 1️⃣ Abort early if the model flags a policy violation
-            ParseEvent::String { path, value: Some(prefix), .. }
+            BufferedEvent::String { path, value: Some(prefix), .. }
                 if path == path!["moderation", "decision"]
                    && prefix.starts_with("block") =>
             {
@@ -66,7 +61,7 @@ for chunk in llm_stream() {           // ← bytes from the model
             }
 
             // 2️⃣ Forward code fragments to the UI immediately
-            ParseEvent::String { path, fragment, .. }
+            BufferedEvent::String { path, fragment, .. }
                 if path == path!["code"] =>
             {
                 ui_write(fragment);   // render incrementally
@@ -126,3 +121,74 @@ will land before the first non‑Rust release.
 ## 📝 License
 
 MIT or Apache 2 © 2025 Aaron Friel
+## 🧱 Architecture
+
+- `JsonModem` is the minimal, low‑overhead event core. It emits fragment‑only string events and never builds composite values. Internally it now uses a single `Vec<ParseEvent>` buffer (no `EventsOut`), which the iterators drain.
+- `JsonModemBuffers` is an adapter over the core that coalesces consecutive string fragments per path and optionally attaches a full value or growing prefix.
+- `JsonModemValues` is an adapter that maintains its own `ValueBuilder` and a small per‑feed output queue to emit partial/complete values with low overhead.
+
+This separation keeps the core lean and predictable while enabling higher‑level behaviors via small, focused adapters.
+
+### Streaming Values Example
+
+```rust
+use jsonmodem::{JsonModemValues, ParserOptions};
+
+let mut vals = JsonModemValues::new(ParserOptions::default());
+
+// Multi-root stream: two objects back-to-back
+let out: Vec<_> = vals
+    .feed("{\"a\":1}{\"b\":2}")
+    .map(|r| r.unwrap())
+    .collect();
+assert!(out.iter().all(|sv| sv.is_final));
+assert_eq!(out.len(), 2);
+
+// Split across chunks: only emits once the root completes
+let partial: Vec<_> = vals.feed("{\"msg\":\"he").collect();
+assert!(partial.is_empty());
+let done: Vec<_> = vals
+    .feed("llo\"}")
+    .map(|r| r.unwrap())
+    .collect();
+assert_eq!(done.len(), 1);
+```
+
+### Buffered Strings Example
+
+```rust
+use jsonmodem::{
+    JsonModemBuffers, ParserOptions, BufferOptions, BufferStringMode, BufferedEvent, path
+};
+
+// Values mode: attach the full string only when it ends
+let mut b = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions { string_values: BufferStringMode::Values }
+);
+
+// No event until string completes across chunks
+let first_chunk: Vec<_> = b.feed("{\"a\":\"he").collect();
+assert!(first_chunk.is_empty());
+
+let second_chunk: Vec<_> = b.feed("llo\"}").map(|r| r.unwrap()).collect();
+assert!(matches!(
+    &second_chunk[0],
+    BufferedEvent::String { path, value: Some(v), is_final: true, .. }
+        if *path == path!["a"] && v.as_ref() == "hello"
+));
+
+// Prefixes mode: attach the growing prefix on every flush
+let mut p = JsonModemBuffers::new(
+    ParserOptions::default(),
+    BufferOptions { string_values: BufferStringMode::Prefixes }
+);
+
+let prefix_chunk: Vec<_> = p.feed("{\"code\":\"ab").map(|r| r.unwrap()).collect();
+// End-of-chunk flush emits current prefix with is_final=false
+assert!(matches!(
+    &prefix_chunk[0],
+    BufferedEvent::String { path, fragment, value: Some(v), is_final: false }
+        if *path == path!["code"] && fragment.as_ref() == "ab" && v.as_ref() == "ab"
+));
+```

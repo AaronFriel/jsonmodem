@@ -6,7 +6,7 @@ use alloc::{
 use quickcheck::QuickCheck;
 
 use crate::{
-    DefaultStreamingParser, StringValueMode, Value,
+    DefaultStreamingParser, Value,
     event::test_util::reconstruct_values,
     options::{NonScalarValueMode, ParserOptions},
 };
@@ -16,7 +16,7 @@ use crate::{
 #[test]
 fn partition_roundtrip_quickcheck() {
     #[expect(clippy::needless_pass_by_value)]
-    fn prop(value: Value, splits: Vec<usize>, string_value_mode: StringValueMode) -> bool {
+    fn prop(value: Value, splits: Vec<usize>) -> bool {
         let src = value.to_string();
         if src.is_empty() {
             return true;
@@ -27,7 +27,6 @@ fn partition_roundtrip_quickcheck() {
         let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
             non_scalar_values: NonScalarValueMode::All,
-            string_value_mode,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
@@ -78,5 +77,5 @@ fn partition_roundtrip_quickcheck() {
 
     QuickCheck::new()
         .tests(tests)
-        .quickcheck(prop as fn(Value, Vec<usize>, StringValueMode) -> bool);
+        .quickcheck(prop as fn(Value, Vec<usize>) -> bool);
 }
