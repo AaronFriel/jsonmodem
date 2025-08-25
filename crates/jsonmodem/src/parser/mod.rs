@@ -1,4 +1,44 @@
-//! The JSON streaming parser implementation.
+//! JSON streaming parser with borrow-first events.
+
+//!
+//! Overview
+//! - This module implements an incremental, streaming JSON parser that accepts
+//!   input in chunks and yields `ParseEvent`s as soon as they become available.
+//! - The parser is designed to minimize allocations: whenever a complete token
+//!   (string fragment without escapes, or number) resides entirely in the
+//!   current input batch, the event contains a borrowed `&'src str` view into
+//!   that batch. Otherwise, the parser falls back to buffered (owned) fragments.
+//!
+//! Buffers and borrowing
+//! - `source: Buffer` is a small ring of unread characters that backs the
+//!   lexer. It is fed via `feed(...)` and consumed as the parser advances.
+//!   Note: input is copied here as chars for incremental lexing.
+//! - `buffer: String` is the per-token scratch buffer used when a token cannot
+//!   be borrowed (e.g., a string encounters an escape, or a number crosses a
+//!   batch). When emitting buffered events, content comes from this string.
+//! - `BatchView` is created by `feed(...)` and held by the iterator. Any
+//!   borrowed fragments refer to this view’s lifetime. The iterator’s lifetime
+//!   guarantees these borrows remain valid for the duration of iteration.
+//!
+//! Drop semantics
+//! - If the user drops the iterator mid-token, the parser must preserve the
+//!   in-flight portion of the token so that subsequent parsing can continue.
+//!   We copy the already-read portion of the token into `buffer: String` and
+//!   switch the parser into buffered mode for the remainder of that token.
+//!   This approach avoids reordering complexities that would arise from trying
+//!   to “put back” characters into `source: Buffer`.
+//!
+//! Notes on copying
+//! - Although the events may borrow from the input batch, we still copy input
+//!   into `source: Buffer` for the purposes of incremental lexing. Borrowed
+//!   event fragments never point into this buffer; they point into the batch
+//!   slice held by the iterator.
+//!
+//! Guarantees per `next_event_with_and_batch`
+//! - If `buffer` is non-empty, we read from it and emit owned fragments.
+//! - Otherwise, when possible, we return borrowed fragments that lie entirely
+//!   within the current `BatchView`. If a token cannot be borrowed, we copy it
+//!   into `buffer` and emit owned fragments.
 //!
 //! This module provides the incremental streaming parser that processes input
 //! in chunks and emits `ParseEvent`s. The core does not build composite values
@@ -203,7 +243,8 @@ type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 /// It implements `Iterator` to yield `ParseEvent`s representing JSON tokens
 /// and structural events.
 pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
-    // Raw source buffer (always grows then gets truncated after each “round”).
+    /// Ring of unread characters backing the lexer. New input is copied here
+    /// in `feed(...)`, and characters are consumed as the lexer advances.
     source: Buffer,
     end_of_input: bool,
 
@@ -216,8 +257,9 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     parse_state: ParseState,
     lex_state: LexState,
 
-    /// Lexer helpers
-    buffer: String, // reused for numbers / literals / strings
+    /// Per-token scratch buffer used when a token cannot be borrowed. Reused
+    /// for numbers, literals, and strings that require buffering.
+    buffer: String,
     unicode_escape_buffer: UnicodeEscapeBuffer,
     expected_literal: ExpectedLiteralBuffer,
     partial_lex: bool,
@@ -1502,6 +1544,7 @@ impl StreamingParserImpl<RustContext> {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use alloc::{vec, vec::Vec};
 
@@ -1677,7 +1720,7 @@ true, false, null]",
         assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
         drop(it);
         // Start string content, then drop iterator to force buffer mode
-        let mut it = parser.feed("abc");
+        let it = parser.feed("abc");
         // No event yet (no closing quote), drop to force buffered mode for in-flight token
         drop(it);
         let mut it = parser.feed("def\"]");
@@ -1700,7 +1743,7 @@ true, false, null]",
         let mut it = parser.feed("[");
         assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
         drop(it);
-        let mut it = parser.feed("123");
+        let it = parser.feed("123");
         // No number yet (could be more), drop iterator to force buffered mode
         drop(it);
         let mut it = parser.feed("45, 6]");
@@ -1719,4 +1762,91 @@ true, false, null]",
         assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
         assert!(it.next().is_none());
     }
+
+    #[test]
+    fn string_empty_borrow_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"[""]"#);
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, alloc::borrow::Cow::<str>::Borrowed(""));
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn string_unicode_escape_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"["A\u0042"]"#);
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        // First fragment before escape will be buffered due to escape handling
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("A".to_string()));
+                assert!(is_initial);
+                assert!(!is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // Second fragment contains decoded 'B'
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("B".to_string()));
+                assert!(!is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn string_unicode_escape_cross_batches() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"["A\u"#);
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        // Escape starts but incomplete; no fragment yet (we emit on encountering escape)
+        drop(it);
+        let mut it = parser.feed(r#"0042"]"#);
+        // Dropping before the backslash was consumed means the partial
+        // fragment is emitted now when the escape is encountered.
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("A".to_string()));
+                assert!(is_initial);
+                assert!(!is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // Next comes the final buffered fragment with decoded 'B'.
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("B".to_string()));
+                assert!(!is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn number_exponent_and_sign() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"[-1e-2, 3E3]"#);
+        match it.next().unwrap().unwrap() { ParseEvent::ArrayBegin { .. } => {}, _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value + 0.01).abs() < 1e-12), _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value - 3000.0).abs() < 1e-12), _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ArrayEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
 }
