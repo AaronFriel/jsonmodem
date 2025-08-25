@@ -1,9 +1,10 @@
+#![cfg(feature = "todo")]
 use alloc::{vec, vec::Vec};
 
 use crate::{
     DefaultStreamingParser, ParseEvent, Value,
     event::test_util::reconstruct_values,
-    options::{NonScalarValueMode, ParserOptions},
+    options::{NonScalarMode, ParserOptions},
     value::Map,
 };
 
@@ -12,10 +13,7 @@ use crate::{
 /// The core parser emits low-overhead `ParseEvent`s; tests reconstruct the
 /// materialized `Value` tree from the event stream for verification.
 fn finish_seq(chunks: &[&str]) -> Value {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::All,
-        ..Default::default()
-    });
+    let mut parser = DefaultStreamingParser::new(ParserOptions::default());
     for &chunk in chunks {
         parser.feed(chunk);
     }

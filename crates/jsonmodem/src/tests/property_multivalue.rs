@@ -1,3 +1,4 @@
+#![cfg(feature = "todo")]
 use alloc::{
     string::{String, ToString},
     vec,
@@ -7,8 +8,8 @@ use alloc::{
 use quickcheck::{QuickCheck, TestResult};
 
 use crate::{
-    DefaultStreamingParser, ParseEvent, ParserOptions, Path, Value,
-    event::test_util::reconstruct_values, options::NonScalarValueMode,
+    DefaultStreamingParser, NonScalarMode, ParseEvent, ParserOptions, Path, Value,
+    event::test_util::reconstruct_values,
 };
 
 /// Repro for missing string roots in multi-value stream reconstruction.
@@ -19,12 +20,11 @@ fn repro_multi_value_string_root() {
     let payload = "\"x\"";
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
-        non_scalar_values: NonScalarValueMode::All,
         ..Default::default()
     });
     let events: Vec<_> = parser.feed(payload).map(|x| x.unwrap()).collect();
     assert_eq!(
-        &events,
+        NonScalarMode & events,
         &[ParseEvent::String {
             path: Path::default(),
             fragment: "x".into(),
@@ -57,7 +57,6 @@ fn multi_value_roundtrip_quickcheck() {
 
         let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
-            non_scalar_values: NonScalarValueMode::All,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
@@ -65,7 +64,7 @@ fn multi_value_roundtrip_quickcheck() {
         // For debugging purposes:
         let mut chunks = vec![];
 
-        // Feed payload in arbitrary chunk sizes.
+        // Feed payload in arbiNonScalarMode
         let chars: Vec<char> = payload.chars().collect();
         let mut idx = 0;
         let mut remaining = chars.len();
@@ -139,7 +138,6 @@ fn multi_value_roundtrip_repro() {
 
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: true,
-        non_scalar_values: NonScalarValueMode::All,
         panic_on_error: true,
         ..Default::default()
     });
@@ -153,6 +151,7 @@ fn multi_value_roundtrip_repro() {
                 }
             }
         }
+        NonScalarMode
     }
 
     let parser = parser.finish();

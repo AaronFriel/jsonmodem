@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    JsonModem, JsonModemBuffers, JsonModemValues, ModemStreamingValue, ParseEvent,
+    JsonModem, JsonModemBuffers, JsonModemValues, ParseEvent,
     ParserOptions, options::{BufferOptions, BufferStringMode}
 };
 
@@ -19,7 +19,7 @@ fn jsonmodem_core_strings_are_fragments_only() {
 
 #[test]
 fn jsonmodem_buffers_values_mode() {
-    let mut b = JsonModemBuffers::new(ParserOptions::default(), BufferOptions { string_values: BufferStringMode::Values });
+    let mut b = JsonModemBuffers::new(ParserOptions::default(), BufferOptions { string_values: BufferStringMode::Values, non_scalar_values: crate::options::NonScalarValueMode::None });
     // two chunks: expect no value until final; test iterator, too
     let out: Vec<_> = b.feed("\"hel").collect();
     assert!(out.is_empty());
@@ -36,7 +36,7 @@ fn jsonmodem_buffers_values_mode() {
 
 #[test]
 fn jsonmodem_buffers_prefixes_mode() {
-    let mut b = JsonModemBuffers::new(ParserOptions::default(), BufferOptions { string_values: BufferStringMode::Prefixes });
+    let mut b = JsonModemBuffers::new(ParserOptions::default(), BufferOptions { string_values: BufferStringMode::Prefixes, non_scalar_values: crate::options::NonScalarValueMode::None });
     let out: Vec<_> = b.feed("\"ab").collect();
     assert!(out.is_empty());
     let out: Vec<_> = b.feed("c\"").collect();
@@ -65,7 +65,7 @@ fn buffers_iter_flushes_on_non_string_event() {
     // {"a":"ab","b":1}
     let mut b = crate::JsonModemBuffers::new(
         ParserOptions::default(),
-        BufferOptions { string_values: BufferStringMode::Values },
+        BufferOptions { string_values: BufferStringMode::Values, non_scalar_values: crate::options::NonScalarValueMode::None },
     );
     let mut out: Vec<crate::BufferedEvent> = Vec::new();
     out.extend(b.feed("{\"a\":\"ab\",\"b\":1}").map(Result::unwrap));
@@ -78,7 +78,7 @@ fn buffers_iter_flushes_at_end_for_prefixes() {
     use crate::options::{BufferOptions, BufferStringMode};
     let mut b = crate::JsonModemBuffers::new(
         ParserOptions::default(),
-        BufferOptions { string_values: BufferStringMode::Prefixes },
+        BufferOptions { string_values: BufferStringMode::Prefixes, non_scalar_values: crate::options::NonScalarValueMode::None },
     );
     // Incomplete string at end of chunk
     let out: Vec<_> = b.feed("\"he").map(Result::unwrap).collect();

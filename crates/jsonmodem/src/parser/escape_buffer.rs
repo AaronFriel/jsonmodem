@@ -1,37 +1,34 @@
-//! Utilities for buffering and decoding four-digit Unicode escape sequences.
+//! Utilities for decoding four-digit Unicode escape sequences without buffering
+//! bytes.
 //!
-//! The [`UnicodeEscapeBuffer`] type accumulates up to four ASCII hexadecimal
-//! digits (`0-9`, `A-F`, `a-f`) representing a Unicode code point and converts
-//! them to a [`char`] once exactly four digits have been provided. After a
-//! successful conversion, the buffer resets automatically to begin a new escape
-//! sequence.
+//! The [`UnicodeEscapeBuffer`] type accumulates exactly four ASCII hexadecimal
+//! digits (`0-9`, `A-F`, `a-f`) into a `u32` as they arrive, and converts that
+//! to a [`char`] when the fourth digit is provided. After a successful
+//! conversion, the accumulator resets automatically to begin a new escape.
 //!
 //! # Errors
 //!
 //! - Feeding a non-hexadecimal character returns an `Err` with a descriptive
 //!   message.
-//! - If more than four digits are provided without a successful conversion
-//!   (buffer overflow), an `Err` is returned.
-//! - If parsing the four-digit hexadecimal string into a `u32` fails, an `Err`
-//!   is returned.
+//! - If more than four digits are provided without a successful conversion, an
+//!   `Err` is returned (unreachable in this implementation; we guard).
+//! - If the resulting code point is not a valid Unicode scalar value (e.g. a
+//!   surrogate), an `Err` is returned.
 //!
 //! # Panics
 //!
-//! If the parsed code point is not a valid Unicode scalar value (for example,
-//! a surrogate or out of range), this will panic.
-use alloc::{
-    format,
-    string::{String, ToString},
-};
+//! None in normal operation.
+
+use crate::parser::error::SyntaxError;
 
 #[derive(Debug)]
-/// Buffer for accumulating up to four hexadecimal digits (`0-9`, `A-F`, `a-f`)
-/// and decoding them into a Unicode character.
+/// Accumulates up to four hexadecimal digits and decodes them into a Unicode
+/// character.
 ///
 /// This type is useful for JSON parsers or similar, where Unicode escapes
 /// (e.g. `"\u0041"`) must be interpreted as `char` values.
 pub(crate) struct UnicodeEscapeBuffer {
-    buffer: [u8; 4],
+    acc: u32,
     len: u8,
 }
 
@@ -40,16 +37,25 @@ impl UnicodeEscapeBuffer {
     ///
     /// The buffer will accept up to four hexadecimal digits before decoding.
     pub fn new() -> Self {
-        Self {
-            buffer: [0; 4],
-            len: 0,
-        }
+        Self { acc: 0, len: 0 }
     }
 
     /// Clears any accumulated digits, returning the buffer to its initial
     /// state.
     pub fn reset(&mut self) {
+        self.acc = 0;
         self.len = 0;
+    }
+
+    /// Convert a single ASCII hex digit into its 0..=15 value.
+    #[inline]
+    fn hex_val(c: char) -> Option<u32> {
+        match c {
+            '0'..='9' => Some((c as u32) - ('0' as u32)),
+            'a'..='f' => Some((c as u32) - ('a' as u32) + 10),
+            'A'..='F' => Some((c as u32) - ('A' as u32) + 10),
+            _ => None,
+        }
     }
 
     /// Feeds a single ASCII hexadecimal digit (`0-9`, `A-F`, `a-f`) into the
@@ -62,31 +68,31 @@ impl UnicodeEscapeBuffer {
     /// - Returns `Err` if `c` is not an ASCII hex digit, if more than four
     ///   digits are provided before a reset, or if parsing the digits into a
     ///   `u32` fails.
-    pub fn feed(&mut self, c: char) -> Result<Option<char>, String> {
-        if !c.is_ascii_hexdigit() {
-            return Err(format!("Invalid unicode escape character: {c}"));
+    pub fn feed(&mut self, c: char) -> Result<Option<char>, SyntaxError> {
+        let d = Self::hex_val(c).ok_or(SyntaxError::InvalidUnicodeEscapeChar(c))?;
+
+        // Guard against overflow of our fixed-size 4-digit escape
+        if self.len >= 4 {
+            unreachable!();
         }
 
-        if self.len >= 4 {
-            return Err("Unicode escape buffer overflow".to_string());
-        }
-        self.buffer[self.len as usize] = c as u8;
+        // acc = (acc << 4) | d
+        self.acc = (self.acc << 4) | d;
         self.len += 1;
 
-        if self.len == 4 {
-            let hex_str = core::str::from_utf8(&self.buffer).unwrap();
-            match u32::from_str_radix(hex_str, 16) {
-                Ok(code) => {
-                    self.reset(); // Reset after successful conversion
-                    Ok(Some(
-                        core::char::from_u32(code)
-                            .ok_or(format!("Invalid Unicode scalar value: {code}"))?,
-                    ))
-                }
-                Err(e) => Err(format!("Failed to parse unicode escape: {e}")),
-            }
-        } else {
-            Ok(None)
+        if self.len < 4 {
+            return Ok(None);
+        }
+
+        // Exactly 4 digits accumulated. Validate and produce a char, then reset.
+        let code = self.acc;
+
+        // Reset immediately so state is clean regardless of outcome.
+        self.reset();
+
+        match core::char::from_u32(code) {
+            Some(ch) => Ok(Some(ch)),
+            None => Err(SyntaxError::InvalidUnicodeEscapeSequence(code)),
         }
     }
 }
@@ -94,6 +100,7 @@ impl UnicodeEscapeBuffer {
 #[cfg(test)]
 mod tests {
     use super::UnicodeEscapeBuffer;
+    use crate::parser::error::SyntaxError;
 
     #[test]
     fn basic_decoding() {
@@ -130,7 +137,7 @@ mod tests {
     fn invalid_hex_error() {
         let mut buf = UnicodeEscapeBuffer::new();
         let err = buf.feed('G').unwrap_err();
-        assert!(err.contains("Invalid unicode escape character"));
+        assert_eq!(err, SyntaxError::InvalidUnicodeEscapeChar('G'));
     }
 
     #[test]

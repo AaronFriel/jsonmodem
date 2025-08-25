@@ -1,13 +1,16 @@
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use crate::{
-    JsonModem, ParseEvent, ParserOptions, Path, Str, jsonmodem::JsonModemIter, value::Value,
+    JsonModem,
+    buffered::ValueBuilder,
+    parser::{ParseEvent, ParserError, ParserOptions},
 };
 
 /// Controls buffering behavior for the `JsonModemBuffers` adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BufferOptions {
-    pub string_values: BufferStringMode,
+    pub string_buffer_mode: StringBufferMode,
+    pub non_scalar_mode: NonScalarMode,
 }
 
 /// Buffering policy for string values in the `JsonModemBuffers` adapter.
@@ -16,412 +19,344 @@ pub struct BufferOptions {
 /// - `Values`: attach the full string only when the string ends.
 /// - `Prefixes`: attach the growing prefix with every flush.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BufferStringMode {
+pub enum StringBufferMode {
     None,
     Values,
     Prefixes,
 }
-impl Default for BufferStringMode {
+
+impl Default for StringBufferMode {
     fn default() -> Self {
         Self::None
     }
 }
 
-pub struct JsonModemBuffersIter<'a> {
-    pub(crate) inner: JsonModemIter<'a>,
-    pub(crate) opts: BufferOptions,
-    pub(crate) pending_path: Option<Path>,
-    pub(crate) pending_buf: Str,
-    pub(crate) pending_final: bool,
-    pub(crate) stash_non_string: Option<BufferedEvent>,
+/// Controls emission of container events during parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonScalarMode {
+    /// Do not emit container events beyond the default minimal set.
+    None,
+    /// Emit container events for all objects and arrays.
+    All,
+    /// Emit container events only for root values (those with an empty path).
+    Roots,
 }
 
-impl Iterator for JsonModemBuffersIter<'_> {
-    type Item = Result<BufferedEvent, crate::parser::ParserError>;
-    #[allow(
-        clippy::too_many_lines,
-        clippy::manual_let_else,
-        clippy::single_match_else,
-        clippy::match_same_arms
-    )]
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(e) = self.stash_non_string.take() {
-            return Some(Ok(e));
-        }
-        loop {
-            let ev = match self.inner.next() {
-                Some(ev) => ev,
-                None => {
-                    // End of chunk: flush pending for Prefixes mode, or when final
-                    if let Some(path) = self.pending_path.take() {
-                        let fragment = core::mem::take(&mut self.pending_buf);
-                        let is_final = core::mem::take(&mut self.pending_final);
-                        let value = match (self.opts.string_values, is_final) {
-                            (BufferStringMode::Values, true) | (BufferStringMode::Prefixes, _) => {
-                                Some(fragment.clone())
-                            }
-                            _ => None,
-                        };
-                        return Some(Ok(BufferedEvent::String {
-                            path,
-                            fragment,
-                            value,
-                            is_final,
-                        }));
-                    }
-                    return None;
-                }
-            };
-            match ev {
-                Err(e) => return Some(Err(e)),
-                Ok(ParseEvent::String {
-                    path,
-                    fragment,
-                    is_final,
-                    ..
-                }) => {
-                    match &self.pending_path {
-                        None => {
-                            self.pending_path = Some(path);
-                            self.pending_buf.push_str(&fragment);
-                            self.pending_final = is_final;
-                        }
-                        Some(p) if *p == path => {
-                            self.pending_buf.push_str(&fragment);
-                            self.pending_final |= is_final;
-                        }
-                        Some(_) => {
-                            let out_evt = {
-                                let cur_path = core::mem::take(&mut self.pending_path).unwrap();
-                                let cur_buf = core::mem::take(&mut self.pending_buf);
-                                let cur_final = core::mem::take(&mut self.pending_final);
-                                let value = match (self.opts.string_values, cur_final) {
-                                    (BufferStringMode::Values, true)
-                                    | (BufferStringMode::Prefixes, _) => Some(cur_buf.clone()),
-                                    _ => None,
-                                };
-                                BufferedEvent::String {
-                                    path: cur_path,
-                                    fragment: cur_buf,
-                                    value,
-                                    is_final: cur_final,
-                                }
-                            };
-                            // seed new pending
-                            self.pending_path = Some(path);
-                            self.pending_buf.push_str(&fragment);
-                            self.pending_final = is_final;
-                            return Some(Ok(out_evt));
-                        }
-                    }
-                }
-                Ok(other) => {
-                    if self.pending_path.is_some() {
-                        let out_evt = {
-                            let cur_path = core::mem::take(&mut self.pending_path).unwrap();
-                            let cur_buf = core::mem::take(&mut self.pending_buf);
-                            let cur_final = core::mem::take(&mut self.pending_final);
-                            let value = match (self.opts.string_values, cur_final) {
-                                (BufferStringMode::Values, true)
-                                | (BufferStringMode::Prefixes, _) => Some(cur_buf.clone()),
-                                _ => None,
-                            };
-                            BufferedEvent::String {
-                                path: cur_path,
-                                fragment: cur_buf,
-                                value,
-                                is_final: cur_final,
-                            }
-                        };
-                        // map other into stash
-                        self.stash_non_string = Some(match other {
-                            ParseEvent::Null { path } => BufferedEvent::Null { path },
-                            ParseEvent::Boolean { path, value } => {
-                                BufferedEvent::Boolean { path, value }
-                            }
-                            ParseEvent::Number { path, value } => {
-                                BufferedEvent::Number { path, value }
-                            }
-                            ParseEvent::ArrayStart { path } => BufferedEvent::ArrayStart { path },
-                            ParseEvent::ArrayEnd { path, .. } => BufferedEvent::ArrayEnd { path },
-                            ParseEvent::ObjectBegin { path } => BufferedEvent::ObjectBegin { path },
-                            ParseEvent::ObjectEnd { path, .. } => BufferedEvent::ObjectEnd { path },
-                            ParseEvent::String { .. } => unreachable!(),
-                        });
-                        return Some(Ok(out_evt));
-                    }
-                    let mapped = match other {
-                        ParseEvent::Null { path } => BufferedEvent::Null { path },
-                        ParseEvent::Boolean { path, value } => {
-                            BufferedEvent::Boolean { path, value }
-                        }
-                        ParseEvent::Number { path, value } => BufferedEvent::Number { path, value },
-                        ParseEvent::ArrayStart { path } => BufferedEvent::ArrayStart { path },
-                        ParseEvent::ArrayEnd { path, .. } => BufferedEvent::ArrayEnd { path },
-                        ParseEvent::ObjectBegin { path } => BufferedEvent::ObjectBegin { path },
-                        ParseEvent::ObjectEnd { path, .. } => BufferedEvent::ObjectEnd { path },
-                        ParseEvent::String { .. } => unreachable!(),
-                    };
-                    return Some(Ok(mapped));
-                }
-            }
+impl Default for NonScalarMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BufferedEvent<B: ValueBuilder> {
+    Null {
+        path: B::Path,
+    },
+    Boolean {
+        path: B::Path,
+        value: B::Bool,
+    },
+    Number {
+        path: B::Path,
+        value: B::Num,
+    },
+    String {
+        path: B::Path,
+        fragment: B::Str,
+        value: Option<B::Str>,
+        is_initial: bool,
+        is_final: bool,
+    },
+    ArrayBegin {
+        path: B::Path,
+    },
+    ArrayEnd {
+        path: B::Path,
+        value: Option<B::Array>,
+    },
+    ObjectBegin {
+        path: B::Path,
+    },
+    ObjectEnd {
+        path: B::Path,
+        value: Option<B::Object>,
+    },
+}
+
+impl<V: ValueBuilder> From<ParseEvent<V>> for BufferedEvent<V> {
+    fn from(event: ParseEvent<V>) -> Self {
+        match event {
+            ParseEvent::Null { path } => BufferedEvent::Null { path },
+            ParseEvent::Boolean { path, value } => BufferedEvent::Boolean { path, value },
+            ParseEvent::Number { path, value } => BufferedEvent::Number { path, value },
+            ParseEvent::String {
+                path,
+                fragment,
+                is_initial,
+                is_final,
+            } => BufferedEvent::String {
+                path,
+                fragment,
+                value: None,
+                is_initial,
+                is_final,
+            },
+            ParseEvent::ArrayBegin { path } => BufferedEvent::ArrayBegin { path },
+            ParseEvent::ArrayEnd { path, .. } => BufferedEvent::ArrayEnd { path, value: None },
+            ParseEvent::ObjectBegin { path } => BufferedEvent::ObjectBegin { path },
+            ParseEvent::ObjectEnd { path, .. } => BufferedEvent::ObjectEnd { path, value: None },
         }
     }
 }
 
-/// `BufferedEvent` mirrors `ParseEvent` but adds an optional full string value
-/// on string events.
-#[cfg_attr(
-    any(test, feature = "serde"),
-    derive(serde::Serialize, serde::Deserialize)
-)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum BufferedEvent {
-    Null {
-        path: Path,
-    },
-    Boolean {
-        path: Path,
-        value: bool,
-    },
-    Number {
-        path: Path,
-        value: f64,
-    },
-    String {
-        path: Path,
-        fragment: Str,
-        value: Option<Str>,
-        is_final: bool,
-    },
-    ArrayStart {
-        path: Path,
-    },
-    ArrayEnd {
-        path: Path,
-    },
-    ObjectBegin {
-        path: Path,
-    },
-    ObjectEnd {
-        path: Path,
-    },
-}
-
-/// `JsonModemBuffers`: wraps `JsonModem` and buffers string fragments per-path.
 #[derive(Debug)]
-pub struct JsonModemBuffers {
+pub struct JsonModemBuffers<B: ValueBuilder> {
     pub(crate) modem: JsonModem,
     pub(crate) opts: BufferOptions,
-    // Pending coalesced string across core iterator pulls for collect()/finish()
-    pub(crate) scratch: Option<(Path, Str)>, // (path, buffer)
+    // Pending string state persisted across feeds. Redundant if we have a ValueBuilder.
+    pub(crate) scratch: Option<(B::Path, B::Str)>,
+    // Value builder state lives on the parent and spans feeds
+    pub(crate) assembler: B::Assembler,
 }
 
-impl JsonModemBuffers {
+impl JsonModemBuffers<B: ValueBuilder> {
     #[must_use]
     pub fn new(options: ParserOptions, opts: BufferOptions) -> Self {
+        let assembler = match opts.non_scalar_mode {
+            NonScalarMode::None => None,
+            _ => Some(Default::default()),
+        };
         Self {
             modem: JsonModem::new(options),
             opts,
             scratch: None,
+            assembler,
         }
     }
 
-    /// Iterator over buffered events for this chunk, coalescing consecutive
-    /// string events.
+    #[must_use]
     pub fn feed<'a>(&'a mut self, chunk: &str) -> JsonModemBuffersIter<'a> {
-        JsonModemBuffersIter {
-            inner: self.modem.feed(chunk),
-            opts: self.opts,
-            pending_path: None,
-            pending_buf: Str::new(),
-            pending_final: false,
-            stash_non_string: None,
-        }
+        self.modem.inner.feed_str(chunk);
+        JsonModemBuffersIter { parser: self }
     }
 
-    /// Collect buffered events from a chunk.
-    ///
-    /// # Errors
-    /// Returns any parser error encountered while consuming the inner iterator.
-    pub fn collect(
-        &mut self,
-        chunk: &str,
-    ) -> Result<Vec<BufferedEvent>, crate::parser::ParserError> {
-        let mut out = Vec::new();
-        let events: alloc::vec::Vec<_> = self.modem.feed(chunk).collect();
-        for ev in events {
-            self.push_buffered(ev?, &mut out);
-        }
-        Ok(out)
+    #[must_use]
+    pub fn finish(mut self) -> JsonModemBuffersClosed {
+        self.modem.inner.close();
+        JsonModemBuffersClosed { parser: self }
     }
 
-    /// Finish the stream and collect remaining buffered events.
-    ///
-    /// # Errors
-    /// Returns any parser error encountered while consuming the inner iterator.
-    pub fn finish(self) -> Result<Vec<BufferedEvent>, crate::parser::ParserError> {
-        let JsonModemBuffers {
-            modem,
-            opts,
-            mut scratch,
-        } = self;
-        let mut out = Vec::new();
-        let mut closed = modem.finish();
-        for ev in &mut closed {
-            let ev = ev?;
-            match ev {
-                ParseEvent::String {
-                    path,
-                    fragment,
-                    is_final,
-                    ..
-                } => {
-                    match &mut scratch {
-                        Some((p, buf)) if *p == path => {
-                            buf.push_str(&fragment);
-                        }
-                        Some((p, buf)) => {
-                            // Flush previous pending before switching
-                            let prev_path = core::mem::take(p);
-                            let prev_buf = core::mem::take(buf);
-                            let prev_value = match opts.string_values {
-                                BufferStringMode::Prefixes => Some(prev_buf.clone()),
-                                BufferStringMode::Values | BufferStringMode::None => None,
-                            };
-                            out.push(BufferedEvent::String {
-                                path: prev_path,
-                                fragment: prev_buf,
-                                value: prev_value,
-                                is_final: false,
-                            });
-                            // Start new pending
-                            p.clone_from(&path);
-                            buf.clone_from(&fragment);
-                        }
-                        None => scratch = Some((path.clone(), fragment.clone())),
-                    }
-                    // If final, flush immediately
-                    if is_final {
-                        if let Some((p, buf)) = scratch.take() {
-                            let val = Some(buf.clone());
-                            out.push(BufferedEvent::String {
-                                path: p,
-                                fragment: buf,
-                                value: val,
-                                is_final: true,
-                            });
-                        }
-                    }
-                }
-                ParseEvent::Null { path } => out.push(BufferedEvent::Null { path }),
-                ParseEvent::Boolean { path, value } => {
-                    out.push(BufferedEvent::Boolean { path, value });
-                }
-                ParseEvent::Number { path, value } => {
-                    out.push(BufferedEvent::Number { path, value });
-                }
-                ParseEvent::ArrayStart { path } => out.push(BufferedEvent::ArrayStart { path }),
-                ParseEvent::ArrayEnd { path, .. } => {
-                    if let Some((p, _)) = &scratch {
-                        if p.len() > path.len() {
-                            scratch = None;
-                        }
-                    }
-                    out.push(BufferedEvent::ArrayEnd { path });
-                }
-                ParseEvent::ObjectBegin { path } => out.push(BufferedEvent::ObjectBegin { path }),
-                ParseEvent::ObjectEnd { path, .. } => {
-                    if let Some((p, _)) = &scratch {
-                        if p.len() > path.len() {
-                            scratch = None;
-                        }
-                    }
-                    out.push(BufferedEvent::ObjectEnd { path });
-                }
+    // fn apply(&mut self, event: &ParseEvent<Value>) -> Result<AppliedEventOutput,
+    // ZipperError> {     let Some(builder) = self.assembler.as_mut() else {
+    //         return Ok(AppliedEventOutput::Nothing);
+    //     };
+
+    //     let f = &mut StdValueFactory;
+
+    //     match event {
+    //         // scalars
+    //         ParseEvent::Null { path } => {
+    //             builder.set(path.last(), f.build_from_null(()), f)?;
+    //         }
+    //         ParseEvent::Boolean { path, value } => {
+    //             let v = f.build_from_bool(*value);
+    //             builder.set(path.last(), v, f)?;
+    //         }
+    //         ParseEvent::Number { path, value } => {
+    //             let v = f.build_from_num(*value);
+    //             builder.set(path.last(), v, f)?;
+    //         }
+    //         ParseEvent::String { fragment, path, .. } => {
+    //             builder.mutate_with(
+    //                 f,
+    //                 path.last(),
+    //                 |fac| {
+    //                     let v = fac.new_string("");
+    //                     fac.build_from_str(v)
+    //                 },
+    //                 |v, fac| {
+    //                     if let Some(s) = JsonValue::as_string_mut(v) {
+    //                         fac.push_string(s, fragment);
+    //                         Ok(())
+    //                     } else {
+    //                         Err(ZipperError::ExpectedString)
+    //                     }
+    //                 },
+    //             )?;
+
+    //             // TODO optimize this, return a AppliedOutputEvent::String
+    //             // taking into account the string buffer mode
+    //         }
+
+    //         // ── container starts ───────────────────────────────────────
+    //         ParseEvent::ObjectBegin { path } => {
+    //             builder.enter_with(path.last(), f, |fac| {
+    //                 let v = fac.new_object();
+    //                 fac.build_from_object(v)
+    //             })?;
+    //         }
+    //         ParseEvent::ArrayBegin { path } => {
+    //             builder.enter_with(path.last(), f, |fac| {
+    //                 let v = fac.new_array();
+    //                 fac.build_from_array(v)
+    //             })?;
+    //         }
+
+    //         // ── container ends ─────────────────────────────────────────
+    //         ParseEvent::ArrayEnd { path, .. } => {
+    //             if path.is_empty() {
+    //                 // Path is empty, use the root:
+    //                 let root = core::mem::take(builder).into_value();
+    //                 if let Some(Some(root_array)) = root.map(Value::into_array) {
+    //                     if self.opts.non_scalar_mode == NonScalarMode::None {
+    //                         return Ok(AppliedEventOutput::Nothing);
+    //                     }
+
+    //                     return Ok(AppliedEventOutput::Array(root_array));
+    //                 }
+
+    //                 #[cfg(test)]
+    //                 panic!("Expected root to be an array");
+
+    //                 #[cfg(not(test))]
+    //                 return Err(ZipperError::ExpectedArray);
+    //             } else if let Some(leaf_array) =
+    // JsonValue::as_array_mut(builder.pop()?) {                 if
+    // self.opts.non_scalar_mode != NonScalarMode::All {
+    // return Ok(AppliedEventOutput::Nothing);                 }
+
+    //                 return Ok(AppliedEventOutput::Array(leaf_array.clone()));
+    //             }
+
+    //             return Err(ZipperError::ExpectedArray);
+    //         }
+    //         ParseEvent::ObjectEnd { path, .. } => {
+    //             if path.is_empty() {
+    //                 // Path is empty, use the root:
+    //                 let root = core::mem::take(builder).into_value();
+    //                 if let Some(Some(root_object)) =
+    // root.map(JsonValue::into_object) {                     if
+    // self.opts.non_scalar_mode == NonScalarMode::None {
+    // return Ok(AppliedEventOutput::Nothing);                     }
+
+    //                     return Ok(AppliedEventOutput::Object(root_object));
+    //                 }
+
+    //                 #[cfg(test)]
+    //                 panic!("Expected root to be an object");
+    //                 #[cfg(not(test))]
+    //                 return Err(ZipperError::ExpectedObject);
+    //             } else if let Some(leaf_object) =
+    // JsonValue::as_object_mut(builder.pop()?) {                 if
+    // self.opts.non_scalar_mode != NonScalarMode::All {
+    // return Ok(AppliedEventOutput::Nothing);                 }
+
+    //                 return Ok(AppliedEventOutput::Object(leaf_object.clone()));
+    //             }
+    //             return Err(ZipperError::ExpectedObject);
+    //         }
+    //     }
+
+    //     Ok(AppliedEventOutput::Nothing)
+    // }
+
+    fn consume_event(&mut self, event: ParseEvent<B: Value>) -> Result<BufferedEvent, BufferError> {
+        match self.apply(&event)? {
+            AppliedEventOutput::Nothing => {}
+            AppliedEventOutput::Array(value) => {
+                return match event {
+                    ParseEvent::ArrayEnd { path, .. } => Ok(BufferedEvent::ArrayEnd {
+                        path,
+                        value: Some(value),
+                    }),
+                    _ => Err(ZipperError::ExpectedArray.into()),
+                };
+            }
+            AppliedEventOutput::Object(value) => {
+                return match event {
+                    ParseEvent::ObjectEnd { path, .. } => Ok(BufferedEvent::ObjectEnd {
+                        path,
+                        value: Some(value),
+                    }),
+                    _ => Err(ZipperError::ExpectedObject.into()),
+                };
             }
         }
-        // End-of-input: if any pending remains (e.g., prefixes mode across chunk),
-        // flush
-        if let Some((path, fragment)) = scratch.take() {
-            let value = match opts.string_values {
-                BufferStringMode::Prefixes => Some(fragment.clone()),
-                BufferStringMode::Values | BufferStringMode::None => None,
+
+        let mut buffered_event: BufferedEvent = event.into();
+
+        if let BufferedEvent::String {
+            path,
+            fragment,
+            value,
+            is_final,
+            ..
+        } = &mut buffered_event
+        {
+            let new_value = if let Some((stash_path, stash_buf)) = self.scratch.as_mut()
+                && stash_path == path
+            {
+                stash_buf.push_str(fragment);
+                if *is_final {
+                    Some(core::mem::take(stash_buf))
+                } else if self.opts.string_buffer_mode == StringBufferMode::Prefixes {
+                    Some(stash_buf.clone())
+                } else {
+                    None
+                }
+            } else {
+                if self.opts.string_buffer_mode != StringBufferMode::None {
+                    self.scratch = Some((path.clone(), fragment.clone()));
+                }
+                None
             };
-            out.push(BufferedEvent::String {
-                path,
-                fragment,
-                value,
-                is_final: false,
-            });
-        }
-        Ok(out)
-    }
 
-    pub(crate) fn push_buffered(&mut self, ev: ParseEvent<Value>, out: &mut Vec<BufferedEvent>) {
-        match ev {
-            ParseEvent::String {
-                path,
-                fragment,
-                is_final,
-                ..
-            } => {
-                match &mut self.scratch {
-                    Some((p, buf)) if *p == path => {
-                        buf.push_str(&fragment);
-                    }
-                    Some((p, buf)) => {
-                        let prev_path = core::mem::take(p);
-                        let prev_buf = core::mem::take(buf);
-                        let prev_value = match self.opts.string_values {
-                            BufferStringMode::Prefixes => Some(prev_buf.clone()),
-                            BufferStringMode::Values | BufferStringMode::None => None,
-                        };
-                        out.push(BufferedEvent::String {
-                            path: prev_path,
-                            fragment: prev_buf,
-                            value: prev_value,
-                            is_final: false,
-                        });
-                        p.clone_from(&path);
-                        buf.clone_from(&fragment);
-                    }
-                    None => self.scratch = Some((path.clone(), fragment.clone())),
-                }
-                if is_final {
-                    if let Some((p, buf)) = self.scratch.take() {
-                        let frag = buf.clone();
-                        let val = Some(frag.clone());
-                        out.push(BufferedEvent::String {
-                            path: p,
-                            fragment: frag,
-                            value: val,
-                            is_final: true,
-                        });
-                    }
-                }
-            }
-            ParseEvent::Null { path } => out.push(BufferedEvent::Null { path }),
-            ParseEvent::Boolean { path, value } => out.push(BufferedEvent::Boolean { path, value }),
-            ParseEvent::Number { path, value } => out.push(BufferedEvent::Number { path, value }),
-            ParseEvent::ArrayStart { path } => out.push(BufferedEvent::ArrayStart { path }),
-            ParseEvent::ArrayEnd { path, .. } => {
-                if let Some((p, _)) = &self.scratch {
-                    if p.len() > path.len() {
-                        self.scratch = None;
-                    }
-                }
-                out.push(BufferedEvent::ArrayEnd { path });
-            }
-            ParseEvent::ObjectBegin { path } => out.push(BufferedEvent::ObjectBegin { path }),
-            ParseEvent::ObjectEnd { path, .. } => {
-                if let Some((p, _)) = &self.scratch {
-                    if p.len() > path.len() {
-                        self.scratch = None;
-                    }
-                }
-                out.push(BufferedEvent::ObjectEnd { path });
-            }
+            *value = new_value;
+        }
+
+        Ok(buffered_event)
+    }
+}
+
+pub struct JsonModemBuffersIter<'a> {
+    parser: &'a mut JsonModemBuffers,
+}
+
+impl Iterator for JsonModemBuffersIter<'_> {
+    type Item = Result<BufferedEvent, BufferError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self
+            .parser
+            .modem
+            .inner
+            .next_event_with(&mut StdValueFactory)
+        {
+            Some(Ok(ev)) => Some(self.parser.consume_event(ev)),
+            Some(Err(e)) => Some(Err(e.into())),
+            None => None,
+        }
+    }
+}
+
+pub struct JsonModemBuffersClosed {
+    parser: JsonModemBuffers,
+}
+
+impl Iterator for JsonModemBuffersClosed {
+    type Item = Result<BufferedEvent, BufferError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self
+            .parser
+            .modem
+            .inner
+            .next_event_with(&mut StdValueFactory)
+        {
+            Some(Ok(ev)) => Some(self.parser.consume_event(ev)),
+            Some(Err(e)) => Some(Err(e.into())),
+            None => None,
         }
     }
 }

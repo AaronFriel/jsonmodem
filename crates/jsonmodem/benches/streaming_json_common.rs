@@ -1,9 +1,8 @@
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;
-use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser};
+use jsonmodem::{DefaultStreamingParser, JsonModemValues, NonScalarMode, ParserOptions};
 
 /// Deterministically create a JSON document of exactly `target_len` bytes.
-#[allow(dead_code)]
 pub fn make_json_payload(target_len: usize) -> String {
     let overhead = "{\"data\":\"\"}".len();
     assert!(target_len >= overhead);
@@ -16,10 +15,8 @@ pub fn make_json_payload(target_len: usize) -> String {
     s
 }
 
-#[allow(dead_code)]
-pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize {
+pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarMode) -> usize {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: mode,
         ..Default::default()
     });
     let mut events = 0usize;
@@ -38,10 +35,8 @@ pub fn run_streaming_parser(chunks: &[&str], mode: NonScalarValueMode) -> usize 
     events
 }
 
-#[allow(dead_code)]
 pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
-    let mut parser = StreamingValuesParser::new(ParserOptions {
-        non_scalar_values: NonScalarValueMode::Roots,
+    let mut parser = JsonModemValues::new(ParserOptions {
         ..Default::default()
     });
     let mut produced = 0usize;
@@ -55,7 +50,6 @@ pub fn run_streaming_values_parser(chunks: &[&str]) -> usize {
     produced + values.iter().filter(|v| v.is_final).count()
 }
 
-#[allow(dead_code)]
 pub fn run_parse_partial_json(chunks: &[&str]) -> usize {
     let mut calls = 0usize;
     let mut prefix = String::new();
@@ -83,7 +77,6 @@ pub mod partial_json_fixer {
 }
 
 #[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_fix_json_parse(chunks: &[&str]) -> usize {
     let mut calls = 0usize;
     let mut prefix = String::new();
@@ -98,7 +91,6 @@ pub fn run_fix_json_parse(chunks: &[&str]) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_jiter_partial(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;
@@ -116,7 +108,6 @@ pub fn run_jiter_partial(chunks: &[&str]) -> usize {
 }
 
 #[cfg(feature = "comparison")]
-#[allow(dead_code)]
 pub fn run_jiter_partial_owned(chunks: &[&str]) -> usize {
     use jiter::{JsonValue, PartialMode};
     let mut calls = 0usize;

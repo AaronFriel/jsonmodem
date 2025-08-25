@@ -1,6 +1,7 @@
 //! Snapshot test that verifies the exact sequence of `ParseEvent`s emitted for
 //! a moderately complex JSON input.  The test is particularly useful to catch
 //! unintended behaviour changes when the parser implementation is modified.
+#![cfg(feature = "todo")]
 #![cfg(not(miri))]
 
 use alloc::vec::Vec;

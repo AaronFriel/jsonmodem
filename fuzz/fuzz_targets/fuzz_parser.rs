@@ -168,11 +168,6 @@ fn parser(data: &[u8]) {
     let chunks = split_into_safe_chunks(&str, split_seed);
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         allow_multiple_json_values: flags & 1 != 0,
-        non_scalar_values: if flags & 2 != 0 {
-            jsonmodem::NonScalarValueMode::All
-        } else {
-            jsonmodem::NonScalarValueMode::None
-        },
         allow_unicode_whitespace: flags & 4 != 0,
         panic_on_error: false,
     });

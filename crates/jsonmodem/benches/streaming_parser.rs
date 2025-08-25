@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions};
+use jsonmodem::{DefaultStreamingParser, NonScalarMode, ParserOptions};
 
 /// Produce a *deterministic* JSON document whose textual representation is at
 /// least `target_len` bytes (UTF-8 code units). The resulting string is
@@ -32,12 +32,11 @@ fn make_json_payload(target_len: usize) -> String {
 /// `payload`.  The function returns the number of `ParseEvent`s that the
 /// parser produced so that the result can be black-boxed by Criterion (to
 /// prevent the compiler from optimising the 'work' away).
-fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarValueMode) -> usize {
+fn run_streaming_parser(payload: &str, parts: usize, mode: NonScalarMode) -> usize {
     assert!(parts > 0);
     let chunk_size = payload.len().div_ceil(parts); // ceiling division
 
     let mut parser = DefaultStreamingParser::new(ParserOptions {
-        non_scalar_values: mode,
         ..Default::default()
     });
     let mut produced = 0usize;
@@ -64,9 +63,9 @@ fn bench_streaming_parser(c: &mut Criterion) {
 
     for &parts in &[100usize, 1_000, 5_000] {
         for &mode in &[
-            NonScalarValueMode::None,
-            NonScalarValueMode::Roots,
-            NonScalarValueMode::All,
+            NonScalarMode::None,
+            NonScalarMode::Roots,
+            NonScalarMode::All,
         ] {
             let name = format!("{mode:?}").to_lowercase();
             group.bench_with_input(BenchmarkId::new(parts.to_string(), name), &mode, |b, &m| {

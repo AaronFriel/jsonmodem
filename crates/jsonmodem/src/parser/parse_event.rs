@@ -3,38 +3,8 @@
 //! `ParseEvent` enumerates parser outputs, indicating the JSON value type and
 //! its path within the document. `PathComponent` represents a key or index in a
 //! JSON path.
-//!
-//! # Examples
-//!
-//! Basic streaming parse example:
-//!F
-//! ```
-//! use jsonmodem::{
-//!     DefaultStreamingParser, ParseEvent, ParserError, ParserOptions, PathComponent, Value,
-//! };
-//!
-//! let mut parser = DefaultStreamingParser::new(ParserOptions::default());
-//! parser.feed("[\"foo\"]");
-//! let events: Vec<_> = parser.finish().into_iter().collect();
-//! assert_eq!(
-//!     events,
-//!     vec![
-//!         Ok(ParseEvent::ArrayStart { path: vec![] }),
-//!         Ok(ParseEvent::String {
-//!             path: vec![PathComponent::Index(0)],
-//!             value: None,
-//!             fragment: "foo".into(),
-//!             is_final: true,
-//!         }),
-//!         Ok(ParseEvent::ArrayEnd {
-//!             path: vec![],
-//!             value: None,
-//!         }),
-//!     ]
-//! );
-//! ```
 
-use crate::{JsonValue, Value};
+use crate::backend::{EventCtx, PathCtx};
 
 // Helper used solely by serde `skip_serializing_if` to omit `is_final` when it
 // is `false`.
@@ -52,22 +22,6 @@ fn is_false(b: &bool) -> bool {
 ///
 /// The `path` is a sequence of `PathComponent` starting at the root. For
 /// example, the first element in an array has path `[PathComponent::Index(0)]`.
-///
-/// # Examples
-///
-/// ```
-/// use jsonmodem::{ParseEvent, Path, PathComponent, Value};
-///
-/// let evt = ParseEvent::<Value>::Null {
-///     path: Path::default(),
-/// };
-/// assert_eq!(
-///     evt,
-///     ParseEvent::Null {
-///         path: Path::default()
-///     }
-/// );
-/// ```
 #[cfg_attr(
     any(test, feature = "serde"),
     derive(serde::Serialize, serde::Deserialize)
@@ -77,29 +31,28 @@ fn is_false(b: &bool) -> bool {
     serde(
         tag = "kind",
         bound = "
-            V::Str    : serde::Serialize + serde::de::DeserializeOwned,
-            V::Num    : serde::Serialize + serde::de::DeserializeOwned,
-            V::Bool   : serde::Serialize + serde::de::DeserializeOwned,
-            V::Null   : serde::Serialize + serde::de::DeserializeOwned,
-            V::Array  : serde::Serialize + serde::de::DeserializeOwned,
-            V::Object : serde::Serialize + serde::de::DeserializeOwned,
-            V::Path   : serde::Serialize + serde::de::DeserializeOwned
+        <B as PathCtx>::Thawed     : serde::Serialize + serde::de::DeserializeOwned,
+        <B as PathCtx>::Frozen     : serde::Serialize + serde::de::DeserializeOwned,
+        <B as EventCtx>::Null      : serde::Serialize + serde::de::DeserializeOwned,
+        <B as EventCtx>::Bool      : serde::Serialize + serde::de::DeserializeOwned,
+        <B as EventCtx>::Num<'src> : serde::Serialize + serde::de::DeserializeOwned,
+        <B as EventCtx>::Str<'src> : serde::Serialize + serde::de::DeserializeOwned
         "
     )
 )]
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParseEvent<V: JsonValue = Value> {
+#[derive(Debug, PartialEq)]
+pub enum ParseEvent<'src, B: PathCtx + EventCtx> {
     /// A JSON `null` value.
     Null {
         /// The path to the value.
-        path: V::Path,
+        path: B::Thawed,
     },
     /// A JSON `true` or `false` value.
     Boolean {
         /// The path to the value.
-        path: V::Path,
+        path: B::Thawed,
         /// The boolean value.
-        value: V::Bool,
+        value: B::Bool,
     },
     /// A JSON number value.
     ///
@@ -107,71 +60,67 @@ pub enum ParseEvent<V: JsonValue = Value> {
     /// be an arbitrarily large.
     Number {
         /// The path to the value.
-        path: V::Path,
+        path: B::Thawed,
         /// The number value.
-        value: V::Num,
+        value: B::Num<'src>,
     },
     /// A JSON string value.
     String {
         /// The path to the string value.
-        path: V::Path,
-        /// The value of the string. In the core parser this is always `None`
-        /// (fragment-only emission). Adapters like `JsonModemBuffers` may
-        /// provide full or prefix values in their own event types.
+        path: B::Thawed,
+        fragment: B::Str<'src>,
+        /// Whether this is the first fragment of a string value.
         #[cfg_attr(
             any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
+            serde(skip_serializing_if = "crate::parser::parse_event::is_false")
         )]
-        value: Option<V::Str>,
-        /// A fragment of a string value.
-        fragment: V::Str,
-        /// Whether this is the final fragment of a string value. Implied when
-        /// `value` is set.
+        is_initial: bool,
+        /// Whether this is the last fragment of a string value.
         #[cfg_attr(
             any(test, feature = "serde"),
-            serde(skip_serializing_if = "crate::event::is_false")
+            serde(skip_serializing_if = "crate::parser::parse_event::is_false")
         )]
         is_final: bool,
     },
     /// Marks the start of a JSON array.
-    ArrayStart {
+    ArrayBegin {
         /// The path to the value.
-        path: V::Path,
+        path: B::Thawed,
     },
     /// Marks the end of a JSON array, optionally including its value.
     ArrayEnd {
         /// The path to the value.
-        path: V::Path,
-        /// The value of the array.
-        ///
-        /// This value is not set when option `non_scalar_values` is `None`.
-        #[cfg_attr(
-            any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
-        )]
-        value: Option<V::Array>,
+        path: B::Thawed,
     },
     /// Marks the start of a JSON object.
     ObjectBegin {
         /// The path to the value.
-        path: V::Path,
+        path: B::Thawed,
     },
     /// Marks the end of a JSON object, optionally including its value.
     ObjectEnd {
         /// The path to the value.
-        path: V::Path,
-        /// The value of the object.
-        ///
-        /// This value is not set when option `non_scalar_values` is `None`.
-        #[cfg_attr(
-            any(test, feature = "serde"),
-            serde(skip_serializing_if = "Option::is_none")
-        )]
-        value: Option<V::Object>,
+        path: B::Thawed,
     },
 }
 
-#[cfg(test)]
+impl<B: PathCtx + EventCtx> ParseEvent<'_, B> {
+    /// Returns the path to the value.
+    pub fn path(&self) -> &B::Thawed {
+        match self {
+            ParseEvent::Null { path }
+            | ParseEvent::Boolean { path, .. }
+            | ParseEvent::Number { path, .. }
+            | ParseEvent::String { path, .. }
+            | ParseEvent::ArrayBegin { path }
+            | ParseEvent::ArrayEnd { path, .. }
+            | ParseEvent::ObjectBegin { path }
+            | ParseEvent::ObjectEnd { path, .. } => path,
+        }
+    }
+}
+
+#[cfg(all(test, feature = "todo"))]
 pub mod test_util {
     use alloc::vec::Vec;
 
@@ -228,7 +177,7 @@ pub mod test_util {
                 // ----------------------------------------------------------------------------------
                 // Container open – insert an empty placeholder so that later children have a slot
                 // to land in.
-                ParseEvent::ArrayStart { path } => {
+                ParseEvent::ArrayBegin { path } => {
                     insert_at_path(&mut current_root, path, Value::Array(Vec::new()));
                     if path.is_empty() {
                         building_root = true;
@@ -483,17 +432,11 @@ pub mod test_util {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PathComponent;
-
-    #[test]
-    fn size_of_path_component() {
-        use core::mem::size_of;
-        assert_eq!(size_of::<PathComponent>(), 16);
-    }
+    use crate::backend::RustContext;
 
     #[test]
     fn size_of_parse_event() {
         use core::mem::size_of;
-        assert_eq!(size_of::<ParseEvent>(), 80);
+        assert_eq!(size_of::<ParseEvent<RustContext>>(), 56);
     }
 }

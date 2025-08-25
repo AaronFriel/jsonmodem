@@ -4,7 +4,7 @@ mod streaming_json_common;
 use std::time::Duration;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use jsonmodem::{DefaultStreamingParser, NonScalarValueMode, ParserOptions, StreamingValuesParser};
+use jsonmodem::{DefaultStreamingParser, JsonModemValues, NonScalarMode, ParserOptions};
 #[cfg(feature = "comparison")]
 use streaming_json_common::partial_json_fixer;
 use streaming_json_common::{make_json_payload, parse_partial_json_port};
@@ -31,9 +31,9 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
         let incremental_part = &second_half[..chunk_size];
 
         for &mode in &[
-            NonScalarValueMode::None,
-            NonScalarValueMode::Roots,
-            NonScalarValueMode::All,
+            NonScalarMode::None,
+            NonScalarMode::Roots,
+            NonScalarMode::All,
         ] {
             let name = format!("streaming_parser_inc_{mode:?}").to_lowercase();
             group.bench_with_input(BenchmarkId::new(name, parts), &parts, |b, &_p| {
@@ -41,7 +41,6 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                     || {
                         // setup – not measured
                         let mut parser = DefaultStreamingParser::new(ParserOptions {
-                            non_scalar_values: mode,
                             ..Default::default()
                         });
                         // Drain all events produced so far so that the parser
@@ -68,8 +67,7 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
             |b, &_p| {
                 b.iter_batched(
                     || {
-                        let mut parser = StreamingValuesParser::new(ParserOptions {
-                            non_scalar_values: NonScalarValueMode::Roots,
+                        let mut parser = JsonModemValues::new(ParserOptions {
                             ..Default::default()
                         });
                         parser.feed(first_half).unwrap();

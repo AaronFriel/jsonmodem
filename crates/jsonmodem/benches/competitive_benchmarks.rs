@@ -60,7 +60,7 @@ use criterion::{
     BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 use jiter::{Jiter, JsonValue, Peek};
-use jsonmodem::{NonScalarValueMode, ParserOptions, StreamingValuesParser, Value as ModemValue};
+use jsonmodem::{NonScalarMode, ParserOptions, StreamingValuesParser, Value as ModemValue};
 use serde_json::Value as SerdeValue;
 
 fn read_file(path: &str) -> String {

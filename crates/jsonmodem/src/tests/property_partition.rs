@@ -5,11 +5,7 @@ use alloc::{
 
 use quickcheck::QuickCheck;
 
-use crate::{
-    DefaultStreamingParser, Value,
-    event::test_util::reconstruct_values,
-    options::{NonScalarValueMode, ParserOptions},
-};
+use crate::{DefaultStreamingParser, Value, event::test_util::reconstruct_values};
 
 /// Property: Feeding a JSON document in arbitrary chunk sizes must yield the
 /// exact same `Value` when reconstructed from the emitted `ParseEvent`s.
@@ -26,11 +22,9 @@ fn partition_roundtrip_quickcheck() {
         // emitted.
         let mut parser = DefaultStreamingParser::new(ParserOptions {
             allow_multiple_json_values: true,
-            non_scalar_values: NonScalarValueMode::All,
             ..Default::default()
         });
         let mut events = Vec::<crate::event::ParseEvent>::new();
-
         // Feed the JSON text in arbitrarily sized UTF-8-safe chunks (derived from
         // `splits`).
         let chars: Vec<char> = src.chars().collect();

@@ -1,8 +1,8 @@
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 use quickcheck::{Arbitrary, Gen};
 
-use crate::{Value, value::Map};
+use crate::Value;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub(crate) struct JsonNumber(f64);
@@ -44,7 +44,7 @@ impl Arbitrary for Value {
                     }
                     _ => {
                         let len = usize::arbitrary(g) % 3;
-                        let mut map = Map::new();
+                        let mut map = BTreeMap::new();
                         for _ in 0..len {
                             let key = String::arbitrary(g);
                             let val = gen_val(g, depth - 1);

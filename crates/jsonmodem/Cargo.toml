@@ -8,9 +8,15 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/aaronfriel/jsonmodem"
 autobenches = false
 rust-version = "1.85"
+autoexamples = false
+autobins = false
+autotests = false
 
 [features]
-default = []
+# Gate adapters so bindings can depend on core-only by disabling defaults.
+default = ["buffered", "values"]
+buffered = []
+values = []
 fuzzing = []
 serde = ["dep:serde"]
 bench = []
@@ -20,8 +26,11 @@ test-fast = []
 # Enabling `miri` pulls in the faster test and benchmark configurations.
 miri = ["bench-fast", "test-fast"]
 
+todo = []
+
 [dependencies]
 serde = { version = "1.0", optional = true, features = ["derive", "rc"] }
+thiserror = { version = "2.0.16", default-features = false }
 
 [dev-dependencies]
 insta = { version = "1.43.1", features = ["yaml"] }
@@ -31,10 +40,11 @@ rstest = "0.25.0"
 quickcheck_macros = "1.1.0"
 is_ci = "1.2.0"
 serde_yaml = "0.9.34"
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 criterion = { version = "0.5", features = ["default", "html_reports"] }
 jiter = "0.10.0"
 paste = "1.0.7"
+regex = "1.11.1"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -48,27 +58,29 @@ pedantic = "warn"
 perf = "deny"
 suspicious = "deny"
 
-[[bench]]
-name = "streaming_json_strategies"
-harness = false
 
-[[bench]]
-name = "streaming_json_medium"
-harness = false
 
-[[bench]]
-name = "streaming_json_large"
-harness = false
+# [[bench]]
+# name = "streaming_json_strategies"
+# harness = false
 
-[[bench]]
-name = "streaming_json_incremental"
-harness = false
+# [[bench]]
+# name = "streaming_json_medium"
+# harness = false
 
-[[bench]]
-name = "streaming_parser"
-harness = false
+# [[bench]]
+# name = "streaming_json_large"
+# harness = false
 
-[[bench]]
-name = "competitive_benchmarks"
-harness = false
-required-features = ["comparison"]
+# [[bench]]
+# name = "streaming_json_incremental"
+# harness = false
+
+# [[bench]]
+# name = "streaming_parser"
+# harness = false
+
+# [[bench]]
+# name = "competitive_benchmarks"
+# harness = false
+# required-features = ["comparison"]

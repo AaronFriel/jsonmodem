@@ -150,3 +150,37 @@ automatically when the agent environment is prepared.
 `check-py.sh` rebuilds the bindings and runs the smoke tests under `pytest`.
 The `py.yml` GitHub Action calls `setup.sh`, then `setup-py.sh`, and finally
 `check-py.sh` to verify that the Python package can be built and imported.
+
+
+## Snapshot Testing
+
+This repo uses the `insta` crate for snapshot tests. To avoid churn and
+out-of-date `.snap` files, always use inline snapshots and the `cargo insta`
+workflow when adding or updating tests.
+
+- Run tests that update snapshots with:
+  - `cargo insta test` (executes tests and records new/changed snapshots)
+  - `cargo insta review` (interactive approval of changed snapshots)
+
+- Use inline snapshots only. Prefer this pattern:
+
+  ```rust
+  let output = render_something();
+  insta::assert_snapshot!(output, @"");
+  ```
+
+  The second argument `@""` is a default inline snapshot. On first run,
+  `cargo insta test` will populate the inline content with the actual output.
+  Avoid named snapshots (e.g. `assert_snapshot!("name", data)`) and avoid
+  `.snap` files entirely.
+
+- Do not assert inside loops. `insta` forbids inline assertions in loops by
+  default. Either unroll the cases or extract a helper and use separate
+  assertions for each case. If you absolutely must loop, wrap the section in
+  `insta::allow_duplicates!` and justify in a comment.
+
+- Multi-line snapshots: use a raw string if helpful (e.g. `@r#"..."#`). Keep
+  snapshots stable and legible.
+
+Following these rules ensures that contributors can run and update snapshots
+consistently and that CI remains deterministic.

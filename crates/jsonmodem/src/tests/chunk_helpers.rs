@@ -1,7 +1,5 @@
 use alloc::vec;
 
-use crate::{produce_chunks, produce_prefixes};
-
 #[test]
 fn produce_helpers_example() {
     let payload = "[\"foo\",\"bar\"]";

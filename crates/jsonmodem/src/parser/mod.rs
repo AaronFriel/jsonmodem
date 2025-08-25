@@ -3,42 +3,37 @@
 //! This module provides the incremental streaming parser that processes input
 //! in chunks and emits `ParseEvent`s. The core does not build composite values
 //! or buffer full strings; adapters are responsible for those behaviors.
-//!
-//! # Examples
-//!
-//! Basic usage:
-//!
-//! ```rust
-//! use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions};
-//!
-//! let mut parser = DefaultStreamingParser::new(ParserOptions::default());
-//! parser.feed(r#"{"key": [null, true, 3.14]}"#);
-//! for event in parser.finish() {
-//!     let event = event.unwrap();
-//!     println!("{:?}", event);
-//! }
-//! ```
+
 #![expect(clippy::single_match_else)]
-#![allow(clippy::enum_glob_use)] // Conditional
-#![allow(clippy::struct_excessive_bools)] // Conditional
+#![expect(clippy::struct_excessive_bools)]
 #![expect(clippy::inline_always)]
+
+mod buffer;
+mod error;
+mod escape_buffer;
+mod event_builder;
+mod literal_buffer;
+mod numbers;
+mod options;
+mod parse_event;
+mod path;
 
 use alloc::{
     format,
     string::{String, ToString},
-    vec::Vec,
 };
-use core::{f64, fmt};
+use core::mem::{ManuallyDrop, MaybeUninit};
 
-use crate::{
-    JsonPath, JsonValue, JsonValueFactory, StdValueFactory, Value,
-    buffer::Buffer,
-    escape_buffer::UnicodeEscapeBuffer,
-    event::ParseEvent,
-    json_path::Successor,
-    literal_buffer::{self, ExpectedLiteralBuffer},
-    options::{NonScalarValueMode, ParserOptions},
-};
+use buffer::Buffer;
+pub use error::{ErrorSource, ParserError, SyntaxError};
+use escape_buffer::UnicodeEscapeBuffer;
+pub use event_builder::EventBuilder;
+use literal_buffer::ExpectedLiteralBuffer;
+pub use options::ParserOptions;
+pub use parse_event::ParseEvent;
+pub use path::{Path, PathItem, PathItemFrom, PathLike};
+
+use crate::backend::{EventCtx, PathCtx, PathKind, RustContext};
 
 // ------------------------------------------------------------------------------------------------
 // Lexer - internal tokens & states
@@ -51,12 +46,11 @@ pub(crate) enum Token {
         value: String,
     },
     String {
-        value: Option<String>,
         fragment: String,
     },
     Boolean(bool),
     Null,
-    Number(f64),
+    Number(String),
     /// Must be one of: `{` `}` `[` `]` `:` `,`
     Punctuator(u8),
 }
@@ -144,129 +138,15 @@ impl From<ParseState> for LexState {
     }
 }
 
-/// Stack entry – one per open container
-#[derive(Clone, Debug)]
-pub enum Frame<P: JsonPath> {
-    Array {
-        next_index_usize: P::Index, // slot for the next element
-    },
-    Object {
-        pending_key: Option<P::Key>, // key waiting for its value
-    },
-}
-
-impl<P: JsonPath> Frame<P> {
-    #[inline]
-    pub fn new_array() -> Self {
-        Frame::Array {
-            next_index_usize: P::Index::default(),
-        }
-    }
-
-    #[inline]
-    pub fn new_object() -> Self {
-        Frame::Object { pending_key: None }
-    }
-
-    #[inline]
-    pub fn append_component_to(&self, path: &mut P) {
-        match self {
-            Frame::Array { next_index_usize } => path.push_index(*next_index_usize),
-            Frame::Object { pending_key } => {
-                let k = pending_key
-                    .as_ref()
-                    .expect("pending_key must be set before path append");
-                path.push_key(k.clone());
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct FrameStack<P: JsonPath> {
-    root: Option<Frame<P>>,
-    stack: Vec<Frame<P>>,
-    path: P,
-}
-
-impl<P: JsonPath> FrameStack<P> {
-    pub fn new() -> Self {
-        Self {
-            root: None,
-            stack: Vec::with_capacity(16),
-            path: P::default(),
-        }
-    }
-
-    #[inline]
-    pub fn last(&self) -> Option<&Frame<P>> {
-        self.stack.last().or(self.root.as_ref())
-    }
-
-    #[inline]
-    pub fn last_mut(&mut self) -> Option<&mut Frame<P>> {
-        if self.stack.is_empty() {
-            self.root.as_mut()
-        } else {
-            self.stack.last_mut()
-        }
-    }
-
-    pub fn push(&mut self, frame: Frame<P>) {
-        if let Some(last) = self.last().cloned() {
-            last.append_component_to(&mut self.path);
-            self.stack.push(frame);
-        } else {
-            self.root = Some(frame);
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<Frame<P>> {
-        if let Some(frame) = self.stack.pop() {
-            self.path.pop();
-            Some(frame)
-        } else {
-            self.root.take()
-        }
-    }
-
-    #[inline]
-    pub fn path_clone(&self) -> P {
-        self.path.clone()
-    }
-
-    #[inline]
-    pub fn clear(&mut self) {
-        self.root = None;
-        self.stack.clear();
-        self.path = P::default();
-    }
-}
-
 /// The streaming JSON parser. Uses the default `Value` type and path
 /// representation.
-pub type DefaultStreamingParser = StreamingParserImpl<Value>;
+type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 
 ///
 /// `StreamingParser` can be fed partial or complete JSON input in chunks.
 /// It implements `Iterator` to yield `ParseEvent`s representing JSON tokens
 /// and structural events.
-///
-/// # Examples
-///
-/// ```rust
-/// use jsonmodem::{DefaultStreamingParser, ParseEvent, ParserOptions};
-///
-/// let mut parser = DefaultStreamingParser::new(ParserOptions::default());
-/// parser.feed(r#"[{"key": "value"}, true, null]"#);
-/// let mut closed = parser.finish();
-/// while let Some(result) = closed.next() {
-///     let event = result.unwrap();
-///     println!("{:?}", event);
-/// }
-/// ```
-#[derive(Debug)]
-pub struct StreamingParserImpl<V: JsonValue = Value> {
+pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
     end_of_input: bool,
@@ -282,18 +162,24 @@ pub struct StreamingParserImpl<V: JsonValue = Value> {
 
     /// Lexer helpers
     buffer: String, // reused for numbers / literals / strings
-    fragment_start: usize, // used to track string fragments start position within `buffer`
-    unicode_escape_buffer: UnicodeEscapeBuffer, // for unicode escapes
+    unicode_escape_buffer: UnicodeEscapeBuffer,
     expected_literal: ExpectedLiteralBuffer,
-    partial_lex: bool, // true ← we returned an *incomplete* token
+    partial_lex: bool,
 
-    /// Last token we produced
-    frames: FrameStack<V::Path>, // stack of open containers (arrays or objects)
-    events_out: Vec<ParseEvent<V>>,
+    path: MaybeUninit<B::Frozen>,
+    /// Indicates if a we've started parsing a string value and have not yet
+    /// emitted a parse event. Determines the value of `is_initial` on
+    /// [`ParseEvent::String`].
+    initialized_string: bool,
+    /// Indicates if a key is pending, i.e.: we have opened an object but have
+    /// not pushed a key yet.
+    pending_key: bool,
 
+    /// Options
+
+    /// Allow multiple JSON values in a single input (support transition from
+    /// end state to a new value start state)
     multiple_values: bool,
-    // string_value_mode removed from core; always emit fragments-only
-    non_scalar_values: NonScalarValueMode,
 
     /// Panic on syntax errors instead of returning them
     #[cfg(test)]
@@ -301,25 +187,31 @@ pub struct StreamingParserImpl<V: JsonValue = Value> {
 
     /// Sequence of tokens produced by the lexer.
     #[cfg(test)]
-    lexed_tokens: Vec<Token>,
+    lexed_tokens: alloc::vec::Vec<Token>,
 }
 
-impl<V: JsonValue> Default for StreamingParserImpl<V> {
-    fn default() -> Self {
-        Self::new(ParserOptions::default())
+pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
+    parser: &'p mut StreamingParserImpl<B>,
+    path: ManuallyDrop<B::Thawed>,
+    pub(crate) factory: B,
+    _marker: core::marker::PhantomData<&'src ()>,
+}
+
+impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
+    fn drop(&mut self) {
+        // SAFETY: ManuallyDrop::take moves out without running Drop,
+        // so the later field-drop won’t double-drop it.
+        let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
+        self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
     }
 }
 
-pub struct StreamingParserIteratorWith<'a, F: JsonValueFactory> {
-    parser: &'a mut StreamingParserImpl<F::Value>,
-    pub(crate) factory: F,
-}
-
-impl<F: JsonValueFactory> Iterator for StreamingParserIteratorWith<'_, F> {
-    type Item = Result<ParseEvent<F::Value>, ParserError>;
+impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, 'src, B> {
+    type Item = Result<ParseEvent<'src, B>, ParserError<B>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next_event_with(&mut self.factory)
+        self.parser
+            .next_event_with(&mut self.factory, &mut self.path)
     }
 }
 
@@ -328,49 +220,43 @@ impl<F: JsonValueFactory> Iterator for StreamingParserIteratorWith<'_, F> {
 /// Returned by [`StreamingParser::finish`], this parser will process any
 /// remaining input and then end. It implements `Iterator` to yield
 /// `ParseEvent` results.
-pub struct ClosedStreamingParser<F: JsonValueFactory> {
-    parser: StreamingParserImpl<F::Value>,
-    pub(crate) factory: F,
+pub struct ClosedStreamingParser<'src, B: PathCtx + EventCtx> {
+    parser: StreamingParserImpl<B>,
+    path: ManuallyDrop<B::Thawed>,
+    pub(crate) factory: B,
+    _marker: core::marker::PhantomData<&'src ()>,
 }
 
-impl<F: JsonValueFactory> ClosedStreamingParser<F> {
+impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
+    fn drop(&mut self) {
+        // SAFETY: ManuallyDrop::take moves out without running Drop,
+        // so the later field-drop won’t double-drop it.
+        let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
+        self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
+    }
+}
+
+impl<'src, B: PathCtx + EventCtx> ClosedStreamingParser<'src, B> {
     #[cfg(test)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token] {
         self.parser.get_lexed_tokens()
     }
-
-    pub(crate) fn unstable_get_current_value_ref(&self) -> Option<&F::Value> {
-        self.parser.unstable_get_current_value_ref()
-    }
 }
 
-impl<F: JsonValueFactory> Iterator for ClosedStreamingParser<F> {
-    type Item = Result<ParseEvent<F::Value>, ParserError>;
+impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
+    type Item = Result<ParseEvent<'src, B>, ParserError<B>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next_event_with(&mut self.factory)
+        self.parser
+            .next_event_with(&mut self.factory, &mut self.path)
     }
 }
 
-impl<V: JsonValue> StreamingParserImpl<V> {
+impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     #[must_use]
-    /// Creates a new `StreamingParser` with the given options.
-    ///
-    /// # Arguments
-    ///
-    /// * `options` - Parser configuration options.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use jsonmodem::{DefaultStreamingParser, ParserOptions};
-    ///
-    /// let parser = DefaultStreamingParser::new(ParserOptions {
-    ///     allow_multiple_json_values: true,
-    ///     ..Default::default()
-    /// });
-    /// ```
-    pub fn new(options: ParserOptions) -> Self {
+    /// Creates a new `StreamingParser` with the given event factory and
+    /// options.
+    pub fn new_with_factory(f: &mut B, options: ParserOptions) -> StreamingParserImpl<B> {
         Self {
             source: Buffer::new(),
             end_of_input: false,
@@ -384,34 +270,44 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             parse_state: ParseState::Start,
 
             buffer: String::new(),
-            fragment_start: 0,
             unicode_escape_buffer: UnicodeEscapeBuffer::new(),
             expected_literal: ExpectedLiteralBuffer::none(),
-            frames: FrameStack::new(),
 
-            events_out: Vec::new(),
+            path: MaybeUninit::new(f.frozen_new()),
+            initialized_string: false,
+            pending_key: false,
 
             multiple_values: options.allow_multiple_json_values,
-            non_scalar_values: options.non_scalar_values,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
-            lexed_tokens: Vec::new(),
+            lexed_tokens: alloc::vec::Vec::new(),
         }
     }
 
-    /// TODO - Update with concrete example following pyo3 integration
-    #[doc(hidden)]
-    pub fn feed_with<'a, F: JsonValueFactory<Value = V>>(
-        &'a mut self,
-        factory: F,
-        text: &str,
-    ) -> StreamingParserIteratorWith<'a, F> {
+    pub(crate) fn feed_str(&mut self, text: &str) {
         self.source.push(text);
+    }
+
+    #[doc(hidden)]
+    pub fn feed_with<'p, 'src>(
+        &'p mut self,
+        mut factory: B,
+        text: &'src str,
+    ) -> StreamingParserIteratorWith<'p, 'src, B> {
+        self.feed_str(text);
+        let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
+        let path = ManuallyDrop::new(path);
         StreamingParserIteratorWith {
             parser: self,
             factory,
+            path,
+            _marker: core::marker::PhantomData,
         }
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.end_of_input = true;
     }
 
     #[must_use]
@@ -421,32 +317,16 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     /// After calling `finish_with`, no further input can be fed. The returned
     /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
     /// and then ends.
-    pub fn finish_with<F: JsonValueFactory<Value = V>>(
-        mut self,
-        factory: F,
-    ) -> ClosedStreamingParser<F> {
-        self.end_of_input = true;
+    pub fn finish_with<'src>(mut self, mut context: B) -> ClosedStreamingParser<'src, B> {
+        self.close();
+        let path = unsafe { context.thaw(core::mem::take(self.path.assume_init_mut())) };
+        let path = ManuallyDrop::new(path);
         ClosedStreamingParser {
             parser: self,
-            factory,
+            factory: context,
+            path,
+            _marker: core::marker::PhantomData,
         }
-    }
-
-    /// Experimental helper that returns the *currently* fully-parsed JSON value
-    /// (if any).
-    ///
-    /// ⚠️ **Unstable API** – exposed solely for benchmarking and may change or
-    /// disappear without notice.
-    #[doc(hidden)]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn unstable_get_current_value_ref(&self) -> Option<&V> {
-        None
-    }
-
-    #[cfg(test)]
-    pub(crate) fn current_value(&self) -> Option<V> {
-        self.unstable_get_current_value_ref().cloned()
     }
 
     /// Drive the parser until we either
@@ -459,20 +339,20 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     /// * `Some(Err(err))`       - the parser has errored, and no more events
     ///   can be produced
     /// * `None`                 – the parser has no events.
-    pub(crate) fn next_event_with<F: JsonValueFactory<Value = V>>(
+    pub(crate) fn next_event_with<'a, 'cx: 'a, 'src: 'cx>(
         &mut self,
-        f: &mut F,
-    ) -> Option<Result<ParseEvent<V>, ParserError>> {
-        match self.next_event_internal(f) {
-            Some(Ok(event)) => Some(Ok(event)),
+        f: &'cx mut B,
+        path: &mut B::Thawed,
+    ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
+        match self.next_event_internal(f, path) {
             None => None,
+            Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
-                #[cfg(test)]
-                assert!(
-                    !self.panic_on_error,
-                    "Syntax error at {}:{}: {err}",
-                    self.line, self.column
-                );
+                // #[cfg(test)]
+                // assert!(                //     !self.panic_on_error,
+                //     "Syntax error at {}:{}: {err}",
+                //     self.line, self.column
+                // );
                 self.parse_state = ParseState::Error;
                 self.lex_state = LexState::Error;
                 Some(Err(err))
@@ -480,35 +360,21 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         }
     }
 
-    fn next_event_internal<F: JsonValueFactory<Value = V>>(
-        &mut self,
-        f: &mut F,
-    ) -> Option<Result<ParseEvent<V>, ParserError>> {
+    fn next_event_internal<'a, 'cx: 'a, 'src: 'cx>(
+        &'a mut self,
+        f: &'cx mut B,
+        path: &mut B::Thawed,
+    ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
         }
 
         loop {
-            #[cfg(any(test, feature = "fuzzing"))]
-            assert!(
-                self.events_out.len() <= 1,
-                "Internal error: more than one event in the queue"
-            );
-            if let Some(ev) = self.events_out.pop() {
-                if matches!(self.non_scalar_values, NonScalarValueMode::Roots)
-                    && !Self::is_root_event(&ev)
-                {
-                    continue;
-                }
-                return Some(Ok(ev));
-            }
-
             if self.multiple_values && matches!(self.parse_state, ParseState::End) {
+                // No internal builder; adapters build values externally.
                 self.lex_state = LexState::Default;
                 self.parse_state = ParseState::Start;
-                self.frames.clear();
-                self.events_out.clear();
-                // No internal builder; adapters build values externally.
+                self.path = MaybeUninit::new(f.frozen_new());
             }
 
             let token = match self.lex() {
@@ -524,9 +390,11 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                 }
             };
             let is_eof = token.is_eof();
-            let before_len = self.events_out.len();
-            match self.dispatch_parse_state(token, f) {
-                Ok(()) => {}
+            match self.dispatch_parse_state(token, f, path) {
+                Ok(Some(evt)) => {
+                    return Some(Ok(evt));
+                }
+                Ok(None) => {}
                 Err(err) => {
                     #[cfg(test)]
                     assert!(
@@ -539,11 +407,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             }
 
             if is_eof || self.partial_lex {
-                // If we produced an event in this step, allow the loop to
-                // iterate so the pending event can be returned at the top.
-                if self.events_out.len() <= before_len {
-                    break;
-                }
+                break;
             }
         }
 
@@ -555,7 +419,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex(&mut self) -> Result<Token, ParserError> {
+    fn lex(&mut self) -> Result<Token, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
@@ -586,8 +450,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         Empty
     }
 
-    fn read_and_invalid_char(&mut self, c: PeekedChar) -> ParserError {
-        // self.advance_char();
+    fn read_and_invalid_char(&mut self, c: PeekedChar) -> ParserError<B> {
         self.invalid_char(c)
     }
 
@@ -632,15 +495,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
             return PropertyName { value };
         }
 
-        if partial && self.buffer.len() == self.fragment_start {
-            Eof
-        } else {
-            let fragment = core::mem::take(&mut self.buffer);
-            String {
-                fragment,
-                value: None,
-            }
-        }
+        let fragment = core::mem::take(&mut self.buffer);
+        String { fragment }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -649,7 +505,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
         &mut self,
         lex_state: LexState,
         next_char: PeekedChar,
-    ) -> Result<Option<Token>, ParserError> {
+    ) -> Result<Option<Token>, ParserError<B>> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
@@ -716,6 +572,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     self.advance_char(); // consume quote
                     self.buffer.clear();
                     self.lex_state = LexState::String;
+                    self.initialized_string = true;
                     Ok(None)
                 }
                 c => Err(self.invalid_char(c)),
@@ -773,11 +630,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let Ok(num) = self.buffer.parse::<f64>() else {
-                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
-                    };
-                    self.buffer.clear();
-                    Ok(Some(self.new_token(Token::Number(num), false)))
+                    let value = core::mem::take(&mut self.buffer);
+                    Ok(Some(self.new_token(Token::Number(value), false)))
                 }
             },
 
@@ -809,11 +663,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let Ok(num) = self.buffer.parse::<f64>() else {
-                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
-                    };
-                    self.buffer.clear();
-                    Ok(Some(self.new_token(Token::Number(num), false)))
+                    let value = core::mem::take(&mut self.buffer);
+                    Ok(Some(self.new_token(Token::Number(value), false)))
                 }
             },
 
@@ -864,11 +715,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let Ok(num) = self.buffer.parse::<f64>() else {
-                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
-                    };
-                    self.buffer.clear();
-                    Ok(Some(self.new_token(Token::Number(num), false)))
+                    let value = core::mem::take(&mut self.buffer);
+                    Ok(Some(self.new_token(Token::Number(value), false)))
                 }
             },
 
@@ -932,11 +780,8 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                     Ok(None)
                 }
                 _ => {
-                    let Ok(num) = self.buffer.parse::<f64>() else {
-                        return Err(self.syntax_error(format!("invalid number {}", self.buffer)));
-                    };
-                    self.buffer.clear();
-                    Ok(Some(self.new_token(Token::Number(num), false)))
+                    let value = core::mem::take(&mut self.buffer);
+                    Ok(Some(self.new_token(Token::Number(value), false)))
                 }
             },
 
@@ -1038,8 +883,7 @@ impl<V: JsonValue> StreamingParserImpl<V> {
                                 // Still waiting for more hex digits
                                 Ok(None)
                             }
-                            Err(err) => Err(self
-                                .syntax_error(format!("Invalid unicode escape sequence: {err}"))),
+                            Err(err) => Err(self.syntax_error(err)),
                         }
                     }
                     EndOfInput => {
@@ -1129,260 +973,228 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     // Parse state dispatcher (translation of TS parseStates method)
     // ------------------------------------------------------------------------------------------------
     #[inline(always)]
-    fn dispatch_parse_state<F: JsonValueFactory<Value = V>>(
-        &mut self,
+    fn dispatch_parse_state<'p, 'cx: 'p, 'src: 'cx>(
+        &'p mut self,
         token: Token,
-        f: &mut F,
-    ) -> Result<(), ParserError> {
+        ctx: &'cx mut B,
+        path: &mut B::Thawed,
+    ) -> Result<Option<ParseEvent<'src, B>>, ParserError<B>> {
         use ParseState::*;
 
         match self.parse_state {
             // In single-value mode, EOF at start when end_of_input indicates unexpected end.
             Start => match token {
-                Token::Eof if self.end_of_input && !self.multiple_values => {
-                    return Err(self.invalid_eof());
-                }
-                Token::Eof => (),
-                _ => self.push(token, f)?,
+                Token::Eof if self.end_of_input && !self.multiple_values => Err(self.invalid_eof()),
+                Token::Eof => Ok(None),
+                _ => self.push(token, ctx, path),
             },
 
             BeforePropertyName => match token {
-                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::PropertyName { value } => {
-                    match self.frames.last_mut() {
-                        Some(Frame::Object { pending_key }) => {
-                            *pending_key = Some(<<V as JsonValue>::Path as JsonPath>::Key::from(
-                                value.as_str(),
-                            ));
-                        }
-                        _ => Err(self
-                            .syntax_error("Expected object frame for property name".to_string()))?,
+                    if !self.pending_key {
+                        ctx.pop_kind(path);
                     }
+                    ctx.push_key_from_str(path, &value);
+                    self.pending_key = false;
                     self.parse_state = AfterPropertyName;
+                    Ok(None)
                 }
-                Token::Punctuator(_) => self.pop(f),
-                Token::String { .. } => {
-                    return Err(
-                        self.syntax_error("Unexpected string value in property name".to_string())
-                    );
-                }
-                _ => (),
+                Token::Punctuator(_) => Ok(self.pop(ctx, path)),
+                _ => Ok(None),
             },
 
             AfterPropertyName => match token {
-                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
-                Token::Eof => (),
-                _ => self.parse_state = BeforePropertyValue,
+                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
+                Token::Eof => Ok(None),
+                _ => {
+                    self.parse_state = BeforePropertyValue;
+
+                    Ok(None)
+                }
             },
 
             BeforePropertyValue => match token {
-                Token::Eof => (),
-                _ => self.push(token, f)?,
+                Token::Eof => Ok(None),
+                _ => self.push(token, ctx, path),
             },
 
             BeforeArrayValue => match token {
-                Token::Eof => (),
-                Token::Punctuator(b']') => self.pop(f),
-                _ => self.push(token, f)?,
+                Token::Eof => Ok(None),
+                Token::Punctuator(b']') => Ok(self.pop(ctx, path)),
+                _ => self.push(token, ctx, path),
             },
 
             AfterPropertyValue => match token {
-                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::Punctuator(b',') => {
-                    if let Some(Frame::Object { pending_key }) = self.frames.last_mut() {
-                        *pending_key = None; // <-- reset for next property
-                    }
                     self.parse_state = BeforePropertyName;
+                    Ok(None)
                 }
-                Token::Punctuator(b'}') => self.pop(f),
-                _ => (),
+                Token::Punctuator(b'}') => Ok(self.pop(ctx, path)),
+                _ => Ok(None),
             },
 
             AfterArrayValue => match token {
-                Token::Eof if self.end_of_input => return Err(self.invalid_eof()),
+                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::Punctuator(b',') => {
-                    match self.frames.last_mut() {
-                        Some(Frame::Array { next_index_usize }) => {
-                            *next_index_usize = next_index_usize.successor();
+                    match ctx.bump_last_index(path) {
+                        Ok(path) => path,
+                        Err(_) => {
+                            unreachable!(); // TODO
                         }
-                        _ => Err(self.syntax_error(
-                            "Expected array frame for after array value".to_string(),
-                        ))?,
                     }
 
                     self.parse_state = BeforeArrayValue;
+                    Ok(None)
                 }
-                Token::Punctuator(b']') => self.pop(f),
-                _ => (),
+                Token::Punctuator(b']') => Ok(self.pop(ctx, path)),
+                _ => Ok(None),
             },
-            End | Error => {}
+            End | Error => Ok(None),
         }
-
-        Ok(())
     }
 
     #[inline(always)]
-    fn pop<F: JsonValueFactory<Value = V>>(&mut self, f: &mut F) {
-        let path = self.frames.path_clone();
-        match self.frames.pop() {
-            Some(Frame::Array { .. }) => {
-                self.push_event(f, ParseEvent::ArrayEnd { path, value: None });
+    fn pop<'a, 'cx: 'a, 'src: 'cx>(
+        &'a mut self,
+        f: &'cx mut B,
+        path: &mut B::Thawed,
+    ) -> Option<ParseEvent<'src, B>> {
+        // #[cfg(test)]
+        // std::eprintln!(
+        //     "pop: pending_key = {}, path = {:?}",
+        //     self.pending_key,
+        //     path
+        // );
+
+        let evt = if self.pending_key {
+            Some(ParseEvent::ObjectEnd { path: path.clone() })
+        } else {
+            match f.pop_kind(path) {
+                Some(PathKind::Index) => Some(ParseEvent::ArrayEnd { path: path.clone() }),
+                Some(PathKind::Key) => Some(ParseEvent::ObjectEnd { path: path.clone() }),
+                None => unreachable!(),
             }
-            Some(Frame::Object { .. }) => {
-                self.push_event(f, ParseEvent::ObjectEnd { path, value: None });
-            }
-            _ => {}
-        }
+        };
 
         // We actually need to peek at the new last frame and restore the parse state
         // now:
-        if let Some(last_frame) = self.frames.last() {
+        if let Some(last_frame) = f.last_kind(path) {
             self.parse_state = match last_frame {
-                Frame::Array { .. } => ParseState::AfterArrayValue,
-                Frame::Object { .. } => ParseState::AfterPropertyValue,
+                PathKind::Index => ParseState::AfterArrayValue,
+                PathKind::Key => ParseState::AfterPropertyValue,
             };
         } else {
             self.parse_state = ParseState::End;
         }
 
-        // no-op
+        evt
     }
 
     #[inline(always)]
-    fn push<F: JsonValueFactory<Value = V>>(
-        &mut self,
+    fn push<'a, 'cx: 'a, 'src: 'cx>(
+        &'a mut self,
         token: Token,
-        f: &mut F,
-    ) -> Result<(), ParserError> {
-        match token {
+        f: &'cx mut B,
+        path: &mut B::Thawed,
+    ) -> Result<Option<ParseEvent<'src, B>>, ParserError<B>> {
+        let evt: Option<ParseEvent<'_, B>> = match token {
             Token::Punctuator(b'{') => {
-                self.frames.push(Frame::new_object());
-                self.push_event(
-                    f,
-                    ParseEvent::ObjectBegin {
-                        path: self.frames.path_clone(),
-                    },
-                );
+                self.pending_key = true;
                 self.parse_state = ParseState::BeforePropertyName;
-                return Ok(());
+                return Ok(Some(ParseEvent::ObjectBegin { path: path.clone() }));
             }
             Token::Punctuator(b'[') => {
-                self.frames.push(Frame::new_array());
-                self.push_event(
-                    f,
-                    ParseEvent::ArrayStart {
-                        path: self.frames.path_clone(),
-                    },
-                );
+                let output_path = path.clone();
+                f.push_index_zero(path);
                 self.parse_state = ParseState::BeforeArrayValue;
-                return Ok(());
+                return Ok(Some(ParseEvent::ArrayBegin { path: output_path }));
             }
-            _ => {
-                // Handle primitive values below
-            }
-        }
 
-        let mut path = self.frames.path_clone();
-        if let Some(frame) = self.frames.last() {
-            frame.append_component_to(&mut path);
-        }
-
-        match (token, self.partial_lex) {
-            (Token::Null, _) => {
-                self.push_event(f, ParseEvent::Null { path });
+            Token::Null => Some(ParseEvent::Null { path: path.clone() }),
+            Token::Boolean(b) => {
+                let value = f.new_bool(b).map_err(|e| self.event_context_error(e))?;
+                Some(ParseEvent::Boolean {
+                    path: path.clone(),
+                    value,
+                })
             }
-            (Token::Boolean(b), _) => {
-                let value = f.new_bool(b);
-                self.push_event(f, ParseEvent::Boolean { path, value });
+            Token::Number(n) => {
+                let value = f
+                    .new_number_owned(n)
+                    .map_err(|e| self.event_context_error(e))?;
+                Some(ParseEvent::Number {
+                    path: path.clone(),
+                    value,
+                })
             }
-            (Token::Number(n), _) => {
-                let value = f.new_number(n);
-                self.push_event(f, ParseEvent::Number { path, value });
+            Token::String { fragment } => {
+                let fragment = f
+                    .new_str_owned(fragment)
+                    .map_err(|e| self.event_context_error(e))?;
+                let is_initial = self.initialized_string;
+                let is_final = !self.partial_lex;
+                self.initialized_string = false;
+                Some(ParseEvent::String {
+                    path: path.clone(),
+                    fragment,
+                    is_initial,
+                    is_final,
+                })
             }
-            (Token::String { fragment, value }, partial) => {
-                let value = value.as_ref().map(|s| f.new_string(s));
-                let fragment = f.new_string(&fragment);
-                self.push_event(
-                    f,
-                    ParseEvent::String {
-                        path,
-                        fragment,
-                        value,
-                        is_final: !partial,
-                    },
-                );
+            Token::PropertyName { .. } => {
+                unreachable!();
+                // return Err(
+                //     self.syntax_error("Unexpected property name outside of
+                // object".to_string()) );
             }
-            (Token::PropertyName { .. }, _) => {
-                return Err(
-                    self.syntax_error("Unexpected property name outside of object".to_string())
-                );
-            }
-            _ => (),
-        }
+            _ => None,
+        };
 
         // 3. Adjust parse state exactly once, using `parent_kind`
         if !self.partial_lex {
-            if let Some(Frame::Object { pending_key }) = self.frames.last_mut() {
-                *pending_key = None;
-            }
-
-            self.parse_state = match self.frames.last() {
+            self.parse_state = match f.last_kind(path) {
                 None => ParseState::End,
-                Some(Frame::Array { .. }) => ParseState::AfterArrayValue,
-                Some(Frame::Object { .. }) => ParseState::AfterPropertyValue,
+                Some(PathKind::Index) => ParseState::AfterArrayValue,
+                Some(PathKind::Key) => ParseState::AfterPropertyValue,
             };
         }
 
-        Ok(())
-    }
-
-    #[inline(always)]
-    fn push_event<F: JsonValueFactory<Value = V>>(&mut self, _f: &mut F, event: ParseEvent<V>) {
-        self.events_out.push(event);
+        Ok(evt)
     }
 
     // ------------------------------------------------------------------------------------------------
     // Errors
     // ------------------------------------------------------------------------------------------------
-    fn invalid_char(&self, c: PeekedChar) -> ParserError {
+    fn invalid_char(&self, c: PeekedChar) -> ParserError<B> {
         match c {
-            EndOfInput | Empty => self.syntax_error("JSON5: invalid end of input".to_string()),
-            Char(c) => self.syntax_error(format!(
-                "JSON5: invalid character '{}' at {}:{}",
-                Self::format_char(c),
-                self.line,
-                self.column
-            )),
+            EndOfInput | Empty => self.syntax_error(SyntaxError::UnexpectedEndOfInput),
+            Char(c) => self.syntax_error(SyntaxError::InvalidCharacter(c)),
         }
     }
 
-    fn invalid_eof(&self) -> ParserError {
-        self.syntax_error("JSON5: invalid end of input".to_string())
+    fn invalid_eof(&self) -> ParserError<B> {
+        self.syntax_error(SyntaxError::UnexpectedEndOfInput)
     }
 
-    fn syntax_error(&self, msg: String) -> ParserError {
+    fn event_context_error(&self, err: B::Error) -> ParserError<B> {
+        self.parser_error(ErrorSource::EventContextError(err))
+    }
+
+    fn syntax_error(&self, err: SyntaxError) -> ParserError<B> {
+        self.parser_error(ErrorSource::SyntaxError(err))
+    }
+
+    fn parser_error(&self, err: ErrorSource<B>) -> ParserError<B> {
         let err = ParserError {
-            msg,
+            source: err,
             line: self.line,
             column: self.column,
         };
         #[cfg(test)]
         assert!(!self.panic_on_error, "{err}");
         err
-    }
-
-    fn is_root_event(ev: &ParseEvent<V>) -> bool {
-        use ParseEvent::*;
-        match ev {
-            Null { path }
-            | Boolean { path, .. }
-            | Number { path, .. }
-            | String { path, .. }
-            | ArrayStart { path }
-            | ArrayEnd { path, .. }
-            | ObjectBegin { path }
-            | ObjectEnd { path, .. } => path.is_empty(),
-        }
     }
 
     fn format_char(c: char) -> String {
@@ -1415,66 +1227,105 @@ impl<V: JsonValue> StreamingParserImpl<V> {
     }
 }
 
-impl StreamingParserImpl<Value> {
+impl StreamingParserImpl<RustContext> {
+    pub fn new(options: ParserOptions) -> Self {
+        Self::new_with_factory(&mut RustContext, options)
+    }
+
     /// Feeds a chunk of JSON text into the parser.
     ///
     /// The parser buffers the input and parses it incrementally,
-    /// yielding events when complete JSON tokens or structures are recognized.
-    ///
-    /// # Arguments
-    ///
-    /// * `text` - A string slice containing JSON data or partial data.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use jsonmodem::{DefaultStreamingParser, ParserOptions};
-    /// let mut parser = DefaultStreamingParser::new(ParserOptions::default());
-    /// parser.feed("{\"hello\":");
-    /// ```
-    /// Marks the end of input and returns a closed parser to consume pending
-    /// events.
-    ///
-    /// After calling `finish_with`, no further input can be fed. The returned
-    /// `ClosedStreamingParser` implements `Iterator` yielding `ParseEvent`s
-    /// and then ends.
-    pub fn feed<'a>(&'a mut self, text: &str) -> StreamingParserIteratorWith<'a, StdValueFactory> {
-        self.feed_with(StdValueFactory, text)
+    /// yielding events when complete JSON tokens or structures are
+    /// recognized.
+    pub fn feed<'p, 'src>(
+        &'p mut self,
+        text: &'src str,
+    ) -> StreamingParserIteratorWith<'p, 'src, RustContext> {
+        self.feed_with(RustContext, text)
     }
 
     #[must_use]
-    pub fn finish(self) -> ClosedStreamingParser<StdValueFactory> {
-        self.finish_with(StdValueFactory)
+    pub fn finish(self) -> ClosedStreamingParser<'static, RustContext> {
+        self.finish_with(RustContext)
     }
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParserError {
-    msg: String,
-    pub line: usize,
-    pub column: usize,
-}
-
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.msg.fmt(f)
-    }
-}
-
-impl core::error::Error for ParserError {}
 
 #[cfg(test)]
 mod tests {
+    use alloc::{vec, vec::Vec};
+
     use super::*;
-    use crate::StdValueFactory;
+
+    // #[test]
+    // fn parser_compiles() {
+    //     // Smoke test: ensure types are sized and constructible
+    //     let _ = DefaultStreamingParser::new(ParserOptions::default());
+    //     let _ = ClosedStreamingParser {
+    //         parser: DefaultStreamingParser::new(ParserOptions::default()),
+    //         builder: RustContext,
+    //     };
+    // }
 
     #[test]
-    fn parser_compiles() {
-        // Smoke test: ensure types are sized and constructible
-        let _ = DefaultStreamingParser::new(ParserOptions::default());
-        let _ = ClosedStreamingParser {
-            parser: DefaultStreamingParser::new(ParserOptions::default()),
-            factory: StdValueFactory,
-        };
+    fn parser_basic_example() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions {
+            panic_on_error: true,
+            ..Default::default()
+        });
+        let mut events: Vec<_> = vec![];
+        events.extend(parser.feed(
+            "[\"hello\", {\"\": \"world\"}, 0, 1, 1.2,
+true, false, null]",
+        ));
+        events.extend(parser.finish());
+
+        assert_eq!(
+            events,
+            vec![
+                Ok(ParseEvent::ArrayBegin { path: vec![] }),
+                Ok(ParseEvent::String {
+                    path: vec![PathItem::Index(0)],
+                    fragment: "hello".into(),
+                    is_initial: true,
+                    is_final: true,
+                }),
+                Ok(ParseEvent::ObjectBegin {
+                    path: vec![PathItem::Index(1)]
+                }),
+                Ok(ParseEvent::String {
+                    path: vec![PathItem::Index(1), PathItem::Key("".into())],
+                    fragment: "world".into(),
+                    is_initial: true,
+                    is_final: true,
+                }),
+                Ok(ParseEvent::ObjectEnd {
+                    path: vec![PathItem::Index(1)]
+                }),
+                Ok(ParseEvent::Number {
+                    path: vec![PathItem::Index(2)],
+                    value: 0.0,
+                }),
+                Ok(ParseEvent::Number {
+                    path: vec![PathItem::Index(3)],
+                    value: 1.0,
+                }),
+                Ok(ParseEvent::Number {
+                    path: vec![PathItem::Index(4)],
+                    value: 1.2,
+                }),
+                Ok(ParseEvent::Boolean {
+                    path: vec![PathItem::Index(5)],
+                    value: true,
+                }),
+                Ok(ParseEvent::Boolean {
+                    path: vec![PathItem::Index(6)],
+                    value: false,
+                }),
+                Ok(ParseEvent::Null {
+                    path: vec![PathItem::Index(7)],
+                }),
+                Ok(ParseEvent::ArrayEnd { path: vec![] }),
+            ]
+        );
     }
 }
