@@ -467,6 +467,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
     }
 
+    /// Pushes input into the internal ring.
+    ///
+    /// Note: this currently copies fed bytes into `source` so the lexer can
+    /// operate incrementally. Borrowed event fragments are taken from the
+    /// iterator's `BatchView`, never from this ring.
     pub(crate) fn feed_str(&mut self, text: &str) {
         self.source.push(text);
     }
