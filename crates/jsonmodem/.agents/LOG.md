@@ -30,3 +30,8 @@ Branch: wip-codex-branch
 ## Next Steps
 - Push commits to `wip-codex-branch`.
 - Continue iterating if additional edge cases arise in CI/remote.
+
+## Update (2025-08-25 16:10:55Z)
+- Added tests: empty string, unicode escape (single/cross-batch), exponents/sign numbers.
+- Enhanced rustdoc in parser module for buffer roles, borrowing, and drop semantics.
+- All default-feature tests: 18 passing.
