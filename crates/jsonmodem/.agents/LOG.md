@@ -35,3 +35,8 @@ Branch: wip-codex-branch
 - Added tests: empty string, unicode escape (single/cross-batch), exponents/sign numbers.
 - Enhanced rustdoc in parser module for buffer roles, borrowing, and drop semantics.
 - All default-feature tests: 18 passing.
+
+## Update (2025-08-25 17:03:47Z)
+- Attempted fully zero-copy feed path; reverted to ring-backed lexing for correctness and simplicity.
+- Clarified docs on feed_str and borrowing guarantees.
+- All tests passing (18).
