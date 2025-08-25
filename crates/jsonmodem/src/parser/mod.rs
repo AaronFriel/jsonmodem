@@ -3,6 +3,47 @@
 //! This module provides the incremental streaming parser that processes input
 //! in chunks and emits `ParseEvent`s. The core does not build composite values
 //! or buffer full strings; adapters are responsible for those behaviors.
+//!
+//! Design: Borrow-First Tokens (zero-copy where possible)
+//! -----------------------------------------------
+//! Goal: avoid relying on an internal `buffer: String` when we can emit
+//! completely borrowed string/number slices that refer to the fed input
+//! chunk. We minimize allocations and copies for the common cases:
+//! - Strings without escapes that are fully contained in the current feed
+//!   batch are emitted as borrowed `&'src str` fragments.
+//! - Numbers that are fully contained in the current batch are emitted as
+//!   borrowed `&'src str` to be parsed/handled by the backend `EventCtx`.
+//! - When escaping is encountered (e.g., `\u` sequences) or when a token spans
+//!   across feeds, we fall back to buffering into the existing `buffer: String`.
+//!
+//! Key tradeoffs and choices:
+//! - Unicode/escape handling: encountering any escape switches to buffered mode
+//!   for that string fragment, because unescaped, decoded content differs from
+//!   the source slice.
+//! - Partial fragments: for strings we may emit partial fragments; if a partial
+//!   fragment contains no escapes and lies fully in the current batch, it is
+//!   borrowed. If not, we buffer.
+//! - Numbers: if a number begins in a previous batch or finishes only after we
+//!   see a delimiter in the next batch, we cannot return a single borrowed
+//!   slice. We buffer in those cases.
+//! - We never hand out references to the internal ring buffer; borrowed slices
+//!   are taken directly from the current input batch slice lifetime.
+//!
+//! Implementation outline:
+//! - Introduce an internal `LexToken<'src>` that can be either borrowed
+//!   (`&'src str`) or buffered (`String`) for strings and numbers.
+//! - Keep the public, test‑facing `Token` enum unchanged (owned strings). The
+//!   lexer produces a `LexToken<'src>` used by the parser to build
+//!   `ParseEvent<'src, B>`, and, when tests are enabled, it records a copy as a
+//!   public `Token` for round‑trip tests.
+//! - Track the current feed batch in the iterator (not in the parser) with its
+//!   character span `[start_pos, end_pos)` in the global stream. While lexing,
+//!   record token start positions; on token completion, if the entire token
+//!   range is within the current batch and the token had no escapes (strings),
+//!   emit a borrowed slice computed from the batch using character-to-byte index
+//!   mapping. Otherwise, emit buffered.
+//! - We only change this file; the ring buffer remains in use for stream
+//!   continuity and as a fallback for buffering.
 
 #![expect(clippy::single_match_else)]
 #![expect(clippy::struct_excessive_bools)]
@@ -52,6 +93,21 @@ pub(crate) enum Token {
     Null,
     Number(String),
     /// Must be one of: `{` `}` `[` `]` `:` `,`
+    Punctuator(u8),
+}
+
+// Internal lexer token with borrow-or-buffer payloads for strings and numbers.
+#[derive(Debug, Clone, Copy)]
+enum LexToken<'src> {
+    Eof,
+    PropertyNameBorrowed(&'src str),
+    PropertyNameBuffered,
+    StringBorrowed(&'src str),
+    StringBuffered,
+    Boolean(bool),
+    Null,
+    NumberBorrowed(&'src str),
+    NumberBuffered,
     Punctuator(u8),
 }
 
@@ -165,6 +221,10 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     unicode_escape_buffer: UnicodeEscapeBuffer,
     expected_literal: ExpectedLiteralBuffer,
     partial_lex: bool,
+    // Borrowing support
+    chars_pushed: usize,
+    token_start_pos: Option<usize>,
+    string_had_escape: bool,
 
     path: MaybeUninit<B::Frozen>,
     /// Indicates if a we've started parsing a string value and have not yet
@@ -190,11 +250,54 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     lexed_tokens: alloc::vec::Vec<Token>,
 }
 
+struct BatchView<'src> {
+    text: &'src str,
+    start_pos: usize,
+    end_pos: usize,
+}
+
+impl<'src> BatchView<'src> {
+    #[inline]
+    fn slice_chars(&self, start_chars: usize, end_chars: usize) -> &'src str {
+        // Convert char offsets within the batch to byte offsets
+        let mut start_byte = 0;
+        let mut end_byte = self.text.len();
+
+        if start_chars > 0 {
+            let mut count = 0;
+            for (i, _) in self.text.char_indices() {
+                if count == start_chars {
+                    start_byte = i;
+                    break;
+                }
+                count += 1;
+            }
+            if count < start_chars {
+                start_byte = self.text.len();
+            }
+        }
+
+        if end_chars < self.text.chars().count() {
+            let mut count = 0;
+            for (i, _) in self.text.char_indices() {
+                if count == end_chars {
+                    end_byte = i;
+                    break;
+                }
+                count += 1;
+            }
+        }
+
+        &self.text[start_byte..end_byte]
+    }
+}
+
 pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     parser: &'p mut StreamingParserImpl<B>,
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
+    batch: BatchView<'src>,
 }
 
 impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
@@ -211,7 +314,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, '
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path)
+            .next_event_with_and_batch(&mut self.factory, &mut self.path, Some(&self.batch))
     }
 }
 
@@ -248,7 +351,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path)
+            .next_event_with_and_batch(&mut self.factory, &mut self.path, None)
     }
 }
 
@@ -272,6 +375,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             buffer: String::new(),
             unicode_escape_buffer: UnicodeEscapeBuffer::new(),
             expected_literal: ExpectedLiteralBuffer::none(),
+            chars_pushed: 0,
+            token_start_pos: None,
+            string_had_escape: false,
 
             path: MaybeUninit::new(f.frozen_new()),
             initialized_string: false,
@@ -285,6 +391,22 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
     }
 
+    #[cfg(test)]
+    fn owned_from_lex_token<'src>(&self, t: LexToken<'src>) -> Token {
+        match t {
+            LexToken::Eof => Token::Eof,
+            LexToken::Punctuator(p) => Token::Punctuator(p),
+            LexToken::Null => Token::Null,
+            LexToken::Boolean(b) => Token::Boolean(b),
+            LexToken::StringBorrowed(s) => Token::String { fragment: s.to_string() },
+            LexToken::StringBuffered => Token::String { fragment: self.buffer.clone() },
+            LexToken::PropertyNameBorrowed(s) => Token::PropertyName { value: s.to_string() },
+            LexToken::PropertyNameBuffered => Token::PropertyName { value: self.buffer.clone() },
+            LexToken::NumberBorrowed(n) => Token::Number(n.to_string()),
+            LexToken::NumberBuffered => Token::Number(self.buffer.clone()),
+        }
+    }
+
     pub(crate) fn feed_str(&mut self, text: &str) {
         self.source.push(text);
     }
@@ -295,6 +417,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         mut factory: B,
         text: &'src str,
     ) -> StreamingParserIteratorWith<'p, 'src, B> {
+        // Track batch char span relative to the global stream.
+        let batch_len = text.chars().count();
+        let start_pos = self.chars_pushed;
+        let end_pos = start_pos + batch_len;
+        self.chars_pushed = end_pos;
         self.feed_str(text);
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
@@ -303,6 +430,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             factory,
             path,
             _marker: core::marker::PhantomData,
+            batch: BatchView { text, start_pos, end_pos },
         }
     }
 
@@ -344,7 +472,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         f: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal(f, path) {
+        match self.next_event_internal_with_batch(f, path, None) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -360,10 +488,28 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
     }
 
-    fn next_event_internal<'a, 'cx: 'a, 'src: 'cx>(
+    fn next_event_with_and_batch<'a, 'cx: 'a, 'src: 'cx>(
+        &mut self,
+        f: &'cx mut B,
+        path: &mut B::Thawed,
+        batch: Option<&BatchView<'src>>,
+    ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
+        match self.next_event_internal_with_batch(f, path, batch) {
+            None => None,
+            Some(Ok(event)) => Some(Ok(event)),
+            Some(Err(err)) => {
+                self.parse_state = ParseState::Error;
+                self.lex_state = LexState::Error;
+                Some(Err(err))
+            }
+        }
+    }
+
+    fn next_event_internal_with_batch<'a, 'cx: 'a, 'src: 'cx>(
         &'a mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
+        batch: Option<&BatchView<'src>>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
@@ -377,7 +523,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 self.path = MaybeUninit::new(f.frozen_new());
             }
 
-            let token = match self.lex() {
+            let token = match self.lex(batch) {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -389,7 +535,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     return Some(Err(err));
                 }
             };
-            let is_eof = token.is_eof();
+            let is_eof = matches!(token, LexToken::Eof);
             match self.dispatch_parse_state(token, f, path) {
                 Ok(Some(evt)) => {
                     return Some(Ok(evt));
@@ -419,16 +565,18 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex(&mut self) -> Result<Token, ParserError<B>> {
+    fn lex<'src>(&mut self, batch: Option<&BatchView<'src>>) -> Result<LexToken<'src>, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
 
         loop {
             let next_char = self.peek_char();
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char)? {
+            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, batch)? {
                 #[cfg(test)]
-                self.lexed_tokens.push(tok.clone());
+                {
+                    self.lexed_tokens.push(self.owned_from_lex_token(tok));
+                }
                 return Ok(tok);
             }
         }
@@ -468,44 +616,56 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline(always)]
-    fn new_token(&mut self, value: Token, partial: bool) -> Token {
+    fn new_token<'src>(&mut self, value: LexToken<'src>, partial: bool) -> LexToken<'src> {
         self.partial_lex = partial;
         value
     }
 
     #[inline(always)]
-    fn produce_string(&mut self, partial: bool) -> Token {
-        use Token::{Eof, PropertyName, String};
-
-        #[cfg(test)]
-        std::eprintln!(
-            "produce_string: partial = {}, buffer = {:?}",
-            partial,
-            self.buffer
-        );
-
+    fn produce_string<'src>(&mut self, partial: bool, batch: Option<&BatchView<'src>>) -> LexToken<'src> {
         self.partial_lex = partial;
+        let start = self.token_start_pos.take().unwrap_or(self.pos);
+        // Close-quote was just consumed; exclude it from the fragment
+        let end = self.pos.saturating_sub(1);
+        let try_borrow = if !self.string_had_escape {
+            self.borrow_slice(batch, start, end)
+        } else {
+            None
+        };
 
         if self.parse_state == ParseState::BeforePropertyName {
             if partial {
-                return Eof;
+                return LexToken::Eof;
             }
-
-            let value = core::mem::take(&mut self.buffer);
-            return PropertyName { value };
+            if let Some(s) = try_borrow { return LexToken::PropertyNameBorrowed(s); }
+            LexToken::PropertyNameBuffered
+        } else {
+            if let Some(s) = try_borrow { LexToken::StringBorrowed(s) } else { LexToken::StringBuffered }
         }
+    }
 
-        let fragment = core::mem::take(&mut self.buffer);
-        String { fragment }
+    fn produce_number<'src>(&mut self, batch: Option<&BatchView<'src>>) -> LexToken<'src> {
+        let start = self.token_start_pos.take().unwrap_or(self.pos);
+        let end = self.pos;
+        if let Some(s) = self.borrow_slice(batch, start, end) { LexToken::NumberBorrowed(s) } else { LexToken::NumberBuffered }
+    }
+
+    fn borrow_slice<'src>(&self, batch: Option<&BatchView<'src>>, start: usize, end: usize) -> Option<&'src str> {
+        let b = batch?;
+        if start < b.start_pos || end > b.end_pos || end < start { return None; }
+        let rel_start = start - b.start_pos;
+        let rel_end = end - b.start_pos;
+        Some(b.slice_chars(rel_start, rel_end))
     }
 
     #[expect(clippy::too_many_lines)]
     #[inline(always)]
-    fn lex_state_step(
+    fn lex_state_step<'src>(
         &mut self,
         lex_state: LexState,
         next_char: PeekedChar,
-    ) -> Result<Option<Token>, ParserError<B>> {
+        batch: Option<&BatchView<'src>>,
+    ) -> Result<Option<LexToken<'src>>, ParserError<B>> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
@@ -523,13 +683,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.advance_char();
                         Ok(None)
                     }
-                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                    Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                     EndOfInput => {
                         self.advance_char();
-                        Ok(Some(self.new_token(Token::Eof, false)))
+                        Ok(Some(self.new_token(LexToken::Eof, false)))
                     }
 
-                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char),
+                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch),
                 }
             }
 
@@ -537,7 +697,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Value => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 Char(c) if matches!(c, 'n' | 't' | 'f') => {
                     self.buffer.clear();
@@ -548,6 +708,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c @ '-') => {
+                    self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
                     self.advance_char();
                     self.buffer.push(c);
@@ -555,6 +716,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c @ '0') => {
+                    self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
                     self.advance_char();
                     self.buffer.push(c);
@@ -562,6 +724,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
+                    self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
                     self.advance_char();
                     self.buffer.push(c);
@@ -572,6 +735,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(); // consume quote
                     self.buffer.clear();
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
+                    self.string_had_escape = false;
                     self.initialized_string = true;
                     Ok(None)
                 }
@@ -580,7 +745,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             // -------------------------- LITERALS -----------------------------
             ValueLiteral => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         self.advance_char();
@@ -590,7 +755,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     literal_buffer::Step::Done(tok) => {
                         self.advance_char();
                         self.buffer.push(c);
-                        Ok(Some(self.new_token(tok, false)))
+                        let lt = match tok { Token::Null => LexToken::Null, Token::Boolean(b) => LexToken::Boolean(b), _ => unreachable!() };
+                        Ok(Some(self.new_token(lt, false)))
                     }
                     literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
                 },
@@ -599,7 +765,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             // -------------------------- NUMBERS -----------------------------
             Sign => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c @ '0') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -616,7 +782,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             Zero => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -630,13 +796,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    let tok = self.produce_number(batch);
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
             DecimalInteger => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -663,13 +829,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    let tok = self.produce_number(batch);
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
             DecimalPoint => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -694,7 +860,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             DecimalFraction => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -715,13 +881,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    let tok = self.produce_number(batch);
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
             DecimalExponent => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) if matches!(c, '+' | '-') => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -746,7 +912,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             DecimalExponentSign => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -765,7 +931,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             DecimalExponentInteger => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char();
                     self.buffer.push(c);
@@ -780,8 +946,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    let tok = self.produce_number(batch);
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
@@ -790,19 +956,20 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 // escape sequence
                 Char('\\') => {
                     self.advance_char();
+                    self.string_had_escape = true;
                     self.lex_state = LexState::StringEscape;
                     Ok(None)
                 }
                 // closing quote -> complete string
                 Char('"') => {
                     self.advance_char();
-                    Ok(Some(self.produce_string(false)))
+                    Ok(Some(self.produce_string(false, batch)))
                 }
                 Char(c @ '\0'..='\x1F') => {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
-                Empty => Ok(Some(self.produce_string(true))),
+                Empty => Ok(Some(self.produce_string(true, batch))),
                 Char(_c) => {
                     // Fast-path: copy as many consecutive non-escaped, non-terminating
                     // characters as possible in a single pass.
@@ -822,7 +989,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             StringEscape => match next_char {
-                Empty => Ok(Some(self.produce_string(true))),
+                Empty => Ok(Some(self.produce_string(true, batch))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     self.advance_char();
                     self.buffer.push(ch);
@@ -870,7 +1037,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             StringEscapeUnicode => {
                 match next_char {
-                    Empty => Ok(Some(self.produce_string(true))),
+                    Empty => Ok(Some(self.produce_string(true, batch))),
                     Char(c) if c.is_ascii_hexdigit() => {
                         self.advance_char();
                         match self.unicode_escape_buffer.feed(c) {
@@ -899,7 +1066,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Start => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 _ => {
                     self.lex_state = LexState::Value;
@@ -910,7 +1077,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             BeforePropertyName => match next_char {
                 Char('}') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(b'}'), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(b'}'), false)))
                 }
 
                 Char('"') => {
@@ -925,7 +1092,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             AfterPropertyName => match next_char {
                 Char(c @ ':') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -938,7 +1105,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             AfterPropertyValue => match next_char {
                 Char(c) if matches!(c, ',' | '}') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -946,7 +1113,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             BeforeArrayValue => match next_char {
                 Char(']') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(b']'), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(b']'), false)))
                 }
                 _ => {
                     self.lex_state = LexState::Value;
@@ -957,7 +1124,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             AfterArrayValue => match next_char {
                 Char(c) if matches!(c, ',' | ']') => {
                     self.advance_char();
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+                    Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
@@ -975,7 +1142,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     #[inline(always)]
     fn dispatch_parse_state<'p, 'cx: 'p, 'src: 'cx>(
         &'p mut self,
-        token: Token,
+        token: LexToken<'src>,
         ctx: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Result<Option<ParseEvent<'src, B>>, ParserError<B>> {
@@ -984,29 +1151,39 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         match self.parse_state {
             // In single-value mode, EOF at start when end_of_input indicates unexpected end.
             Start => match token {
-                Token::Eof if self.end_of_input && !self.multiple_values => Err(self.invalid_eof()),
-                Token::Eof => Ok(None),
+                LexToken::Eof if self.end_of_input && !self.multiple_values => Err(self.invalid_eof()),
+                LexToken::Eof => Ok(None),
                 _ => self.push(token, ctx, path),
             },
 
             BeforePropertyName => match token {
-                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
-                Token::PropertyName { value } => {
+                LexToken::Eof if self.end_of_input => Err(self.invalid_eof()),
+                LexToken::PropertyNameBorrowed(value) => {
                     if !self.pending_key {
                         ctx.pop_kind(path);
                     }
+                    ctx.push_key_from_str(path, value);
+                    self.pending_key = false;
+                    self.parse_state = AfterPropertyName;
+                    Ok(None)
+                }
+                LexToken::PropertyNameBuffered => {
+                    if !self.pending_key {
+                        ctx.pop_kind(path);
+                    }
+                    let value = core::mem::take(&mut self.buffer);
                     ctx.push_key_from_str(path, &value);
                     self.pending_key = false;
                     self.parse_state = AfterPropertyName;
                     Ok(None)
                 }
-                Token::Punctuator(_) => Ok(self.pop(ctx, path)),
+                LexToken::Punctuator(_) => Ok(self.pop(ctx, path)),
                 _ => Ok(None),
             },
 
             AfterPropertyName => match token {
-                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
-                Token::Eof => Ok(None),
+                LexToken::Eof if self.end_of_input => Err(self.invalid_eof()),
+                LexToken::Eof => Ok(None),
                 _ => {
                     self.parse_state = BeforePropertyValue;
 
@@ -1015,29 +1192,29 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             BeforePropertyValue => match token {
-                Token::Eof => Ok(None),
+                LexToken::Eof => Ok(None),
                 _ => self.push(token, ctx, path),
             },
 
             BeforeArrayValue => match token {
-                Token::Eof => Ok(None),
-                Token::Punctuator(b']') => Ok(self.pop(ctx, path)),
+                LexToken::Eof => Ok(None),
+                LexToken::Punctuator(b']') => Ok(self.pop(ctx, path)),
                 _ => self.push(token, ctx, path),
             },
 
             AfterPropertyValue => match token {
-                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
-                Token::Punctuator(b',') => {
+                LexToken::Eof if self.end_of_input => Err(self.invalid_eof()),
+                LexToken::Punctuator(b',') => {
                     self.parse_state = BeforePropertyName;
                     Ok(None)
                 }
-                Token::Punctuator(b'}') => Ok(self.pop(ctx, path)),
+                LexToken::Punctuator(b'}') => Ok(self.pop(ctx, path)),
                 _ => Ok(None),
             },
 
             AfterArrayValue => match token {
-                Token::Eof if self.end_of_input => Err(self.invalid_eof()),
-                Token::Punctuator(b',') => {
+                LexToken::Eof if self.end_of_input => Err(self.invalid_eof()),
+                LexToken::Punctuator(b',') => {
                     match ctx.bump_last_index(path) {
                         Ok(path) => path,
                         Err(_) => {
@@ -1048,7 +1225,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.parse_state = BeforeArrayValue;
                     Ok(None)
                 }
-                Token::Punctuator(b']') => Ok(self.pop(ctx, path)),
+                LexToken::Punctuator(b']') => Ok(self.pop(ctx, path)),
                 _ => Ok(None),
             },
             End | Error => Ok(None),
@@ -1095,32 +1272,40 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     #[inline(always)]
     fn push<'a, 'cx: 'a, 'src: 'cx>(
         &'a mut self,
-        token: Token,
+        token: LexToken<'src>,
         f: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Result<Option<ParseEvent<'src, B>>, ParserError<B>> {
         let evt: Option<ParseEvent<'_, B>> = match token {
-            Token::Punctuator(b'{') => {
+            LexToken::Punctuator(b'{') => {
                 self.pending_key = true;
                 self.parse_state = ParseState::BeforePropertyName;
                 return Ok(Some(ParseEvent::ObjectBegin { path: path.clone() }));
             }
-            Token::Punctuator(b'[') => {
+            LexToken::Punctuator(b'[') => {
                 let output_path = path.clone();
                 f.push_index_zero(path);
                 self.parse_state = ParseState::BeforeArrayValue;
                 return Ok(Some(ParseEvent::ArrayBegin { path: output_path }));
             }
 
-            Token::Null => Some(ParseEvent::Null { path: path.clone() }),
-            Token::Boolean(b) => {
+            LexToken::Null => Some(ParseEvent::Null { path: path.clone() }),
+            LexToken::Boolean(b) => {
                 let value = f.new_bool(b).map_err(|e| self.event_context_error(e))?;
                 Some(ParseEvent::Boolean {
                     path: path.clone(),
                     value,
                 })
             }
-            Token::Number(n) => {
+            LexToken::NumberBorrowed(n) => {
+                let value = f.new_number(n).map_err(|e| self.event_context_error(e))?;
+                Some(ParseEvent::Number {
+                    path: path.clone(),
+                    value,
+                })
+            }
+            LexToken::NumberBuffered => {
+                let n = core::mem::take(&mut self.buffer);
                 let value = f
                     .new_number_owned(n)
                     .map_err(|e| self.event_context_error(e))?;
@@ -1129,9 +1314,22 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     value,
                 })
             }
-            Token::String { fragment } => {
+            LexToken::StringBorrowed(fragment) => {
+                let fragment = f.new_str(fragment).map_err(|e| self.event_context_error(e))?;
+                let is_initial = self.initialized_string;
+                let is_final = !self.partial_lex;
+                self.initialized_string = false;
+                Some(ParseEvent::String {
+                    path: path.clone(),
+                    fragment,
+                    is_initial,
+                    is_final,
+                })
+            }
+            LexToken::StringBuffered => {
+                let s = core::mem::take(&mut self.buffer);
                 let fragment = f
-                    .new_str_owned(fragment)
+                    .new_str_owned(s)
                     .map_err(|e| self.event_context_error(e))?;
                 let is_initial = self.initialized_string;
                 let is_final = !self.partial_lex;
@@ -1143,11 +1341,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     is_final,
                 })
             }
-            Token::PropertyName { .. } => {
+            // Property names are consumed into the path and never emitted as events
+            LexToken::PropertyNameBorrowed(_) | LexToken::PropertyNameBuffered => {
                 unreachable!();
-                // return Err(
-                //     self.syntax_error("Unexpected property name outside of
-                // object".to_string()) );
             }
             _ => None,
         };
@@ -1278,6 +1474,13 @@ mod tests {
 true, false, null]",
         ));
         events.extend(parser.finish());
+
+        let Ok(ParseEvent::String { ref fragment, .. }) = events[1] else {
+            panic!("Expected string event");
+        };
+        let alloc::borrow::Cow::Borrowed(_) = fragment else {
+            panic!("Expected borrowed fragment");
+        };
 
         assert_eq!(
             events,
