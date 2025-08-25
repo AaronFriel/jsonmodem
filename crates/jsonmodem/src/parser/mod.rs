@@ -11,8 +11,10 @@
 //!
 //! Buffers and borrowing
 //! - `source: Buffer` is a small ring of unread characters that backs the
-//!   lexer. It is fed via `feed(...)` and consumed as the parser advances.
-//!   Note: input is copied here as chars for incremental lexing.
+//!   lexer. It contains only carry‑over data from previous iterations. Each
+//!   feed drains the ring first, then reads directly from the new batch.
+//!   The ring is appended to only when dropping the iterator with unread
+//!   batch content.
 //! - `buffer: String` is the per-token scratch buffer used when a token cannot
 //!   be borrowed (e.g., a string encounters an escape, or a number crosses a
 //!   batch). When emitting buffered events, content comes from this string.
@@ -29,10 +31,10 @@
 //!   to “put back” characters into `source: Buffer`.
 //!
 //! Notes on copying
-//! - Although the events may borrow from the input batch, we still copy input
-//!   into `source: Buffer` for the purposes of incremental lexing. Borrowed
-//!   event fragments never point into this buffer; they point into the batch
-//!   slice held by the iterator.
+//! - The parser does not pre‑copy the fed batch into the ring. While the ring
+//!   has unread characters, lexing occurs from it and produces owned data.
+//!   Once empty, lexing proceeds directly over the batch with borrowed
+//!   fragments where possible. Borrowed fragments never point into the ring.
 //!
 //! Guarantees per `next_event_with_and_batch`
 //! - If `buffer` is non-empty, we read from it and emit owned fragments.
@@ -951,10 +953,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c @ '-') => {
-                    self.current_token_buffered = false;
+                    let from_source = self.reading_from_source(batch);
+                    self.current_token_buffered = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
-                    let from_source = self.reading_from_source(batch);
                     self.batch_owned_buffer.clear();
                     self.advance_char(batch);
                     if from_source { self.buffer.push(c); } else { self.batch_owned_buffer.push(c); }
@@ -962,10 +964,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c @ '0') => {
-                    self.current_token_buffered = false;
+                    let from_source = self.reading_from_source(batch);
+                    self.current_token_buffered = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
-                    let from_source = self.reading_from_source(batch);
                     self.batch_owned_buffer.clear();
                     self.advance_char(batch);
                     if from_source { self.buffer.push(c); } else { self.batch_owned_buffer.push(c); }
@@ -973,10 +975,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
-                    self.current_token_buffered = false;
+                    let from_source = self.reading_from_source(batch);
+                    self.current_token_buffered = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.buffer.clear();
-                    let from_source = self.reading_from_source(batch);
                     self.batch_owned_buffer.clear();
                     self.advance_char(batch);
                     if from_source { self.buffer.push(c); } else { self.batch_owned_buffer.push(c); }
@@ -984,7 +986,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char('"') => {
-                    self.current_token_buffered = false;
+                    self.current_token_buffered = self.reading_from_source(batch);
                     self.batch_owned_buffer.clear();
                     self.advance_char(batch); // consume quote
                     self.buffer.clear();
@@ -1259,7 +1261,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.lex_state = LexState::StringEscape;
                         Ok(None)
                     } else {
-                        // Commit to buffered mode for the remainder of this string value
+                        // Commit to buffered mode for the remainder of this string value.
+                        // Preload owned fragment with content up to the backslash so
+                        // `produce_string(true, ...)` can return the partial owned fragment.
+                        if let Some(b) = batch {
+                            if let Some(start) = self.token_start_pos {
+                                let start_c = start.saturating_sub(b.start_pos).clamp(0, b.end_pos - b.start_pos);
+                                let end_c = self.batch_read_chars.min(b.end_pos - b.start_pos);
+                                if end_c > start_c {
+                                    let s = b.slice_chars(start_c, end_c);
+                                    self.batch_owned_buffer.push_str(s);
+                                }
+                            }
+                        }
                         self.current_token_buffered = true;
                         self.string_had_escape = true;
                         // Emit the fragment accumulated so far (partial)
@@ -1296,9 +1310,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.column += copied;
                         self.pos += copied;
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, |ch| {
-                            ch != '\\' && ch != '"' && ch >= '\u{20}'
-                        });
+                        if self.current_token_buffered {
+                            let _ = self.copy_from_batch_while_to_owned(batch, |ch| {
+                                ch != '\\' && ch != '"' && ch >= '\u{20}'
+                            });
+                        } else {
+                            let _ = self.copy_while_from(batch, |ch| {
+                                ch != '\\' && ch != '"' && ch >= '\u{20}'
+                            });
+                        }
                     }
 
                     Ok(None)
@@ -1408,6 +1428,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(batch);
                     self.buffer.clear();
                     self.lex_state = LexState::String;
+                    // Track start of the property name content
+                    self.token_start_pos = Some(self.pos);
+                    self.string_had_escape = false;
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -2105,6 +2128,84 @@ true, false, null]",
         match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value + 0.01).abs() < 1e-12), _ => panic!() }
         match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value - 3000.0).abs() < 1e-12), _ => panic!() }
         match it.next().unwrap().unwrap() { ParseEvent::ArrayEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn number_borrowed_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("[123]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert_eq!(value, 123.0), _ => panic!() }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn number_fraction_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("[12.345]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value - 12.345).abs() < 1e-12), _ => panic!() }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn number_exponent_cross_batch() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("[");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        drop(it);
+        let it = parser.feed("1e");
+        // No number yet, drop to cross batch
+        drop(it);
+        let mut it = parser.feed("6]");
+        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert_eq!(value, 1_000_000.0), _ => panic!() }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn property_name_borrowed_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"{"k": 0}"#);
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
+            assert_eq!(value, 0.0);
+            assert_eq!(path, vec![PathItem::Key("k".into())]);
+        } _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn property_name_unicode_escape_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"{"A\u0042": 0}"#);
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
+            assert_eq!(value, 0.0);
+            assert_eq!(path, vec![PathItem::Key("AB".into())]);
+        } _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn property_name_unicode_escape_cross_batches() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("{");
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
+        drop(it);
+        let it = parser.feed(r#""A\u"#);
+        drop(it);
+        let mut it = parser.feed(r#"0042": 0}"#);
+        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
+            assert_eq!(value, 0.0);
+            assert_eq!(path, vec![PathItem::Key("AB".into())]);
+        } _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
         assert!(it.next().is_none());
     }
 
