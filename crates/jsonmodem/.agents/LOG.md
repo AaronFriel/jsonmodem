@@ -83,3 +83,33 @@ Branch: wip-codex-branch
     - `chars_pushed` -> `total_chars_pushed`
   - Updated all call sites, docs, and merge helper to use new names.
   - No functional changes; tests remain green (34 passing).
+
+## Update (2025-08-26 02:30:00Z)
+- Iterator-owns-batch-state refactor: moved per-feed batch progress from the parser to the iterator. Threaded `&BatchView` + `&mut BatchCursor` through `lex/peek/advance` and copy helpers. Kept default behavior, all tests green.
+- Decode options per DESIGN.md (default features only):
+  - Added `ParserOptions::{decode_mode, allow_uppercase_u, allow_short_hex}` and `DecodeMode::{StrictUnicode, SurrogatePreserving, ReplaceInvalid}`.
+  - Implemented `allow_uppercase_u` and `ReplaceInvalid` paths; `SurrogatePreserving` degrades to `ReplaceInvalid` under UTF‑8 output (documented + tested).
+  - Added comprehensive decode tests covering valid pairs, emoji literal, lone surrogates, reversed pairs, boundaries, truncated escapes, mixed-case hex, uppercase `\U`, and split-pair across chunks. All passing.
+
+### Repository State
+- Default features build and test cleanly; all parser tests pass locally with the new decode suite. The parser now:
+  - Uses a borrow-first design with a ring buffer for carry‑over only; borrowed slices never reference the ring.
+  - Emits owned fragments when escapes occur or when tokens span ring/batch boundaries.
+  - Reads batch input via a byte cursor to avoid repeated scans; tracks chars/bytes for correct line/column/pos accounting.
+  - Joins UTF‑16 surrogate pairs across chunk boundaries; handles unpaired surrogates per `decode_mode`.
+  - Places per‑feed batch state on the iterator; the parser retains only long‑lived state and scratch buffers.
+
+### What’s Next (high value improvements)
+- Surrogate‑preserving output backend: add an alternate `EventCtx` (feature‑gated) that can represent unpaired surrogates (e.g., WTF‑8 wrapper or `Vec<u16>`). Promote `DecodeMode::SurrogatePreserving` to true preservation when this backend is active.
+- Implement `allow_short_hex` (compat): optional acceptance of fewer than 4 hex digits after `\u` with clear error semantics and tests; remains off by default.
+- Unify copy helpers: introduce a minimal sink abstraction to consolidate `copy_while_from` and `copy_from_batch_while_to_owned` without losing clarity.
+- Move `owned_batch_buffer` to the iterator (like the cursor) to further minimize parser state.
+- Documentation sweep: align top‑of‑file docs with current field names and iterator‑owned batch state; add a concise “design invariants” section.
+
+### Notes for Future Contributors
+- Borrowing model: borrowed string/number slices always originate from the current feed batch; the ring buffer is never exposed by reference. Any time a token can’t be represented as a single contiguous batch slice (escapes, boundary splits), we switch that token to owned mode (`token_is_owned = true`) until completion.
+- `token_is_owned` is not equivalent to `!source.is_empty()`: it is a per‑token commitment that remains true once set (e.g., after the first escape), regardless of where subsequent characters come from.
+- Iterator `Drop` semantics are critical: it copies any unread portion of the active batch into the ring and preserves any in‑flight token prefix so parsing can resume correctly next feed.
+- UTF‑8 backend specifics: unpaired surrogates cannot be represented in `Cow<str>`. Consequently, `DecodeMode::SurrogatePreserving` intentionally degrades to `ReplaceInvalid` in the default backend. When adding a surrogate‑capable backend, revisit these branches and tests.
+- Indices and counters: we maintain both character and byte offsets. All position/line/column updates must remain consistent across ring and batch reads. Prefer using the byte cursor (`bytes_consumed`) + `chars()` for iteration to avoid re‑scanning.
+- Tests live close to the code in `src/parser/mod.rs` for tight feedback. When extending behavior, add tests that exercise both ring‑first and batch‑borrow paths, including cross‑batch boundaries and iterator drops mid‑token.

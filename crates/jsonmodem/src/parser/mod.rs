@@ -112,7 +112,7 @@ pub use error::{ErrorSource, ParserError, SyntaxError};
 use escape_buffer::UnicodeEscapeBuffer;
 pub use event_builder::EventBuilder;
 use literal_buffer::ExpectedLiteralBuffer;
-pub use options::ParserOptions;
+pub use options::{DecodeMode, ParserOptions};
 pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
@@ -2423,6 +2423,20 @@ true, false, null]",
     }
 
     #[test]
+    fn design_valid_pair_smile() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\\uDE0A\"]").unwrap();
+        assert_eq!(s, "😊");
+    }
+
+    #[test]
+    fn design_emoji_literal() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"😀\"]").unwrap();
+        assert_eq!(s, "😀");
+    }
+
+    #[test]
     fn design_lone_high_strict_error_replaceinvalid_ok() {
         // Strict: error
         let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
@@ -2464,6 +2478,144 @@ true, false, null]",
         let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
         let s = parse_single_string(opts, "[\"\\uDE00\\uD83D\"]").unwrap();
         assert_eq!(s, "��");
+    }
+
+    #[test]
+    fn design_high_high() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83D\\uD83D\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: ��
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\\uD83D\"]").unwrap();
+        assert_eq!(s, "��");
+    }
+
+    #[test]
+    fn design_low_low() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uDE00\\uDE00\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: ��
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uDE00\\uDE00\"]").unwrap();
+        assert_eq!(s, "��");
+    }
+
+    #[test]
+    fn design_nul_escape() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\u0000\"]").unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.chars().next().unwrap(), '\u{0000}');
+    }
+
+    #[test]
+    fn design_boundary_high_min_max_low_min_max() {
+        // Strict: all errors
+        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
+            let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+            let mut parser = DefaultStreamingParser::new(opts);
+            let text = &format!("[\"{esc}\"]");
+            let mut it = parser.feed(text);
+            assert!(it.next().is_some());
+            assert!(it.next().unwrap().is_err());
+        }
+        // ReplaceInvalid: all map to U+FFFD
+        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
+            let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+            let s = parse_single_string(opts, &format!("[\"{esc}\"]")).unwrap();
+            assert_eq!(s, "�");
+        }
+    }
+
+    #[test]
+    fn design_truncated_escape_length() {
+        // "\\uD83" (short sequence) -> invalid escape
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+    }
+
+    // SurrogatePreserving mode tests: in our UTF-8 backend this degrades to
+    // ReplaceInvalid per DESIGN.md, so outcomes should match ReplaceInvalid.
+
+    #[test]
+    fn design_sp_lone_high_degrades_to_replacement() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\"]").unwrap();
+        assert_eq!(s, "�");
+    }
+
+    #[test]
+    fn design_sp_lone_low_degrades_to_replacement() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uDE00\"]").unwrap();
+        assert_eq!(s, "�");
+    }
+
+    #[test]
+    fn design_sp_reversed_pair_degrades_to_double_replacement() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uDE00\\uD83D\"]").unwrap();
+        assert_eq!(s, "��");
+    }
+
+    #[test]
+    fn design_sp_high_then_letter_degrades() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\\u0041\"]").unwrap();
+        assert_eq!(s, "�A");
+    }
+
+    #[test]
+    fn design_sp_letter_then_low_degrades() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\u0041\\uDE00\"]").unwrap();
+        assert_eq!(s, "A�");
+    }
+
+    #[test]
+    fn design_sp_boundary_min_max_degrades() {
+        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
+            let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+            let s = parse_single_string(opts, &format!("[\"{}\"]", esc)).unwrap();
+            assert_eq!(s, "�");
+        }
+    }
+
+    #[test]
+    fn design_sp_pair_split_across_stream_chunks_joins() {
+        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83D");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        drop(it);
+        let mut it = parser.feed("\\uDE00\"]");
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_final, .. } => {
+                assert_eq!(fragment, Cow::<str>::Owned("😀".to_string()));
+                assert!(is_final);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn design_sp_uppercase_U_escape_when_allowed() {
+        let opts = ParserOptions { allow_uppercase_u: true, decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\UD83D\\UDE00\"]").unwrap();
+        assert_eq!(s, "😀");
     }
 
     #[test]
