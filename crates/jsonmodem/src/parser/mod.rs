@@ -272,6 +272,14 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     chars_pushed: usize,
     token_start_pos: Option<usize>,
     string_had_escape: bool,
+    // Tracks whether the current token must be emitted as owned (buffered).
+    // This is intentionally NOT equivalent to `!self.source.is_empty()`. Even
+    // when parsing directly from the current batch (ring is empty), we switch
+    // to owned mode for this token if:
+    // - an escape is encountered inside a string (decoded content differs), or
+    // - the token spans ring→batch or otherwise cannot be borrowed as a single
+    //   contiguous slice from the active batch.
+    // Once set for a token, this remains true until the token finishes.
     current_token_buffered: bool,
     // How many characters have been consumed from the active batch
     batch_read_chars: usize,
@@ -288,6 +296,12 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     pending_key: bool,
 
     /// Options
+
+    /// Whether to allow any Unicode whitespace between JSON values.
+    /// When `false` (default), only JSON's four whitespace code points are
+    /// accepted: space (U+0020), line feed (U+000A), carriage return (U+000D),
+    /// and horizontal tab (U+0009).
+    allow_unicode_whitespace: bool,
 
     /// Allow multiple JSON values in a single input (support transition from
     /// end state to a new value start state)
@@ -462,6 +476,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             initialized_string: false,
             pending_key: false,
 
+            allow_unicode_whitespace: options.allow_unicode_whitespace,
             multiple_values: options.allow_multiple_json_values,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
@@ -912,28 +927,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
-            Default => {
-                match next_char {
-                    Char(
-                        '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n' | '\r'
-                        | '\u{2028}' | '\u{2029}',
-                    ) => {
-                        // Skip whitespace
-                        self.advance_char(batch);
-                        Ok(None)
-                    }
-                    Char(c) if c.is_whitespace() => {
-                        self.advance_char(batch);
-                        Ok(None)
-                    }
-                    Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
-                    EndOfInput => {
-                        self.advance_char(batch);
-                        Ok(Some(self.new_token(LexToken::Eof, false)))
-                    }
-
-                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch),
+            Default => match next_char {
+                // Strict JSON whitespace (always allowed)
+                Char(' ' | '\n' | '\r' | '\t') => {
+                    self.advance_char(batch);
+                    Ok(None)
                 }
+                // Additional Unicode whitespace (only when enabled)
+                Char(c) if self.allow_unicode_whitespace && c.is_whitespace() => {
+                    self.advance_char(batch);
+                    Ok(None)
+                }
+                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
+                EndOfInput => {
+                    self.advance_char(batch);
+                    Ok(Some(self.new_token(LexToken::Eof, false)))
+                }
+                Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch),
             }
 
             // -------------------------- VALUE entry --------------------------
@@ -2207,6 +2217,90 @@ true, false, null]",
         } _ => panic!() }
         match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
         assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn string_multibyte_borrow_no_escape_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("[\"€🙂\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert!(matches!(fragment, alloc::borrow::Cow::Borrowed(_)));
+                assert_eq!(fragment, "€🙂");
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn string_multibyte_cross_batches_and_drop() {
+        // First feed contains opening quote and the first multibyte char
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let it = parser.feed("[\"€");
+        drop(it); // drop mid-string; remainder will be buffered/owned
+        let mut it = parser.feed("🙂\"]");
+        // ArrayBegin event from previous feed is still pending
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        // After drop, the parser coalesces the already-read part with the
+        // remainder into a single owned fragment upon completion.
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert!(matches!(fragment, alloc::borrow::Cow::Owned(_)));
+                assert_eq!(fragment, "€🙂");
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            _ => panic!(),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        // No more events in this feed
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn property_name_multibyte_key_single_chunk() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed(r#"{"🚀": 1}"#);
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
+        match it.next().unwrap().unwrap() {
+            ParseEvent::Number { path, value } => {
+                assert_eq!(value, 1.0);
+                assert_eq!(path, vec![PathItem::Key("🚀".into())]);
+            }
+            _ => panic!(),
+        }
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn unicode_whitespace_rejected_by_default() {
+        // By default, only JSON's 4 whitespace code points are allowed.
+        // NO-BREAK SPACE (U+00A0) should be rejected.
+        let mut parser = DefaultStreamingParser::new(ParserOptions::default());
+        let mut it = parser.feed("\u{00A0}[]");
+        let first = it.next().unwrap();
+        match first {
+            Err(ParserError { source: ErrorSource::SyntaxError(SyntaxError::InvalidCharacter(c)), .. }) => {
+                assert_eq!(c, '\u{00A0}');
+            }
+            other => panic!("expected InvalidCharacter error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unicode_whitespace_accepted_when_enabled() {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { allow_unicode_whitespace: true, ..Default::default() });
+        // Include various Unicode whitespace around a trivial array
+        let input = "\u{00A0}\u{2028}[ ]\u{2029}\u{FEFF}";
+        let mut it = parser.feed(input);
+        match it.next().unwrap().unwrap() { ParseEvent::ArrayBegin { .. } => {}, _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ArrayEnd { .. } => {}, _ => panic!() }
     }
 
 }

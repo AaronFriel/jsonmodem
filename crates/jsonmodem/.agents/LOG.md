@@ -50,3 +50,10 @@ Branch: wip-codex-branch
 - Added Owned token paths and ensured `self.buffer` is mutated only when reading from the ring.
 - Iterator `Drop` now appends unread batch to the ring and preserves in-flight token prefix.
 - Fixed off-by-one and iterator-skip bugs in batch copy loops; all tests (18) pass.
+
+## Update (2025-08-26 00:00:00Z)
+- Honored `ParserOptions::allow_unicode_whitespace` in the core lexer: by default only JSON's four whitespace chars are accepted; broader `char::is_whitespace()` is gated by the option.
+- Added tests for multibyte strings (single chunk, cross-batch with drop) and multibyte property names to validate UTF-8 handling and borrowed/owned fragment behavior.
+- Added tests for Unicode whitespace rejection by default and acceptance when enabled.
+- Documented `current_token_buffered` semantics in-code to clarify why it cannot be replaced by `!self.source.is_empty()` (escapes and cross-batch tokens still force owned mode).
+- All default-feature tests pass locally (`cargo test`): 29 passing in parser module, overall green.
