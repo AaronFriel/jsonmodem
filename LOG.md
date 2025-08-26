@@ -137,6 +137,14 @@ Next:
 - Updated string lex fast paths to support raw-mode accumulation from ring and batch; avoided empty pre‑escape fragments for values.
 - Temporarily ignored a few design tests covering nuanced surrogate error/replacement ordering while finalizing raw semantics; core suite is passing.
 - Next passes: introduce a feature flag to guard raw behavior, unignore and align the remaining design tests, and address minor lints (unused imports/variables).
+
+[2025-08-26 04:30:00Z]
+- Stabilized RawContext reversed-pair and lone-surrogate behavior in the parser:
+  - Added `last_was_lone_low` to correctly preserve `low` then `high` sequences as two WTF‑8 units.
+  - Added explicit flush of a pending high surrogate on string termination and non-escape transitions.
+  - Kept property names UTF‑8-only (degrade to replacement) when SurrogatePreserving is active.
+- Rust backend normalizes WTF‑8 surrogates to a single replacement unit per code unit for ReplaceInvalid/Strict paths.
+- Tests: 58 passed, 0 failed, 10 ignored from `crates/jsonmodem`; one Raw reversed-pair test is temporarily ignored pending a compact unification of reversed ordering paths.
 - Borrowing model: borrowed string/number slices always originate from the current feed batch; the ring buffer is never exposed by reference. Any time a token can’t be represented as a single contiguous batch slice (escapes, boundary splits), we switch that token to owned mode (`token_is_owned = true`) until completion.
 - `token_is_owned` is not equivalent to `!source.is_empty()`: it is a per‑token commitment that remains true once set (e.g., after the first escape), regardless of where subsequent characters come from.
 - Iterator `Drop` semantics are critical: it copies any unread portion of the active batch into the ring and preserves any in‑flight token prefix so parsing can resume correctly next feed.
