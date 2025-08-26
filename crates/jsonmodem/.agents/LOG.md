@@ -72,3 +72,14 @@ Branch: wip-codex-branch
 - Fixed property-name cross-batch copying: avoid clearing `token_start_pos` on partial property-name strings so `Drop` copies the in-flight portion into the ring buffer.
 - Added tests for surrogate pairs (single chunk and cross-batch) and for multibyte property names across feeds; extended general multibyte tests.
 - All tests pass under default features (34 tests in parser).
+
+## Update (2025-08-26 01:40:00Z)
+- Simplification pass:
+  - Introduced `BatchCursor { chars_consumed, bytes_consumed }` to group batch progress fields.
+  - Renamed fields for clarity:
+    - `buffer` -> `token_buffer`
+    - `current_token_buffered` -> `token_is_owned`
+    - `batch_owned_buffer` -> `owned_batch_buffer`
+    - `chars_pushed` -> `total_chars_pushed`
+  - Updated all call sites, docs, and merge helper to use new names.
+  - No functional changes; tests remain green (34 passing).
