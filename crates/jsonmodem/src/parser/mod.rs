@@ -382,6 +382,7 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
     batch: BatchView<'src>,
+    cursor: BatchCursor,
 }
 
 impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
@@ -409,7 +410,7 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
 
         // Push unread portion of this batch into the ring buffer so further
         // parsing proceeds from `self.source`.
-        let consumed = self.parser.batch_cursor.chars_consumed.min(self.batch.end_pos - self.batch.start_pos);
+        let consumed = self.cursor.chars_consumed.min(self.batch.end_pos - self.batch.start_pos);
         if consumed < (self.batch.end_pos - self.batch.start_pos) {
             let rest = self.batch.slice_chars(consumed, self.batch.end_pos - self.batch.start_pos);
             self.parser.source.push(rest);
@@ -422,7 +423,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, '
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with_and_batch(&mut self.factory, &mut self.path, Some(&self.batch))
+            .next_event_with_and_batch(&mut self.factory, &mut self.path, Some(&self.batch), Some(&mut self.cursor))
     }
 }
 
@@ -459,7 +460,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with_and_batch(&mut self.factory, &mut self.path, None)
+            .next_event_with_and_batch(&mut self.factory, &mut self.path, None, None)
     }
 }
 
@@ -553,6 +554,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             path,
             _marker: core::marker::PhantomData,
             batch: BatchView { text, start_pos, end_pos, len_chars: batch_len },
+            cursor: BatchCursor::default(),
         }
     }
 
@@ -594,7 +596,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         f: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal_with_batch(f, path, None) {
+        match self.next_event_internal_with_batch(f, path, None, None) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -615,8 +617,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         f: &'cx mut B,
         path: &mut B::Thawed,
         batch: Option<&BatchView<'src>>,
+        cursor: Option<&'a mut BatchCursor>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal_with_batch(f, path, batch) {
+        match self.next_event_internal_with_batch(f, path, batch, cursor) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -632,6 +635,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         f: &'cx mut B,
         path: &mut B::Thawed,
         batch: Option<&BatchView<'src>>,
+        mut cursor: Option<&'a mut BatchCursor>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
@@ -645,7 +649,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 self.path = MaybeUninit::new(f.frozen_new());
             }
 
-            let token = match self.lex(batch) {
+            let token = match self.lex(batch, cursor.as_deref_mut()) {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -687,14 +691,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex<'src>(&mut self, batch: Option<&BatchView<'src>>) -> Result<LexToken<'src>, ParserError<B>> {
+    fn lex<'src>(&mut self, batch: Option<&BatchView<'src>>, mut cursor: Option<&mut BatchCursor>) -> Result<LexToken<'src>, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
 
         loop {
-            let next_char = self.peek_char(batch);
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, batch)? {
+            let next_char = self.peek_char(batch, cursor.as_deref());
+            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, batch, cursor.as_deref_mut())? {
                 #[cfg(test)]
                 {
                     self.lexed_tokens.push(self.owned_from_lex_token(tok.clone()));
@@ -708,13 +712,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     /// buffer depleted, `Some(EOI)` for forced end‑of‑input, else
     /// `Some(ch)`.
     #[inline(always)]
-    fn peek_char<'src>(&mut self, batch: Option<&BatchView<'src>>) -> PeekedChar {
+    fn peek_char<'src>(&mut self, batch: Option<&BatchView<'src>>, cursor: Option<&BatchCursor>) -> PeekedChar {
         if let Some(ch) = self.source.peek() {
             return Char(ch);
         }
-        if let Some(b) = batch {
-            if self.batch_cursor.bytes_consumed < b.text.len() {
-                if let Some(ch) = b.text[self.batch_cursor.bytes_consumed..].chars().next() {
+        if let (Some(b), Some(cursor)) = (batch, cursor) {
+            if cursor.bytes_consumed < b.text.len() {
+                if let Some(ch) = b.text[cursor.bytes_consumed..].chars().next() {
                     return Char(ch);
                 }
             }
@@ -730,7 +734,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline(always)]
-    fn advance_char<'src>(&mut self, batch: Option<&BatchView<'src>>) {
+    fn advance_char<'src>(&mut self, batch: Option<&BatchView<'src>>, cursor: Option<&mut BatchCursor>) {
         if let Some(ch) = self.source.next() {
             if ch == '\n' {
                 self.line += 1;
@@ -741,8 +745,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             self.pos += 1;
             return;
         }
-        if let Some(b) = batch {
-            if let Some(ch) = b.text[self.batch_cursor.bytes_consumed..].chars().next() {
+        if let (Some(b), Some(cursor)) = (batch, cursor) {
+            if let Some(ch) = b.text[cursor.bytes_consumed..].chars().next() {
                 if ch == '\n' {
                     self.line += 1;
                     self.column = 1;
@@ -750,8 +754,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.column += 1;
                 }
                 self.pos += 1;
-                self.batch_cursor.chars_consumed += 1;
-                self.batch_cursor.bytes_consumed += ch.len_utf8();
+                cursor.chars_consumed += 1;
+                cursor.bytes_consumed += ch.len_utf8();
                 return;
             }
         }
@@ -763,17 +767,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline]
-    fn copy_while_from<'src, F>(&mut self, batch: Option<&BatchView<'src>>, mut predicate: F) -> usize
+    fn copy_while_from<'src, F>(&mut self, batch: Option<&BatchView<'src>>, cursor: Option<&mut BatchCursor>, mut predicate: F) -> usize
     where
         F: FnMut(char) -> bool,
     {
         if self.source.peek().is_some() {
             return self.source.copy_while(&mut self.token_buffer, &mut predicate);
         }
-
-        let Some(b) = batch else { return 0; };
+        let (Some(b), Some(cursor)) = (batch, cursor) else { return 0; };
         let mut copied = 0;
-        for ch in b.text[self.batch_cursor.bytes_consumed..].chars() {
+        for ch in b.text[cursor.bytes_consumed..].chars() {
             if predicate(ch) {
                 self.pos += 1;
                 if ch == '\n' {
@@ -782,8 +785,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 } else {
                     self.column += 1;
                 }
-                self.batch_cursor.chars_consumed += 1;
-                self.batch_cursor.bytes_consumed += ch.len_utf8();
+                cursor.chars_consumed += 1;
+                cursor.bytes_consumed += ch.len_utf8();
                 copied += 1;
             } else {
                 break;
@@ -793,13 +796,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline]
-    fn copy_from_batch_while_to_owned<'src, F>(&mut self, batch: Option<&BatchView<'src>>, mut predicate: F) -> usize
+    fn copy_from_batch_while_to_owned<'src, F>(&mut self, batch: Option<&BatchView<'src>>, cursor: Option<&mut BatchCursor>, mut predicate: F) -> usize
     where
         F: FnMut(char) -> bool,
     {
-        let Some(b) = batch else { return 0; };
+        let (Some(b), Some(cursor)) = (batch, cursor) else { return 0; };
         let mut copied = 0;
-        for ch in b.text[self.batch_cursor.bytes_consumed..].chars() {
+        for ch in b.text[cursor.bytes_consumed..].chars() {
             if predicate(ch) {
                 self.owned_batch_buffer.push(ch);
                 self.pos += 1;
@@ -809,8 +812,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 } else {
                     self.column += 1;
                 }
-                self.batch_cursor.chars_consumed += 1;
-                self.batch_cursor.bytes_consumed += ch.len_utf8();
+                cursor.chars_consumed += 1;
+                cursor.bytes_consumed += ch.len_utf8();
                 copied += 1;
             } else {
                 break;
@@ -913,6 +916,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         lex_state: LexState,
         next_char: PeekedChar,
         batch: Option<&BatchView<'src>>,
+        mut cursor: Option<&mut BatchCursor>,
     ) -> Result<Option<LexToken<'src>>, ParserError<B>> {
         use LexState::*;
         match lex_state {
@@ -920,33 +924,33 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Default => match next_char {
                 // Strict JSON whitespace (always allowed)
                 Char(' ' | '\n' | '\r' | '\t') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(None)
                 }
                 // Additional Unicode whitespace (only when enabled)
                 Char(c) if self.allow_unicode_whitespace && c.is_whitespace() => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(None)
                 }
                 Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 EndOfInput => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Eof, false)))
                 }
-                Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch),
+                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch, cursor.as_deref_mut()),
             }
 
             // -------------------------- VALUE entry --------------------------
             Value => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 Char(c) if matches!(c, 'n' | 't' | 'f') => {
                     self.token_is_owned = false;
                     self.token_buffer.clear();
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); }
                     self.lex_state = ValueLiteral;
                     self.expected_literal = ExpectedLiteralBuffer::new(c);
@@ -958,7 +962,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = Sign;
                     Ok(None)
@@ -969,7 +973,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = Zero;
                     Ok(None)
@@ -980,7 +984,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalInteger;
                     Ok(None)
@@ -988,7 +992,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Char('"') => {
                     self.token_is_owned = self.reading_from_source(batch);
                     self.owned_batch_buffer.clear();
-                    self.advance_char(batch); // consume quote
+                    self.advance_char(batch, cursor.as_deref_mut()); // consume quote
                     self.token_buffer.clear();
                     self.lex_state = LexState::String;
                     self.token_start_pos = Some(self.pos);
@@ -1005,13 +1009,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         let from_source = self.reading_from_source(batch);
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         if from_source { self.token_buffer.push(c); }
                         Ok(None)
                     }
                     literal_buffer::Step::Done(tok) => {
                         let from_source = self.reading_from_source(batch);
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         if from_source { self.token_buffer.push(c); }
                         let lt = match tok { Token::Null => LexToken::Null, Token::Boolean(b) => LexToken::Boolean(b), _ => unreachable!() };
                         Ok(Some(self.new_token(lt, false)))
@@ -1026,14 +1030,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c @ '0') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = Zero;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalInteger;
                     Ok(None)
@@ -1045,14 +1049,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c @ '.') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalPoint;
                     Ok(None)
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
                     Ok(None)
@@ -1067,21 +1071,21 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c @ '.') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalPoint;
                     Ok(None)
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
                     if from_source {
@@ -1091,7 +1095,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.column += copied;
                         self.pos += copied;
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, |d| d.is_ascii_digit());
+                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
                     }
 
                     Ok(None)
@@ -1106,14 +1110,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalFraction;
 
@@ -1124,7 +1128,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.column += copied;
                         self.pos += copied;
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, |d| d.is_ascii_digit());
+                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
                     }
 
                     Ok(None)
@@ -1136,14 +1140,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
                     if from_source {
@@ -1153,7 +1157,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.column += copied;
                         self.pos += copied;
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, |d| d.is_ascii_digit());
+                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
                     }
 
                     Ok(None)
@@ -1167,13 +1171,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalExponent => match next_char {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, '+' | '-') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentSign;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
 
@@ -1192,7 +1196,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalExponentSign => match next_char {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
 
@@ -1212,7 +1216,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
                     if from_source {
@@ -1222,7 +1226,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.column += copied;
                         self.pos += copied;
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, |d| d.is_ascii_digit());
+                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
                     }
 
                     Ok(None)
@@ -1244,7 +1248,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         if let Some(b) = batch {
                             if let Some(start) = self.token_start_pos {
                                 let start_c = start.saturating_sub(b.start_pos).clamp(0, b.end_pos - b.start_pos);
-                                let end_c = self.batch_cursor.chars_consumed.min(b.end_pos - b.start_pos);
+                                let end_c = cursor.as_deref().map(|c| c.chars_consumed).unwrap_or(0).min(b.end_pos - b.start_pos);
                                 if end_c > start_c {
                                     let s = b.slice_chars(start_c, end_c);
                                     if self.reading_from_source(batch) {
@@ -1256,7 +1260,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             }
                         }
                         self.token_is_owned = true;
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         self.string_had_escape = true;
                         self.lex_state = LexState::StringEscape;
                         Ok(None)
@@ -1267,7 +1271,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         if let Some(b) = batch {
                             if let Some(start) = self.token_start_pos {
                                 let start_c = start.saturating_sub(b.start_pos).clamp(0, b.end_pos - b.start_pos);
-                                let end_c = self.batch_cursor.chars_consumed.min(b.end_pos - b.start_pos);
+                                let end_c = cursor.as_deref().map(|c| c.chars_consumed).unwrap_or(0).min(b.end_pos - b.start_pos);
                                 if end_c > start_c {
                                     let s = b.slice_chars(start_c, end_c);
                                     self.owned_batch_buffer.push_str(s);
@@ -1279,14 +1283,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         // Emit the fragment accumulated so far (partial)
                         let tok = self.produce_string(true, batch);
                         // Now consume the backslash and transition to escape state
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         self.lex_state = LexState::StringEscape;
                         Ok(Some(self.new_token(tok, true)))
                     }
                 }
                 // closing quote -> complete string
                 Char('"') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     // Exclude the closing quote – temporarily move pos back
                     let end_pos = self.pos.saturating_sub(1);
                     let saved_pos = self.pos;
@@ -1311,11 +1315,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.pos += copied;
                     } else {
                         if self.token_is_owned {
-                            let _ = self.copy_from_batch_while_to_owned(batch, |ch| {
+                            let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |ch| {
                                 ch != '\\' && ch != '"' && ch >= '\u{20}'
                             });
                         } else {
-                            let _ = self.copy_while_from(batch, |ch| {
+                            let _ = self.copy_while_from(batch, cursor.as_deref_mut(), |ch| {
                                 ch != '\\' && ch != '"' && ch >= '\u{20}'
                             });
                         }
@@ -1330,48 +1334,48 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.produce_string(true, batch))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('b') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push('\u{0008}'); } else { self.owned_batch_buffer.push('\u{0008}'); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('f') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push('\u{000C}'); } else { self.owned_batch_buffer.push('\u{000C}'); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('n') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push('\n'); } else { self.owned_batch_buffer.push('\n'); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('r') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push('\r'); } else { self.owned_batch_buffer.push('\r'); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('t') => {
                     let from_source = self.reading_from_source(batch);
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push('\t'); } else { self.owned_batch_buffer.push('\t'); }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('u') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
                     Ok(None)
@@ -1383,7 +1387,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 match next_char {
                     Empty => Ok(Some(self.produce_string(true, batch))),
                     Char(c) if c.is_ascii_hexdigit() => {
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         match self.unicode_escape_buffer.feed(c) {
                             Ok(Some(char)) => {
                                 // Normal BMP scalar
@@ -1439,7 +1443,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     }
                     EndOfInput => {
                         // consume EOF sentinel and advance column to match TS behavior
-                        self.advance_char(batch);
+                        self.advance_char(batch, cursor.as_deref_mut());
                         self.column += 1;
                         Err(self.invalid_eof())
                     }
@@ -1451,7 +1455,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             StringEscapeUnicodeExpectBackslash => match next_char {
                 Empty => Ok(Some(self.produce_string(true, batch))),
                 Char('\\') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.lex_state = LexState::StringEscapeUnicodeExpectU;
                     Ok(None)
                 }
@@ -1463,7 +1467,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             StringEscapeUnicodeExpectU => match next_char {
                 Empty => Ok(Some(self.produce_string(true, batch))),
                 Char('u') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
                     Ok(None)
@@ -1474,7 +1478,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             Start => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 _ => {
@@ -1485,12 +1489,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             BeforePropertyName => match next_char {
                 Char('}') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(b'}'), false)))
                 }
 
                 Char('"') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.clear();
                     self.lex_state = LexState::String;
                     // Track start of the property name content
@@ -1503,7 +1507,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterPropertyName => match next_char {
                 Char(c @ ':') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -1516,7 +1520,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterPropertyValue => match next_char {
                 Char(c) if matches!(c, ',' | '}') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -1524,7 +1528,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             BeforeArrayValue => match next_char {
                 Char(']') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(b']'), false)))
                 }
                 _ => {
@@ -1535,14 +1539,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterArrayValue => match next_char {
                 Char(c) if matches!(c, ',' | ']') => {
-                    self.advance_char(batch);
+                    self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
             },
 
             End => {
-                let c = self.peek_char(batch);
+                let c = self.peek_char(batch, cursor.as_deref());
                 Err(self.invalid_char(c))
             }
         }
