@@ -283,6 +283,8 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     current_token_buffered: bool,
     // How many characters have been consumed from the active batch
     batch_read_chars: usize,
+    // How many bytes have been consumed from the active batch
+    batch_read_bytes: usize,
     // Owned fragment accumulator used during batch-mode string parsing
     batch_owned_buffer: String,
 
@@ -470,6 +472,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             string_had_escape: false,
             current_token_buffered: false,
             batch_read_chars: 0,
+            batch_read_bytes: 0,
             batch_owned_buffer: String::new(),
 
             path: MaybeUninit::new(f.frozen_new()),
@@ -526,6 +529,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.chars_pushed = end_pos;
         // Do not copy directly into the ring; parse from the batch.
         self.batch_read_chars = 0;
+        self.batch_read_bytes = 0;
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
         StreamingParserIteratorWith {
@@ -694,15 +698,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             return Char(ch);
         }
         if let Some(b) = batch {
-            let consumed = self.batch_read_chars;
-            let total = b.end_pos - b.start_pos;
-            if consumed < total {
-                let mut count = 0;
-                for (_, ch) in b.text.char_indices() {
-                    if count == consumed {
-                        return Char(ch);
-                    }
-                    count += 1;
+            if self.batch_read_bytes < b.text.len() {
+                if let Some(ch) = b.text[self.batch_read_bytes..].chars().next() {
+                    return Char(ch);
                 }
             }
         }
@@ -729,20 +727,17 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             return;
         }
         if let Some(b) = batch {
-            let mut count = 0;
-            for (_, ch) in b.text.char_indices() {
-                if count == self.batch_read_chars {
-                    if ch == '\n' {
-                        self.line += 1;
-                        self.column = 1;
-                    } else {
-                        self.column += 1;
-                    }
-                    self.pos += 1;
-                    self.batch_read_chars += 1;
-                    return;
+            if let Some(ch) = b.text[self.batch_read_bytes..].chars().next() {
+                if ch == '\n' {
+                    self.line += 1;
+                    self.column = 1;
+                } else {
+                    self.column += 1;
                 }
-                count += 1;
+                self.pos += 1;
+                self.batch_read_chars += 1;
+                self.batch_read_bytes += ch.len_utf8();
+                return;
             }
         }
     }
@@ -762,12 +757,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
 
         let Some(b) = batch else { return 0; };
-        let total = b.end_pos - b.start_pos;
         let mut copied = 0;
-        if self.batch_read_chars >= total {
-            return 0;
-        }
-        for ch in b.text.chars().skip(self.batch_read_chars) {
+        for ch in b.text[self.batch_read_bytes..].chars() {
             if predicate(ch) {
                 self.pos += 1;
                 if ch == '\n' {
@@ -777,6 +768,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.column += 1;
                 }
                 self.batch_read_chars += 1;
+                self.batch_read_bytes += ch.len_utf8();
                 copied += 1;
             } else {
                 break;
@@ -791,12 +783,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         F: FnMut(char) -> bool,
     {
         let Some(b) = batch else { return 0; };
-        let total = b.end_pos - b.start_pos;
         let mut copied = 0;
-        if self.batch_read_chars >= total {
-            return 0;
-        }
-        for ch in b.text.chars().skip(self.batch_read_chars) {
+        for ch in b.text[self.batch_read_bytes..].chars() {
             if predicate(ch) {
                 self.batch_owned_buffer.push(ch);
                 self.pos += 1;
@@ -807,6 +795,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.column += 1;
                 }
                 self.batch_read_chars += 1;
+                self.batch_read_bytes += ch.len_utf8();
                 copied += 1;
             } else {
                 break;
