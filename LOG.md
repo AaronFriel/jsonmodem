@@ -144,7 +144,7 @@ Next:
   - Added explicit flush of a pending high surrogate on string termination and non-escape transitions.
   - Kept property names UTF‑8-only (degrade to replacement) when SurrogatePreserving is active.
 - Rust backend normalizes WTF‑8 surrogates to a single replacement unit per code unit for ReplaceInvalid/Strict paths.
-- Tests: 58 passed, 0 failed, 10 ignored from `crates/jsonmodem`; one Raw reversed-pair test is temporarily ignored pending a compact unification of reversed ordering paths.
+- Unignored and fixed several Strict/ReplaceInvalid design tests; Raw reversed-pair and a few design reversed-order cases remain temporarily ignored while we converge on consistent reversed-order handling under SurrogatePreserving.
 - Borrowing model: borrowed string/number slices always originate from the current feed batch; the ring buffer is never exposed by reference. Any time a token can’t be represented as a single contiguous batch slice (escapes, boundary splits), we switch that token to owned mode (`token_is_owned = true`) until completion.
 - `token_is_owned` is not equivalent to `!source.is_empty()`: it is a per‑token commitment that remains true once set (e.g., after the first escape), regardless of where subsequent characters come from.
 - Iterator `Drop` semantics are critical: it copies any unread portion of the active batch into the ring and preserves any in‑flight token prefix so parsing can resume correctly next feed.
