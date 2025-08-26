@@ -57,3 +57,8 @@ Branch: wip-codex-branch
 - Added tests for Unicode whitespace rejection by default and acceptance when enabled.
 - Documented `current_token_buffered` semantics in-code to clarify why it cannot be replaced by `!self.source.is_empty()` (escapes and cross-batch tokens still force owned mode).
 - All default-feature tests pass locally (`cargo test`): 29 passing in parser module, overall green.
+
+## Update (2025-08-26 00:20:00Z)
+- Optimized batch iteration: added `batch_read_bytes` to track byte offset and avoid repeated scans of `char_indices()`.
+- Updated `peek_char`, `advance_char`, `copy_while_from`, and `copy_from_batch_while_to_owned` to use `text[byte..].chars()` and increment both char and byte counters.
+- Tests still all passing under default features.
