@@ -1,4 +1,5 @@
 mod rust;
+pub mod raw;
 
 use alloc::string::String;
 use core::{
@@ -7,6 +8,14 @@ use core::{
 };
 
 pub use rust::RustContext;
+pub use raw::RawContext;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum RawStrHint {
+    StrictUnicode,
+    SurrogatePreserving,
+    ReplaceInvalid,
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PathKind {
@@ -61,6 +70,19 @@ pub trait EventCtx {
     /// Backends can return a borrow (Rust) or allocate (Python/JS).
     fn new_str<'src>(&mut self, frag: &'src str) -> Result<Self::Str<'src>, Self::Error>;
     fn new_str_owned<'a>(&mut self, frag: String) -> Result<Self::Str<'a>, Self::Error>;
+
+    /// Create a string fragment from raw bytes (WTF-8 or other non-UTF8).
+    ///
+    /// This is only used when the parser is configured to preserve
+    /// unpaired surrogates (DecodeMode::SurrogatePreserving) and hence cannot
+    /// represent the fragment as valid UTF-8. Implementations may choose to
+    /// preserve the bytes, replace invalid sequences with U+FFFD, or error,
+    /// guided by the provided hint.
+    fn new_str_raw_owned<'a>(
+        &mut self,
+        bytes: alloc::vec::Vec<u8>,
+        hint: RawStrHint,
+    ) -> Result<Self::Str<'a>, Self::Error>;
 }
 
 // // Extends EventCtx to build compound values.

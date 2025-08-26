@@ -3,7 +3,7 @@ use core::num::ParseFloatError;
 
 use crate::{
     PathItem,
-    backend::{EventCtx, PathCtx},
+    backend::{EventCtx, PathCtx, RawStrHint},
 };
 
 #[derive(Debug, Default, PartialEq, Clone)]
@@ -85,5 +85,16 @@ impl EventCtx for RustContext {
 
     fn new_str_owned<'a>(&mut self, frag: String) -> Result<Self::Str<'a>, Self::Error> {
         Ok(Cow::Owned(frag))
+    }
+
+    fn new_str_raw_owned<'a>(
+        &mut self,
+        bytes: Vec<u8>,
+        _hint: RawStrHint,
+    ) -> Result<Self::Str<'a>, Self::Error> {
+        // Default Rust backend is UTF-8-only. Decode raw bytes lossily,
+        // replacing invalid sequences (e.g., WTF-8 surrogates) with U+FFFD.
+        let owned = String::from_utf8_lossy(&bytes).into_owned();
+        Ok(Cow::Owned(owned))
     }
 }
