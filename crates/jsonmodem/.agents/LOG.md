@@ -62,3 +62,13 @@ Branch: wip-codex-branch
 - Optimized batch iteration: added `batch_read_bytes` to track byte offset and avoid repeated scans of `char_indices()`.
 - Updated `peek_char`, `advance_char`, `copy_while_from`, and `copy_from_batch_while_to_owned` to use `text[byte..].chars()` and increment both char and byte counters.
 - Tests still all passing under default features.
+
+## Update (2025-08-26 01:10:00Z)
+- Implemented UTF-16 surrogate pair decoding in string escapes without touching `escape_buffer`:
+  - Use its `InvalidUnicodeEscapeSequence(code)` error to detect surrogate halves.
+  - On high surrogate (D800–DBFF), transition to new states to demand `\u` prefix for the low surrogate.
+  - On low surrogate (DC00–DFFF) with pending high, combine into a single scalar and append to the active string buffer.
+- Added `LexState` variants `StringEscapeUnicodeExpectBackslash` and `StringEscapeUnicodeExpectU` to enforce the `\u` structure.
+- Fixed property-name cross-batch copying: avoid clearing `token_start_pos` on partial property-name strings so `Drop` copies the in-flight portion into the ring buffer.
+- Added tests for surrogate pairs (single chunk and cross-batch) and for multibyte property names across feeds; extended general multibyte tests.
+- All tests pass under default features (34 tests in parser).
