@@ -531,6 +531,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             LexToken::StringBorrowed(s) => Token::String { fragment: s.to_string() },
             LexToken::StringBuffered => Token::String { fragment: self.token_buffer.clone() },
             LexToken::StringOwned(s) => Token::String { fragment: s },
+            LexToken::StringRawOwned(bytes) => Token::String { fragment: String::from_utf8_lossy(&bytes).into_owned() },
             LexToken::PropertyNameBorrowed(s) => Token::PropertyName { value: s.to_string() },
             LexToken::PropertyNameBuffered => Token::PropertyName { value: self.token_buffer.clone() },
             LexToken::PropertyNameOwned(s) => Token::PropertyName { value: s },
