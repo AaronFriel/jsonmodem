@@ -322,6 +322,8 @@ struct BatchView<'src> {
     text: &'src str,
     start_pos: usize,
     end_pos: usize,
+    // Cache the number of chars in `text` to avoid re-counting.
+    len_chars: usize,
 }
 
 impl<'src> BatchView<'src> {
@@ -345,7 +347,7 @@ impl<'src> BatchView<'src> {
             }
         }
 
-        if end_chars < self.text.chars().count() {
+        if end_chars < self.len_chars {
             let mut count = 0;
             for (i, _) in self.text.char_indices() {
                 if count == end_chars {
@@ -537,7 +539,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             factory,
             path,
             _marker: core::marker::PhantomData,
-            batch: BatchView { text, start_pos, end_pos },
+            batch: BatchView { text, start_pos, end_pos, len_chars: batch_len },
         }
     }
 
@@ -2203,6 +2205,25 @@ true, false, null]",
         match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
             assert_eq!(value, 0.0);
             assert_eq!(path, vec![PathItem::Key("AB".into())]);
+        } _ => panic!() }
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn property_name_multibyte_cross_batches_no_escape() {
+        // Property name split across feeds without escapes; dropping iterator forces
+        // owned key assembly and correct path update.
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
+        let mut it = parser.feed("{");
+        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
+        drop(it);
+        let it = parser.feed("\"🚀");
+        drop(it);
+        let mut it = parser.feed("🚀\": 1}");
+        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
+            assert_eq!(value, 1.0);
+            assert_eq!(path, vec![PathItem::Key("🚀🚀".into())]);
         } _ => panic!() }
         match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
         assert!(it.next().is_none());
