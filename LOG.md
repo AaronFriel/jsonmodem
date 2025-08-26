@@ -143,3 +143,4 @@ Next:
 - UTF‑8 backend specifics: unpaired surrogates cannot be represented in `Cow<str>`. Consequently, `DecodeMode::SurrogatePreserving` intentionally degrades to `ReplaceInvalid` in the default backend. When adding a surrogate‑capable backend, revisit these branches and tests.
 - Indices and counters: we maintain both character and byte offsets. All position/line/column updates must remain consistent across ring and batch reads. Prefer using the byte cursor (`bytes_consumed`) + `chars()` for iteration to avoid re‑scanning.
 - Tests live close to the code in `src/parser/mod.rs` for tight feedback. When extending behavior, add tests that exercise both ring‑first and batch‑borrow paths, including cross‑batch boundaries and iterator drops mid‑token.
+- Fixed reversed-pair edge: ensure pending high surrogate is emitted under SurrogatePreserving when the string terminates before a low surrogate arrives; this addresses Raw backend test for reversed pair.

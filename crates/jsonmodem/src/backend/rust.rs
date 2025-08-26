@@ -93,8 +93,28 @@ impl EventCtx for RustContext {
         _hint: RawStrHint,
     ) -> Result<Self::Str<'a>, Self::Error> {
         // Default Rust backend is UTF-8-only. Decode raw bytes lossily,
-        // replacing invalid sequences (e.g., WTF-8 surrogates) with U+FFFD.
-        let owned = String::from_utf8_lossy(&bytes).into_owned();
+        // replacing invalid sequences. Special-case WTF-8 surrogate 3-byte
+        // sequences (ED A0..BF 80..BF) to collapse to a single U+FFFD.
+        let mut norm = Vec::with_capacity(bytes.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 2 < bytes.len()
+                && bytes[i] == 0xED
+                && (bytes[i + 1] >= 0xA0 && bytes[i + 1] <= 0xBF)
+                && (bytes[i + 2] & 0xC0) == 0x80
+            {
+                // One surrogate code unit in WTF-8 – normalize to U+FFFD (EF BF BD)
+                norm.extend_from_slice(&[0xEF, 0xBF, 0xBD]);
+                i += 3;
+            } else {
+                norm.push(bytes[i]);
+                i += 1;
+            }
+        }
+        let owned = match String::from_utf8(norm) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
         Ok(Cow::Owned(owned))
     }
 }

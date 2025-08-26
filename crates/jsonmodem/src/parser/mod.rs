@@ -1347,6 +1347,30 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 // closing quote -> complete string
                 Char('"') => {
+                    // If a high surrogate is pending at string termination, resolve per decode_mode.
+                    if let Some(high) = self.pending_high_surrogate.take() {
+                        match self.decode_mode {
+                            options::DecodeMode::StrictUnicode => {
+                                return Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                            }
+                            options::DecodeMode::ReplaceInvalid => {
+                                if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                            }
+                            options::DecodeMode::SurrogatePreserving => {
+                                if self.parse_state == ParseState::BeforePropertyName {
+                                    // Property names remain UTF-8: degrade to replacement.
+                                    if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                                } else {
+                                    self.ensure_raw_mode_and_move_buffers();
+                                    let u = high;
+                                    let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
+                                    let b2 = 0x80 | ((u as u32 >> 6) & 0x3F) as u8;
+                                    let b3 = 0x80 | (u as u32 & 0x3F) as u8;
+                                    self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                }
+                            }
+                        }
+                    }
                     self.advance_char(batch, cursor.as_deref_mut());
                     // Exclude the closing quote – temporarily move pos back
                     let end_pos = self.pos.saturating_sub(1);
@@ -1432,6 +1456,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.owned_batch_raw.extend_from_slice(s.as_bytes());
                     } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    // After consuming an escape, mark the start for future preloads
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char('b') => {
@@ -1440,6 +1466,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let ch = '\u{0008}';
                     if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=ch.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char('f') => {
@@ -1448,6 +1475,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let ch = '\u{000C}';
                     if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=ch.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char('n') => {
@@ -1456,6 +1484,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let ch = '\n';
                     if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=ch.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char('r') => {
@@ -1464,6 +1493,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let ch = '\r';
                     if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=ch.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char('t') => {
@@ -1472,6 +1502,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let ch = '\t';
                     if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=ch.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); } else if from_source { self.token_buffer.push(ch); } else { self.owned_batch_buffer.push(ch); }
                     self.lex_state = LexState::String;
+                    self.token_start_pos = Some(self.pos);
                     Ok(None)
                 }
                 Char(c) if c == 'u' || (c == 'U' && self.allow_uppercase_u) => {
@@ -1490,10 +1521,31 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.advance_char(batch, cursor.as_deref_mut());
                         match self.unicode_escape_buffer.feed(c) {
                             Ok(Some(char)) => {
-                                // Normal BMP scalar
+                                // Finished a \uXXXX sequence to a scalar. If a high surrogate was pending,
+                                // we must handle it first according to decode_mode.
+                                if let Some(high) = self.pending_high_surrogate.take() {
+                                    match self.decode_mode {
+                                        options::DecodeMode::StrictUnicode => {
+                                            return Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                                        }
+                                        options::DecodeMode::SurrogatePreserving => {
+                                            self.ensure_raw_mode_and_move_buffers();
+                                            let u = high;
+                                            let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
+                                            let b2 = 0x80 | ((u as u32 >> 6) & 0x3F) as u8;
+                                            let b3 = 0x80 | (u as u32 & 0x3F) as u8;
+                                            self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                        }
+                                        options::DecodeMode::ReplaceInvalid => {
+                                            if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                                        }
+                                    }
+                                }
+                                // Now append the decoded scalar of this escape
                                 if self.token_is_raw_bytes { let mut tmp=[0u8;4]; let s=char.encode_utf8(&mut tmp); self.owned_batch_raw.extend_from_slice(s.as_bytes()); }
                                 else if self.reading_from_source(batch) { self.token_buffer.push(char); } else { self.owned_batch_buffer.push(char); }
                                 self.lex_state = LexState::String;
+                                self.token_start_pos = Some(self.pos);
                                 Ok(None)
                             }
                             Ok(None) => {
