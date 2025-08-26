@@ -314,6 +314,10 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     /// Allow multiple JSON values in a single input (support transition from
     /// end state to a new value start state)
     multiple_values: bool,
+    /// Decode mode for Unicode escapes and surrogate handling.
+    decode_mode: options::DecodeMode,
+    /// Whether to allow uppercase `\U` introducer for escapes.
+    allow_uppercase_u: bool,
 
     /// Panic on syntax errors instead of returning them
     #[cfg(test)]
@@ -498,6 +502,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             allow_unicode_whitespace: options.allow_unicode_whitespace,
             multiple_values: options.allow_multiple_json_values,
+            decode_mode: options.decode_mode,
+            allow_uppercase_u: options.allow_uppercase_u,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
@@ -1374,7 +1380,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
-                Char('u') => {
+                Char(c) if c == 'u' || (c == 'U' && self.allow_uppercase_u) => {
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
@@ -1430,7 +1436,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                 }
                                             } else {
                                                 // Low surrogate without preceding high
-                                                Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(code)))
+                                                match self.decode_mode {
+                                                    options::DecodeMode::StrictUnicode => Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(code))),
+                                                    _ => {
+                                                        if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                                                        self.lex_state = LexState::String;
+                                                        Ok(None)
+                                                    }
+                                                }
                                             }
                                         } else {
                                             Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(code)))
@@ -1460,20 +1473,42 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
-                c => Err(self.read_and_invalid_char(c)),
+                c => {
+                    match self.decode_mode {
+                        options::DecodeMode::StrictUnicode => Err(self.read_and_invalid_char(c)),
+                        _ => {
+                            if let Some(_) = self.pending_high_surrogate.take() {
+                                if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                            }
+                            self.lex_state = LexState::String;
+                            Ok(None)
+                        }
+                    }
+                },
             },
 
             // Expect the 'u' introducing the low surrogate digits
             StringEscapeUnicodeExpectU => match next_char {
                 Empty => Ok(Some(self.produce_string(true, batch))),
-                Char('u') => {
+                Char(c) if c == 'u' || (c == 'U' && self.allow_uppercase_u) => {
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
                     Ok(None)
                 }
                 EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
-                c => Err(self.read_and_invalid_char(c)),
+                c => {
+                    match self.decode_mode {
+                        options::DecodeMode::StrictUnicode => Err(self.read_and_invalid_char(c)),
+                        _ => {
+                            if let Some(_) = self.pending_high_surrogate.take() {
+                                if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                            }
+                            self.lex_state = LexState::String;
+                            Ok(None)
+                        }
+                    }
+                },
             },
 
             Start => match next_char {
@@ -1901,6 +1936,7 @@ mod tests {
 
     use super::*;
     use alloc::borrow::Cow;
+    use crate::parser::options::DecodeMode;
 
     // #[test]
     // fn parser_compiles() {
@@ -2362,6 +2398,148 @@ true, false, null]",
             assert_eq!(path, vec![PathItem::Key("AB".into())]);
         } _ => panic!() }
         match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
+        assert!(it.next().is_none());
+    }
+
+    // ------------------------- DESIGN.md Decode Tests -------------------------
+    fn parse_single_string(opts: ParserOptions, json: &str) -> Result<String, ParserError<RustContext>> {
+        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..opts });
+        let mut it = parser.feed(json);
+        let mut out = String::new();
+        while let Some(evt) = it.next() {
+            match evt? {
+                ParseEvent::String { fragment, .. } => out.push_str(&fragment),
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn design_valid_pair_grinning_face() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\\uDE00\"]").unwrap();
+        assert_eq!(s, "😀");
+    }
+
+    #[test]
+    fn design_lone_high_strict_error_replaceinvalid_ok() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83D\"]");
+        assert!(it.next().is_some()); // ArrayBegin
+        // Next should error on escape
+        assert!(it.next().unwrap().is_err());
+
+        // ReplaceInvalid: U+FFFD
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\"]").unwrap();
+        assert_eq!(s, "�");
+    }
+
+    #[test]
+    fn design_lone_low_behavior() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uDE00\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: �
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uDE00\"]").unwrap();
+        assert_eq!(s, "�");
+    }
+
+    #[test]
+    fn design_reversed_pair() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uDE00\\uD83D\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: �
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uDE00\\uD83D\"]").unwrap();
+        assert_eq!(s, "��");
+    }
+
+    #[test]
+    fn design_high_then_letter() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83D\\u0041\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: �A
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83D\\u0041\"]").unwrap();
+        assert_eq!(s, "�A");
+    }
+
+    #[test]
+    fn design_letter_then_low() {
+        // Strict: error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\u0041\\uDE00\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // ReplaceInvalid: A�
+        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\u0041\\uDE00\"]").unwrap();
+        assert_eq!(s, "A�");
+    }
+
+    #[test]
+    fn design_invalid_escape_hex() {
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83G\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+    }
+
+    #[test]
+    fn design_uppercase_U_escape() {
+        // Default (disallowed): error
+        let opts = ParserOptions { panic_on_error: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\UD83D\\UDE00\"]");
+        assert!(it.next().is_some());
+        assert!(it.next().unwrap().is_err());
+        // allow_uppercase_u: ok
+        let opts = ParserOptions { allow_uppercase_u: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\UD83D\\UDE00\"]").unwrap();
+        assert_eq!(s, "😀");
+    }
+
+    #[test]
+    fn design_mixed_case_hex_digits() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let s = parse_single_string(opts, "[\"\\uD83d\\uDe00\"]").unwrap();
+        assert_eq!(s, "😀");
+    }
+
+    #[test]
+    fn design_pair_split_across_stream_chunks() {
+        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
+        let mut parser = DefaultStreamingParser::new(opts);
+        let mut it = parser.feed("[\"\\uD83D");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        drop(it);
+        let mut it = parser.feed("\\uDE00\"]");
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_final, .. } => {
+                assert_eq!(fragment, Cow::<str>::Owned("😀".to_string()));
+                assert!(is_final);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
         assert!(it.next().is_none());
     }
 

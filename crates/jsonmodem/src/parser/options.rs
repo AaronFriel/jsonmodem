@@ -48,4 +48,33 @@ pub struct ParserOptions {
     ///
     /// Enabled only in test builds to produce backtraces on parse failures.
     pub panic_on_error: bool,
+
+    /// Unicode escape decode mode and compatibility knobs.
+    ///
+    /// Controls how `\uXXXX` sequences and UTF-16 surrogate pairs are
+    /// interpreted while decoding JSON strings.
+    pub decode_mode: DecodeMode,
+    /// Allow uppercase `\U` introducer for Unicode escapes. JSON grammar uses
+    /// lowercase `u`; this is a compatibility knob.
+    pub allow_uppercase_u: bool,
+    /// Allow fewer than 4 hex digits after `\u`. JSON requires exactly 4; this
+    /// is a compatibility knob. Currently not used by the core parser.
+    pub allow_short_hex: bool,
+}
+
+/// Decode behavior for Unicode escapes and surrogate pairs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecodeMode {
+    /// RFC‑compliant: join valid surrogate pairs; error on any unpaired
+    /// surrogate or invalid escape.
+    StrictUnicode,
+    /// Preserve unpaired surrogates (requires non‑UTF8 output representation).
+    /// In UTF‑8 builds this mode degrades to `ReplaceInvalid`.
+    SurrogatePreserving,
+    /// Join valid pairs; replace any unpaired surrogate with U+FFFD.
+    ReplaceInvalid,
+}
+
+impl Default for DecodeMode {
+    fn default() -> Self { DecodeMode::StrictUnicode }
 }
