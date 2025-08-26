@@ -1390,7 +1390,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             if self.token_is_raw_bytes {
                                 // Append UTF-8 bytes of chars
                                 let (Some(b), Some(cur)) = (batch, cursor.as_deref_mut()) else { return Ok(None) };
-                                let mut local = 0;
+                                let mut _local = 0;
                                 for ch in b.text[cur.bytes_consumed..].chars() {
                                     if ch != '\\' && ch != '"' && ch >= '\u{20}' {
                                         let mut tmp = [0u8; 4];
@@ -1400,7 +1400,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         if ch == '\n' { self.line += 1; self.column = 1; } else { self.column += 1; }
                                         cur.chars_consumed += 1;
                                         cur.bytes_consumed += ch.len_utf8();
-                                        local += 1;
+                                        _local += 1;
                                     } else { break; }
                                 }
                             } else {
@@ -2595,6 +2595,122 @@ true, false, null]",
             ParseEvent::String { fragment, is_initial, is_final, .. } => {
                 assert_eq!(fragment, Cow::<[u8]>::Owned(b"B".to_vec()));
                 assert!(!is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_surrogate_lone_high() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\uD83D\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xA0, 0xBD]));
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_surrogate_lone_low() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\uDE00\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xB8, 0x80]));
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_surrogate_reversed_pair() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\uDE00\\uD83D\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xB8, 0x80, 0xED, 0xA0, 0xBD]));
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_high_then_letter() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\uD83D\\u0041\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xA0, 0xBD, b'A'])) ;
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_letter_then_low() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\u0041\\uDE00\"]");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![b'A', 0xED, 0xB8, 0x80]));
+                assert!(is_initial);
+                assert!(is_final);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
+        assert!(it.next().is_none());
+    }
+
+    #[test]
+    fn raw_backend_pair_split_across_chunks() {
+        use alloc::borrow::Cow;
+        let mut ctx = RawContext;
+        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
+        let mut it = parser.feed_with(RawContext, "[\"\\uD83D");
+        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
+        drop(it);
+        let mut it = parser.feed_with(RawContext, "\\uDE00\"]");
+        match it.next().unwrap().unwrap() {
+            ParseEvent::String { fragment, is_initial, is_final, .. } => {
+                assert_eq!(fragment, Cow::<[u8]>::Owned("😀".as_bytes().to_vec()));
+                assert!(is_initial);
                 assert!(is_final);
             }
             other => panic!("unexpected event: {other:?}"),
