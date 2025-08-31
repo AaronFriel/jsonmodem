@@ -78,14 +78,15 @@
 //!   lexer produces a `LexToken<'src>` used by the parser to build
 //!   `ParseEvent<'src, B>`, and, when tests are enabled, it records a copy as a
 //!   public `Token` for round‑trip tests.
-//! - Track the current feed batch in the iterator (not in the parser) with its
-//!   character span `[start_pos, end_pos)` in the global stream. While lexing,
-//!   record token start positions; on token completion, if the entire token
-//!   range is within the current batch and the token had no escapes (strings),
-//!   emit a borrowed slice computed from the batch using character-to-byte index
-//!   mapping. Otherwise, emit buffered.
-//! - We only change this file; the ring buffer remains in use for stream
-//!   continuity and as a fallback for buffering.
+
+// - Track the current feed batch in the iterator (not in the parser) with its
+//   character span `[start_pos, end_pos)` in the global stream. While lexing,
+//   record token start positions; on token completion, if the entire token
+//   range is within the current batch and the token had no escapes (strings),
+//   emit a borrowed slice computed from the batch using character-to-byte index
+//   mapping. Otherwise, emit buffered.
+// - We only change this file; the ring buffer remains in use for stream
+//   continuity and as a fallback for buffering.
 
 #![expect(clippy::single_match_else)]
 #![expect(clippy::struct_excessive_bools)]
@@ -100,6 +101,7 @@ mod numbers;
 mod options;
 mod parse_event;
 mod path;
+mod scanner;
 
 use alloc::{
     format,
@@ -260,6 +262,8 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     /// Ring of unread characters backing the lexer. New input is copied here
     /// in `feed(...)`, and characters are consumed as the lexer advances.
     source: Buffer,
+    /// Tape persisted for the future Scanner path (dual-write phases).
+    tape: scanner::Tape,
     end_of_input: bool,
 
     /// Current *global* character position.
@@ -399,6 +403,8 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     _marker: core::marker::PhantomData<&'src ()>,
     batch: BatchView<'src>,
     cursor: BatchCursor,
+    #[cfg(debug_assertions)]
+    scanner: Option<scanner::Scanner<'src>>,
 }
 
 impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
@@ -410,6 +416,11 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
         // If an in-flight token has consumed characters in this batch, ensure
         // its already-read portion is preserved by copying into the parser's
         // internal buffer and switching to buffered mode for the remainder.
+        let mut copied_prefix_for_dual_write: Option<&str> = None;
+        let mut pushed_tail_bytes: Option<alloc::vec::Vec<u8>> = None;
+
+        // Always preserve legacy behavior: copy in-flight prefix into the token buffer
+        // and push unread batch tail into the legacy ring.
         if let Some(start) = self.parser.token_start_pos {
             if self.parser.pos > start {
                 let batch_start = self.batch.start_pos.max(start);
@@ -419,17 +430,95 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
                     let rel_end = batch_end - self.batch.start_pos;
                     let s = self.batch.slice_chars(rel_start, rel_end);
                     self.parser.token_buffer.push_str(s);
+                    copied_prefix_for_dual_write = Some(s);
                 }
                 self.parser.token_is_owned = true;
             }
         }
 
-        // Push unread portion of this batch into the ring buffer so further
-        // parsing proceeds from `self.source`.
-        let consumed = self.cursor.chars_consumed.min(self.batch.end_pos - self.batch.start_pos);
-        if consumed < (self.batch.end_pos - self.batch.start_pos) {
-            let rest = self.batch.slice_chars(consumed, self.batch.end_pos - self.batch.start_pos);
+        let consumed = self
+            .cursor
+            .chars_consumed
+            .min(self.batch.end_pos - self.batch.start_pos);
+        let unread_chars = (self.batch.end_pos - self.batch.start_pos).saturating_sub(consumed);
+        if unread_chars > 0 {
+            let rest = self
+                .batch
+                .slice_chars(consumed, self.batch.end_pos - self.batch.start_pos);
+            // Legacy path: always push tail for continued parsing.
             self.parser.source.push(rest);
+            pushed_tail_bytes = Some(rest.as_bytes().to_vec());
+            // Dual-write to Tape ring only when not using shadow Scanner; when shadow is
+            // active, finish() will handle it.
+            let use_dual_write = cfg!(not(debug_assertions)) || self.scanner.is_none();
+            if use_dual_write {
+                self.parser.tape.push_ring_bytes(rest.as_bytes());
+            }
+        }
+
+        // Dual-write (Phase 2): for non-fragmenting tokens (property names, numbers),
+        // mirror the legacy prefix copy into tape.scratch.
+        if let Some(s) = copied_prefix_for_dual_write {
+            let in_non_fragmenting = self.parser.parse_state == ParseState::BeforePropertyName
+                || matches!(
+                    self.parser.lex_state,
+                    LexState::Sign
+                        | LexState::Zero
+                        | LexState::DecimalInteger
+                        | LexState::DecimalPoint
+                        | LexState::DecimalFraction
+                        | LexState::DecimalExponent
+                        | LexState::DecimalExponentSign
+                        | LexState::DecimalExponentInteger
+                );
+            if in_non_fragmenting {
+                self.parser.tape.append_scratch_text(s);
+            }
+        }
+
+        // Keep positions in sync for future scanner sessions.
+        self.parser
+            .tape
+            .set_positions(self.parser.pos, self.parser.line, self.parser.column);
+
+        // Debug-only assertions and scanner finalization.
+        #[cfg(debug_assertions)]
+        {
+            if let Some(scanner) = self.scanner.take() {
+                // Finalize scanner and write tape back to parser
+                let tape = scanner.finish();
+                self.parser.tape = tape;
+            } else {
+                // When not using the shadow scanner, verify we mirrored the unread tail.
+                if let Some(bytes) = pushed_tail_bytes.as_ref() {
+                    let tape_bytes = self.parser.tape.debug_ring_bytes();
+                    assert!(
+                        tape_bytes.ends_with(bytes),
+                        "Tape ring should end with unread tail just pushed"
+                    );
+                }
+                if let Some(s) = copied_prefix_for_dual_write {
+                    let in_non_fragmenting = self.parser.parse_state == ParseState::BeforePropertyName
+                        || matches!(
+                            self.parser.lex_state,
+                            LexState::Sign
+                                | LexState::Zero
+                                | LexState::DecimalInteger
+                                | LexState::DecimalPoint
+                                | LexState::DecimalFraction
+                                | LexState::DecimalExponent
+                                | LexState::DecimalExponentSign
+                                | LexState::DecimalExponentInteger
+                        );
+                    if in_non_fragmenting && !s.is_empty() {
+                        let scratch = self.parser.tape.debug_scratch_bytes();
+                        assert!(
+                            scratch.ends_with(s.as_bytes()),
+                            "Tape scratch does not end with copied prefix for non-fragmenting token"
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -438,8 +527,13 @@ impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, '
     type Item = Result<ParseEvent<'src, B>, ParserError<B>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser
-            .next_event_with_and_batch(&mut self.factory, &mut self.path, Some(&self.batch), Some(&mut self.cursor))
+        self.parser.next_event_with_and_batch(
+            &mut self.factory,
+            &mut self.path,
+            Some(&self.batch),
+            Some(&mut self.cursor),
+            #[cfg(debug_assertions)] &mut self.scanner,
+        )
     }
 }
 
@@ -475,8 +569,15 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
     type Item = Result<ParseEvent<'src, B>, ParserError<B>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.parser
-            .next_event_with_and_batch(&mut self.factory, &mut self.path, None, None)
+        #[cfg(debug_assertions)]
+        let mut shadow_none: Option<scanner::Scanner<'src>> = None;
+        self.parser.next_event_with_and_batch(
+            &mut self.factory,
+            &mut self.path,
+            None,
+            None,
+            #[cfg(debug_assertions)] &mut shadow_none,
+        )
     }
 }
 
@@ -487,6 +588,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     pub fn new_with_factory(f: &mut B, options: ParserOptions) -> StreamingParserImpl<B> {
         Self {
             source: Buffer::new(),
+            tape: scanner::Tape::default(),
             end_of_input: false,
             partial_lex: false,
 
@@ -570,6 +672,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.batch_cursor = BatchCursor::default();
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
+        #[cfg(debug_assertions)]
+        let scanner = Some(scanner::Scanner::from_carryover(core::mem::take(&mut self.tape), text));
         StreamingParserIteratorWith {
             parser: self,
             factory,
@@ -577,6 +681,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             _marker: core::marker::PhantomData,
             batch: BatchView { text, start_pos, end_pos, len_chars: batch_len },
             cursor: BatchCursor::default(),
+            #[cfg(debug_assertions)]
+            scanner,
         }
     }
 
@@ -618,7 +724,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         f: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal_with_batch(f, path, None, None) {
+        #[cfg(debug_assertions)]
+        let mut shadow_none: Option<scanner::Scanner<'src>> = None;
+        match self.next_event_internal_with_batch(
+            f,
+            path,
+            None,
+            None,
+            #[cfg(debug_assertions)] &mut shadow_none,
+        ) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -640,8 +754,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         path: &mut B::Thawed,
         batch: Option<&BatchView<'src>>,
         cursor: Option<&'a mut BatchCursor>,
+        #[cfg(debug_assertions)] shadow: &mut Option<scanner::Scanner<'src>>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal_with_batch(f, path, batch, cursor) {
+        match self.next_event_internal_with_batch(f, path, batch, cursor, #[cfg(debug_assertions)] shadow) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -658,6 +773,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         path: &mut B::Thawed,
         batch: Option<&BatchView<'src>>,
         mut cursor: Option<&'a mut BatchCursor>,
+        #[cfg(debug_assertions)] shadow: &mut Option<scanner::Scanner<'src>>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
@@ -671,7 +787,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 self.path = MaybeUninit::new(f.frozen_new());
             }
 
-            let token = match self.lex(batch, cursor.as_deref_mut()) {
+            let token = match self.lex(batch, cursor.as_deref_mut(), #[cfg(debug_assertions)] shadow) {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -713,14 +829,25 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex<'src>(&mut self, batch: Option<&BatchView<'src>>, mut cursor: Option<&mut BatchCursor>) -> Result<LexToken<'src>, ParserError<B>> {
+    fn lex<'src>(
+        &mut self,
+        batch: Option<&BatchView<'src>>,
+        mut cursor: Option<&mut BatchCursor>,
+        #[cfg(debug_assertions)] shadow: &mut Option<scanner::Scanner<'src>>,
+    ) -> Result<LexToken<'src>, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
 
         loop {
             let next_char = self.peek_char(batch, cursor.as_deref());
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, batch, cursor.as_deref_mut())? {
+            if let Some(tok) = self.lex_state_step(
+                self.lex_state,
+                next_char,
+                batch,
+                cursor.as_deref_mut(),
+                #[cfg(debug_assertions)] shadow,
+            )? {
                 #[cfg(test)]
                 {
                     self.lexed_tokens.push(self.owned_from_lex_token(tok.clone()));
@@ -877,6 +1004,68 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         raw
     }
 
+    // -------------------------- Shadow (debug) helpers --------------------------
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_begin<'src>(
+        &self,
+        shadow: &mut Option<scanner::Scanner<'src>>,
+        policy: scanner::FragmentPolicy,
+    ) {
+        if let Some(s) = shadow.as_mut() {
+            s.begin(policy);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_advance<'src>(&self, shadow: &mut Option<scanner::Scanner<'src>>) {
+        let _ = shadow; // Phase 3: drive in selective places only
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_copy_while_char<'src, F: Fn(char) -> bool>(
+        &self,
+        shadow: &mut Option<scanner::Scanner<'src>>,
+        pred: F,
+    ) -> usize {
+        if let Some(s) = shadow.as_mut() {
+            // Drive scanner but do not assert on counts in Phase 3 shadow mode.
+            let _ = s.copy_while_char(pred);
+        }
+        0
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_mark_escape<'src>(&self, shadow: &mut Option<scanner::Scanner<'src>>) {
+        if let Some(s) = shadow.as_mut() {
+            s.mark_escape();
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_ensure_raw<'src>(&self, shadow: &mut Option<scanner::Scanner<'src>>) {
+        if let Some(s) = shadow.as_mut() {
+            s.ensure_raw();
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    fn shadow_emit<'src>(
+        &self,
+        shadow: &mut Option<scanner::Scanner<'src>>,
+        is_final: bool,
+        end_adjust: usize,
+    ) {
+        if let Some(s) = shadow.as_mut() {
+            let _ = s.emit_fragment(is_final, end_adjust);
+        }
+    }
+
     #[inline]
     fn ensure_raw_mode_and_move_buffers(&mut self) {
         if self.token_is_raw_bytes { return; }
@@ -971,6 +1160,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         next_char: PeekedChar,
         batch: Option<&BatchView<'src>>,
         mut cursor: Option<&mut BatchCursor>,
+        #[cfg(debug_assertions)] shadow: &mut Option<scanner::Scanner<'src>>,
     ) -> Result<Option<LexToken<'src>>, ParserError<B>> {
         use LexState::*;
         match lex_state {
@@ -978,25 +1168,39 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Default => match next_char {
                 // Strict JSON whitespace (always allowed)
                 Char(' ' | '\n' | '\r' | '\t') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(None)
                 }
                 // Additional Unicode whitespace (only when enabled)
                 Char(c) if self.allow_unicode_whitespace && c.is_whitespace() => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(None)
                 }
                 Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
                 EndOfInput => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Eof, false)))
                 }
-                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char, batch, cursor.as_deref_mut()),
+                    Char(_) => self.lex_state_step(
+                        self.parse_state.into(),
+                        next_char,
+                        batch,
+                        cursor.as_deref_mut(),
+                        #[cfg(debug_assertions)] shadow,
+                    ),
             }
 
             // -------------------------- VALUE entry --------------------------
             Value => match next_char {
                 Char(c) if matches!(c, '{' | '[') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
@@ -1004,6 +1208,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_is_owned = false;
                     self.token_buffer.clear();
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); }
                     self.lex_state = ValueLiteral;
@@ -1016,6 +1222,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
+                    #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Disallowed);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = Sign;
@@ -1027,6 +1237,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
+                    #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Disallowed);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = Zero;
@@ -1038,6 +1252,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
                     self.owned_batch_buffer.clear();
+                    #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Disallowed);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalInteger;
@@ -1048,12 +1266,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_is_raw_bytes = false;
                     self.owned_batch_buffer.clear();
                     self.owned_batch_raw.clear();
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut()); // consume quote
                     self.token_buffer.clear();
                     self.lex_state = LexState::String;
                     self.token_start_pos = Some(self.pos);
                     self.string_had_escape = false;
                     self.initialized_string = true;
+                    #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Allowed);
                     Ok(None)
                 }
                 c => Err(self.invalid_char(c)),
@@ -1065,12 +1287,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         let from_source = self.reading_from_source(batch);
+                        #[cfg(debug_assertions)]
+                        self.shadow_advance(shadow);
                         self.advance_char(batch, cursor.as_deref_mut());
                         if from_source { self.token_buffer.push(c); }
                         Ok(None)
                     }
                     literal_buffer::Step::Done(tok) => {
                         let from_source = self.reading_from_source(batch);
+                        #[cfg(debug_assertions)]
+                        self.shadow_advance(shadow);
                         self.advance_char(batch, cursor.as_deref_mut());
                         if from_source { self.token_buffer.push(c); }
                         let lt = match tok { Token::Null => LexToken::Null, Token::Boolean(b) => LexToken::Boolean(b), _ => unreachable!() };
@@ -1127,6 +1353,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c @ '.') => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalPoint;
@@ -1134,6 +1362,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
@@ -1141,6 +1371,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
@@ -1150,13 +1382,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             .copy_while(&mut self.token_buffer, |d| d.is_ascii_digit());
                         self.column += copied;
                         self.pos += copied;
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        let copied = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     }
 
                     Ok(None)
                 }
                 _ => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_emit(shadow, true, 0);
                     let tok = self.produce_number(batch);
                     Ok(Some(self.new_token(tok, false)))
                 }
@@ -1166,6 +1408,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
@@ -1173,6 +1417,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalFraction;
@@ -1183,8 +1429,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             .copy_while(&mut self.token_buffer, |d| d.is_ascii_digit());
                         self.column += copied;
                         self.pos += copied;
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        let copied = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     }
 
                     Ok(None)
@@ -1196,6 +1450,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, 'e' | 'E') => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
                     self.lex_state = DecimalExponent;
@@ -1203,6 +1459,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
@@ -1212,13 +1470,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             .copy_while(&mut self.token_buffer, |d| d.is_ascii_digit());
                         self.column += copied;
                         self.pos += copied;
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        let copied = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     }
 
                     Ok(None)
                 }
                 _ => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_emit(shadow, true, 0);
                     let tok = self.produce_number(batch);
                     Ok(Some(self.new_token(tok, false)))
                 }
@@ -1227,12 +1495,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalExponent => match next_char {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if matches!(c, '+' | '-') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentSign;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
@@ -1243,6 +1515,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
                     self.column += copied;
                     self.pos += copied;
+                    #[cfg(debug_assertions)]
+                    {
+                    let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                    }
 
                     Ok(None)
                 }
@@ -1252,6 +1528,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalExponentSign => match next_char {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if c.is_ascii_digit() => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
@@ -1262,6 +1540,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
                     self.column += copied;
                     self.pos += copied;
+                    #[cfg(debug_assertions)]
+                    {
+                    let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                    }
 
                     Ok(None)
                 }
@@ -1272,6 +1554,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => { self.token_is_owned = true; Ok(Some(self.new_token(LexToken::Eof, true))) },
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); } else { self.owned_batch_buffer.push(c); }
 
@@ -1281,13 +1565,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             .copy_while(&mut self.token_buffer, |d| d.is_ascii_digit());
                         self.column += copied;
                         self.pos += copied;
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     } else {
-                        let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        let copied = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |d| d.is_ascii_digit());
+                        #[cfg(debug_assertions)]
+                        {
+                            let _ = self.shadow_copy_while_char(shadow, |d| d.is_ascii_digit());
+                        }
                     }
 
                     Ok(None)
                 }
                 _ => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_emit(shadow, true, 0);
                     let tok = self.produce_number(batch);
                     Ok(Some(self.new_token(tok, false)))
                 }
@@ -1297,6 +1591,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             LexState::String => match next_char {
                 // escape sequence
                 Char('\\') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_mark_escape(shadow);
                     // For property names, we don't emit fragments; for values, emit the
                     // current fragment before switching to escape handling.
                     if self.parse_state == ParseState::BeforePropertyName {
@@ -1316,6 +1612,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             }
                         }
                         self.token_is_owned = true;
+                        #[cfg(debug_assertions)]
+                        self.shadow_advance(shadow);
                         self.advance_char(batch, cursor.as_deref_mut());
                         self.string_had_escape = true;
                         self.lex_state = LexState::StringEscape;
@@ -1339,6 +1637,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.token_is_owned = true;
                         self.string_had_escape = true;
                         // Now consume the backslash and transition to escape state
+                        #[cfg(debug_assertions)]
+                        self.shadow_advance(shadow);
                         self.advance_char(batch, cursor.as_deref_mut());
                         self.lex_state = LexState::StringEscape;
                         if had_prefix {
@@ -1366,6 +1666,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     // Property names remain UTF-8: degrade to replacement.
                                     if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
                                 } else {
+                                    #[cfg(debug_assertions)]
+                                    self.shadow_ensure_raw(shadow);
                                     self.ensure_raw_mode_and_move_buffers();
                                     let u = high;
                                     let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
@@ -1376,11 +1678,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             }
                         }
                     }
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     // Exclude the closing quote – temporarily move pos back
                     let end_pos = self.pos.saturating_sub(1);
                     let saved_pos = self.pos;
                     self.pos = end_pos;
+                    #[cfg(debug_assertions)]
+                    self.shadow_emit(shadow, true, 1);
                     let tok = self.produce_string(false, batch);
                     self.pos = saved_pos;
                     Ok(Some(tok))
@@ -1408,12 +1714,20 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     } else { break; }
                                 } else { break; }
                             }
+                            #[cfg(debug_assertions)]
+                            {
+                                let _ = self.shadow_copy_while_char(shadow, |d| d != '\\' && d != '"' && d >= '\u{20}');
+                            }
                         } else {
                             let copied = self.source.copy_while(&mut self.token_buffer, |ch| {
                                 ch != '\\' && ch != '"' && ch >= '\u{20}'
                             });
                             self.column += copied;
                             self.pos += copied;
+                            #[cfg(debug_assertions)]
+                            {
+                                let _ = self.shadow_copy_while_char(shadow, |d| d != '\\' && d != '"' && d >= '\u{20}');
+                            }
                         }
                     } else {
                         if self.token_is_owned {
@@ -1433,15 +1747,27 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         _local += 1;
                                     } else { break; }
                                 }
+                                #[cfg(debug_assertions)]
+                                {
+                                    let _ = self.shadow_copy_while_char(shadow, |d| d != '\\' && d != '"' && d >= '\u{20}');
+                                }
                             } else {
-                                let _ = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |ch| {
+                                let copied = self.copy_from_batch_while_to_owned(batch, cursor.as_deref_mut(), |ch| {
                                     ch != '\\' && ch != '"' && ch >= '\u{20}'
                                 });
+                                #[cfg(debug_assertions)]
+                                {
+                                    let _ = self.shadow_copy_while_char(shadow, |d| d != '\\' && d != '"' && d >= '\u{20}');
+                                }
                             }
                         } else {
-                            let _ = self.copy_while_from(batch, cursor.as_deref_mut(), |ch| {
+                            let copied = self.copy_while_from(batch, cursor.as_deref_mut(), |ch| {
                                 ch != '\\' && ch != '"' && ch >= '\u{20}'
                             });
+                            #[cfg(debug_assertions)]
+                            {
+                                let _ = self.shadow_copy_while_char(shadow, |d| d != '\\' && d != '"' && d >= '\u{20}');
+                            }
                         }
                     }
 
@@ -1570,6 +1896,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                         Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(prev_high as u32)))
                                                     }
                                                     options::DecodeMode::SurrogatePreserving => {
+                                                        #[cfg(debug_assertions)]
+                                                        self.shadow_ensure_raw(shadow);
                                                         self.ensure_raw_mode_and_move_buffers();
                                                         let u = prev_high;
                                                         let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
@@ -1604,6 +1932,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                 match self.decode_mode {
                                                     options::DecodeMode::SurrogatePreserving if self.last_was_lone_low => {
                                                         // Reversed order: emit this standalone high immediately
+                                                        #[cfg(debug_assertions)]
+                                                        self.shadow_ensure_raw(shadow);
                                                         self.ensure_raw_mode_and_move_buffers();
                                                         let u2 = code as u16;
                                                         let b1 = 0xE0 | ((u2 as u32 >> 12) & 0x0F) as u8;
@@ -1643,6 +1973,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                 match self.decode_mode {
                                                     options::DecodeMode::StrictUnicode => Err(self.syntax_error(SyntaxError::InvalidUnicodeEscapeSequence(code))),
                                                     options::DecodeMode::SurrogatePreserving => {
+                                                        #[cfg(debug_assertions)]
+                                                        self.shadow_ensure_raw(shadow);
                                                         self.ensure_raw_mode_and_move_buffers();
                                                         let u = code as u16;
                                                         let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
@@ -1683,6 +2015,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             StringEscapeUnicodeExpectBackslash => match next_char {
                 Empty => Ok(Some(self.produce_string(true, batch))),
                 Char('\\') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.lex_state = LexState::StringEscapeUnicodeExpectU;
                     Ok(None)
@@ -1693,6 +2027,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         options::DecodeMode::StrictUnicode => Err(self.read_and_invalid_char(c)),
                         options::DecodeMode::SurrogatePreserving => {
                             if let Some(high) = self.pending_high_surrogate.take() {
+                                #[cfg(debug_assertions)]
+                                self.shadow_ensure_raw(shadow);
                                 self.ensure_raw_mode_and_move_buffers();
                                 let u = high;
                                 let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
@@ -1718,6 +2054,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             StringEscapeUnicodeExpectU => match next_char {
                 Empty => Ok(Some(self.produce_string(true, batch))),
                 Char(c) if c == 'u' || (c == 'U' && self.allow_uppercase_u) => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
@@ -1729,6 +2067,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         options::DecodeMode::StrictUnicode => Err(self.read_and_invalid_char(c)),
                         options::DecodeMode::SurrogatePreserving => {
                             if let Some(high) = self.pending_high_surrogate.take() {
+                                #[cfg(debug_assertions)]
+                                self.shadow_ensure_raw(shadow);
                                 self.ensure_raw_mode_and_move_buffers();
                                 let u = high;
                                 let b1 = 0xE0 | ((u as u32 >> 12) & 0x0F) as u8;
@@ -1763,17 +2103,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             BeforePropertyName => match next_char {
                 Char('}') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(b'}'), false)))
                 }
 
                 Char('"') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     self.token_buffer.clear();
                     self.lex_state = LexState::String;
                     // Track start of the property name content
                     self.token_start_pos = Some(self.pos);
                     self.string_had_escape = false;
+                    #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Disallowed);
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -1781,6 +2127,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterPropertyName => match next_char {
                 Char(c @ ':') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
@@ -1794,6 +2142,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterPropertyValue => match next_char {
                 Char(c) if matches!(c, ',' | '}') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
@@ -1802,6 +2152,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             BeforeArrayValue => match next_char {
                 Char(']') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(b']'), false)))
                 }
@@ -1813,6 +2165,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             AfterArrayValue => match next_char {
                 Char(c) if matches!(c, ',' | ']') => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
@@ -2188,1050 +2542,4 @@ impl StreamingParserImpl<RustContext> {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)]
-mod tests {
-    use alloc::{vec, vec::Vec};
-
-    use super::*;
-    use alloc::borrow::Cow;
-    use crate::parser::options::DecodeMode;
-
-    // #[test]
-    // fn parser_compiles() {
-    //     // Smoke test: ensure types are sized and constructible
-    //     let _ = DefaultStreamingParser::new(ParserOptions::default());
-    //     let _ = ClosedStreamingParser {
-    //         parser: DefaultStreamingParser::new(ParserOptions::default()),
-    //         builder: RustContext,
-    //     };
-    // }
-
-    #[test]
-    fn parser_basic_example() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions {
-            panic_on_error: true,
-            ..Default::default()
-        });
-        let mut events: Vec<_> = vec![];
-        events.extend(parser.feed(
-            "[\"hello\", {\"\": \"world\"}, 0, 1, 1.2,
-true, false, null]",
-        ));
-        events.extend(parser.finish());
-
-        let Ok(ParseEvent::String { ref fragment, .. }) = events[1] else {
-            panic!("Expected string event");
-        };
-        let alloc::borrow::Cow::Borrowed(_) = fragment else {
-            panic!("Expected borrowed fragment");
-        };
-
-        assert_eq!(
-            events,
-            vec![
-                Ok(ParseEvent::ArrayBegin { path: vec![] }),
-                Ok(ParseEvent::String {
-                    path: vec![PathItem::Index(0)],
-                    fragment: "hello".into(),
-                    is_initial: true,
-                    is_final: true,
-                }),
-                Ok(ParseEvent::ObjectBegin {
-                    path: vec![PathItem::Index(1)]
-                }),
-                Ok(ParseEvent::String {
-                    path: vec![PathItem::Index(1), PathItem::Key("".into())],
-                    fragment: "world".into(),
-                    is_initial: true,
-                    is_final: true,
-                }),
-                Ok(ParseEvent::ObjectEnd {
-                    path: vec![PathItem::Index(1)]
-                }),
-                Ok(ParseEvent::Number {
-                    path: vec![PathItem::Index(2)],
-                    value: 0.0,
-                }),
-                Ok(ParseEvent::Number {
-                    path: vec![PathItem::Index(3)],
-                    value: 1.0,
-                }),
-                Ok(ParseEvent::Number {
-                    path: vec![PathItem::Index(4)],
-                    value: 1.2,
-                }),
-                Ok(ParseEvent::Boolean {
-                    path: vec![PathItem::Index(5)],
-                    value: true,
-                }),
-                Ok(ParseEvent::Boolean {
-                    path: vec![PathItem::Index(6)],
-                    value: false,
-                }),
-                Ok(ParseEvent::Null {
-                    path: vec![PathItem::Index(7)],
-                }),
-                Ok(ParseEvent::ArrayEnd { path: vec![] }),
-            ]
-        );
-    }
-
-    #[test]
-    fn string_borrow_no_escape_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[\"hello\"]");
-        // Expect ArrayBegin
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // Expect borrowed string
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Borrowed("hello"));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        // Expect ArrayEnd
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_escape_splits_and_forces_buffer() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[\"ab\\ncd\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-
-        // First fragment before escape: should be owned (buffered) and not final
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Owned(String::from("ab")));
-                assert!(is_initial);
-                assert!(!is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-
-        // Second fragment after escape to end: should include decoded '\n' and be owned
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Owned(String::from("\ncd")));
-                assert!(!is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_cross_batch_borrows_fragments() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[\"");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // Feed partial content
-        drop(it);
-        let mut it = parser.feed("abc");
-        // Fragment should be borrowed and not final yet (no closing quote)
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Borrowed("abc"));
-                assert!(is_initial);
-                assert!(!is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        drop(it);
-        let mut it = parser.feed("def\"]");
-        // Final fragment should be borrowed and final
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Borrowed("def"));
-                assert!(!is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_drop_switches_to_buffer_mode() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[\"");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        // Start string content, then drop iterator to force buffer mode
-        let it = parser.feed("abc");
-        // No event yet (no closing quote), drop to force buffered mode for in-flight token
-        drop(it);
-        let mut it = parser.feed("def\"]");
-        // Expect a single buffered fragment with full content
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Owned(String::from("abcdef")));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn number_cross_batch_and_drop_correctness() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let it = parser.feed("123");
-        // No number yet (could be more), drop iterator to force buffered mode
-        drop(it);
-        let mut it = parser.feed("45, 6]");
-        match it.next().unwrap().unwrap() {
-            ParseEvent::Number { value, .. } => {
-                assert_eq!(value, 12345.0);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        match it.next().unwrap().unwrap() {
-            ParseEvent::Number { value, .. } => {
-                assert_eq!(value, 6.0);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_empty_borrow_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"[""]"#);
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Borrowed(""));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_unicode_escape_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"["A\u0042"]"#);
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // First fragment before escape will be buffered due to escape handling
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("A".to_string()));
-                assert!(is_initial);
-                assert!(!is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        // Second fragment contains decoded 'B'
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("B".to_string()));
-                assert!(!is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_unicode_escape_cross_batches() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"["A\u"#);
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // Escape starts but incomplete; no fragment yet (we emit on encountering escape)
-        drop(it);
-        let mut it = parser.feed(r#"0042"]"#);
-        // Now comes a single buffered fragment with decoded 'AB'.
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("AB".to_string()));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_surrogate_pair_single_chunk() {
-        // "\uD83D\uDE80" => 🚀
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"["\uD83D\uDE80"]"#);
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // Single fragment: decoded surrogate pair
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("🚀".to_string()));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_surrogate_pair_cross_batches() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"["\uD83D"#);
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let mut it = parser.feed(r#"\uDE80"]"#);
-        // Single fragment: decoded surrogate pair after crossing batches
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("🚀".to_string()));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_surrogate_pair_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"{"\uD83D\uDE80": 1}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 1.0);
-            assert_eq!(path, vec![PathItem::Key("🚀".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_surrogate_pair_cross_batches() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("{");
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        drop(it);
-        let it = parser.feed(r#""\uD83D"#);
-        drop(it);
-        let mut it = parser.feed(r#"\uDE80": 1}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 1.0);
-            assert_eq!(path, vec![PathItem::Key("🚀".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn number_exponent_and_sign() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"[-1e-2, 3E3]"#);
-        match it.next().unwrap().unwrap() { ParseEvent::ArrayBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value + 0.01).abs() < 1e-12), _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value - 3000.0).abs() < 1e-12), _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ArrayEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn number_borrowed_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[123]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert_eq!(value, 123.0), _ => panic!() }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn number_fraction_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[12.345]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert!((value - 12.345).abs() < 1e-12), _ => panic!() }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn number_exponent_cross_batch() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let it = parser.feed("1e");
-        // No number yet, drop to cross batch
-        drop(it);
-        let mut it = parser.feed("6]");
-        match it.next().unwrap().unwrap() { ParseEvent::Number { value, .. } => assert_eq!(value, 1_000_000.0), _ => panic!() }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_borrowed_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"{"k": 0}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 0.0);
-            assert_eq!(path, vec![PathItem::Key("k".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_unicode_escape_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"{"A\u0042": 0}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 0.0);
-            assert_eq!(path, vec![PathItem::Key("AB".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_unicode_escape_cross_batches() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("{");
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        drop(it);
-        let it = parser.feed(r#""A\u"#);
-        drop(it);
-        let mut it = parser.feed(r#"0042": 0}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 0.0);
-            assert_eq!(path, vec![PathItem::Key("AB".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    // ------------------------- DESIGN.md Decode Tests -------------------------
-    fn parse_single_string(opts: ParserOptions, json: &str) -> Result<String, ParserError<RustContext>> {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..opts });
-        let mut it = parser.feed(json);
-        let mut out = String::new();
-        while let Some(evt) = it.next() {
-            match evt? {
-                ParseEvent::String { fragment, .. } => out.push_str(&fragment),
-                _ => {}
-            }
-        }
-        Ok(out)
-    }
-
-    #[test]
-    fn raw_backend_borrowed_string_single_chunk() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"hi\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Borrowed(b"hi"));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_string_escape_owned_fragments() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"A\\u0042\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(b"A".to_vec()));
-                assert!(is_initial);
-                assert!(!is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(b"B".to_vec()));
-                assert!(!is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_surrogate_lone_high() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uD83D\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xA0, 0xBD]));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_surrogate_lone_low() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uDE00\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xB8, 0x80]));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    #[ignore]
-    fn raw_backend_surrogate_reversed_pair() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uDE00\\uD83D\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xB8, 0x80, 0xED, 0xA0, 0xBD]));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_high_then_letter() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uD83D\\u0041\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![0xED, 0xA0, 0xBD, b'A'])) ;
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_letter_then_low() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\u0041\\uDE00\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(vec![b'A', 0xED, 0xB8, 0x80]));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn raw_backend_pair_split_across_chunks() {
-        use alloc::borrow::Cow;
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uD83D");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let mut it = parser.feed_with(RawContext, "\\uDE00\"]");
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned("😀".as_bytes().to_vec()));
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    #[ignore]
-    fn raw_backend_replace_invalid_lone_low_surrogate() {
-        use alloc::borrow::Cow;
-        // SurrogatePreserving currently degrades to ReplaceInvalid in UTF-8 backend behavior.
-        let mut ctx = RawContext;
-        let mut parser = StreamingParserImpl::<RawContext>::new_with_factory(&mut ctx, ParserOptions { panic_on_error: true, decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() });
-        let mut it = parser.feed_with(RawContext, "[\"\\uDE00\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // First fragment may be an empty prefix
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned(Vec::new()));
-                assert!(is_initial);
-                assert!(!is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert_eq!(fragment, Cow::<[u8]>::Owned("�".as_bytes().to_vec()));
-                assert!(!is_initial);
-                assert!(is_final);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn design_valid_pair_grinning_face() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\\uDE00\"]").unwrap();
-        assert_eq!(s, "😀");
-    }
-
-    #[test]
-    fn design_valid_pair_smile() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\\uDE0A\"]").unwrap();
-        assert_eq!(s, "😊");
-    }
-
-    #[test]
-    fn design_emoji_literal() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"😀\"]").unwrap();
-        assert_eq!(s, "😀");
-    }
-
-    #[test]
-    fn design_lone_high_strict_error_replaceinvalid_ok() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83D\"]");
-        assert!(it.next().is_some()); // ArrayBegin
-        // Next should error on escape
-        assert!(it.next().unwrap().is_err());
-
-        // ReplaceInvalid: U+FFFD
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\"]").unwrap();
-        assert_eq!(s, "�");
-    }
-
-    #[test]
-    fn design_lone_low_behavior() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uDE00\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: �
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uDE00\"]").unwrap();
-        assert_eq!(s, "�");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_reversed_pair() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uDE00\\uD83D\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: �
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uDE00\\uD83D\"]").unwrap();
-        assert_eq!(s, "��");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_high_high() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83D\\uD83D\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: ��
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\\uD83D\"]").unwrap();
-        assert_eq!(s, "��");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_low_low() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uDE00\\uDE00\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: ��
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uDE00\\uDE00\"]").unwrap();
-        assert_eq!(s, "��");
-    }
-
-    #[test]
-    fn design_nul_escape() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\u0000\"]").unwrap();
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.chars().next().unwrap(), '\u{0000}');
-    }
-
-    #[test]
-    fn design_boundary_high_min_max_low_min_max() {
-        // Strict: all errors
-        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
-            let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-            let mut parser = DefaultStreamingParser::new(opts);
-            let text = &format!("[\"{esc}\"]");
-            let mut it = parser.feed(text);
-            assert!(it.next().is_some());
-            assert!(it.next().unwrap().is_err());
-        }
-        // ReplaceInvalid: all map to U+FFFD
-        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
-            let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-            let s = parse_single_string(opts, &format!("[\"{esc}\"]")).unwrap();
-            assert_eq!(s, "�");
-        }
-    }
-
-    #[test]
-    fn design_truncated_escape_length() {
-        // "\\uD83" (short sequence) -> invalid escape
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-    }
-
-    // SurrogatePreserving mode tests: in our UTF-8 backend this degrades to
-    // ReplaceInvalid per DESIGN.md, so outcomes should match ReplaceInvalid.
-
-    #[test]
-    fn design_sp_lone_high_degrades_to_replacement() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\"]").unwrap();
-        assert_eq!(s, "�");
-    }
-
-    #[test]
-    fn design_sp_lone_low_degrades_to_replacement() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uDE00\"]").unwrap();
-        assert_eq!(s, "�");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_sp_reversed_pair_degrades_to_double_replacement() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uDE00\\uD83D\"]").unwrap();
-        assert_eq!(s, "��");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_sp_high_then_letter_degrades() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\\u0041\"]").unwrap();
-        assert_eq!(s, "�A");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_sp_letter_then_low_degrades() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\u0041\\uDE00\"]").unwrap();
-        assert_eq!(s, "A�");
-    }
-
-    #[test]
-    fn design_sp_boundary_min_max_degrades() {
-        for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
-            let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-            let s = parse_single_string(opts, &format!("[\"{}\"]", esc)).unwrap();
-            assert_eq!(s, "�");
-        }
-    }
-
-    #[test]
-    fn design_sp_pair_split_across_stream_chunks_joins() {
-        let opts = ParserOptions { decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83D");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let mut it = parser.feed("\\uDE00\"]");
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Owned("😀".to_string()));
-                assert!(is_final);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn design_sp_uppercase_U_escape_when_allowed() {
-        let opts = ParserOptions { allow_uppercase_u: true, decode_mode: DecodeMode::SurrogatePreserving, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\UD83D\\UDE00\"]").unwrap();
-        assert_eq!(s, "😀");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_high_then_letter() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83D\\u0041\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: �A
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83D\\u0041\"]").unwrap();
-        assert_eq!(s, "�A");
-    }
-
-    #[test]
-    #[ignore]
-    fn design_letter_then_low() {
-        // Strict: error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\u0041\\uDE00\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // ReplaceInvalid: A�
-        let opts = ParserOptions { decode_mode: DecodeMode::ReplaceInvalid, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\u0041\\uDE00\"]").unwrap();
-        assert_eq!(s, "A�");
-    }
-
-    #[test]
-    fn design_invalid_escape_hex() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83G\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-    }
-
-    #[test]
-    fn design_uppercase_U_escape() {
-        // Default (disallowed): error
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\UD83D\\UDE00\"]");
-        assert!(it.next().is_some());
-        assert!(it.next().unwrap().is_err());
-        // allow_uppercase_u: ok
-        let opts = ParserOptions { allow_uppercase_u: true, decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\UD83D\\UDE00\"]").unwrap();
-        assert_eq!(s, "😀");
-    }
-
-    #[test]
-    fn design_mixed_case_hex_digits() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let s = parse_single_string(opts, "[\"\\uD83d\\uDe00\"]").unwrap();
-        assert_eq!(s, "😀");
-    }
-
-    #[test]
-    fn design_pair_split_across_stream_chunks() {
-        let opts = ParserOptions { decode_mode: DecodeMode::StrictUnicode, ..Default::default() };
-        let mut parser = DefaultStreamingParser::new(opts);
-        let mut it = parser.feed("[\"\\uD83D");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        drop(it);
-        let mut it = parser.feed("\\uDE00\"]");
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_final, .. } => {
-                assert_eq!(fragment, Cow::<str>::Owned("😀".to_string()));
-                assert!(is_final);
-            }
-            other => panic!("unexpected: {other:?}"),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_multibyte_cross_batches_no_escape() {
-        // Property name split across feeds without escapes; dropping iterator forces
-        // owned key assembly and correct path update.
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("{");
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        drop(it);
-        let it = parser.feed("\"🚀");
-        drop(it);
-        let mut it = parser.feed("🚀\": 1}");
-        match it.next().unwrap().unwrap() { ParseEvent::Number { path, value } => {
-            assert_eq!(value, 1.0);
-            // Depending on iterator drop semantics, either the first fragment
-            // is preserved in the ring-backed buffer or accumulated from the
-            // resumed batch; ensure at least one multibyte char is present and
-            // allow either one or two rockets.
-            assert!(path == vec![PathItem::Key("🚀🚀".into())]
-                || path == vec![PathItem::Key("🚀".into())]);
-        } _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_multibyte_borrow_no_escape_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed("[\"€🙂\"]");
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert!(matches!(fragment, alloc::borrow::Cow::Borrowed(_)));
-                assert_eq!(fragment, "€🙂");
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            _ => panic!(),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn string_multibyte_cross_batches_and_drop() {
-        // First feed contains opening quote and the first multibyte char
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let it = parser.feed("[\"€");
-        drop(it); // drop mid-string; remainder will be buffered/owned
-        let mut it = parser.feed("🙂\"]");
-        // ArrayBegin event from previous feed is still pending
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayBegin { .. }));
-        // After drop, the parser coalesces the already-read part with the
-        // remainder into a single owned fragment upon completion.
-        match it.next().unwrap().unwrap() {
-            ParseEvent::String { fragment, is_initial, is_final, .. } => {
-                assert!(matches!(fragment, alloc::borrow::Cow::Owned(_)));
-                assert_eq!(fragment, "€🙂");
-                assert!(is_initial);
-                assert!(is_final);
-            }
-            _ => panic!(),
-        }
-        assert!(matches!(it.next().unwrap().unwrap(), ParseEvent::ArrayEnd { .. }));
-        // No more events in this feed
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn property_name_multibyte_key_single_chunk() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { panic_on_error: true, ..Default::default() });
-        let mut it = parser.feed(r#"{"🚀": 1}"#);
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() {
-            ParseEvent::Number { path, value } => {
-                assert_eq!(value, 1.0);
-                assert_eq!(path, vec![PathItem::Key("🚀".into())]);
-            }
-            _ => panic!(),
-        }
-        match it.next().unwrap().unwrap() { ParseEvent::ObjectEnd { .. } => {}, _ => panic!() }
-        assert!(it.next().is_none());
-    }
-
-    #[test]
-    fn unicode_whitespace_rejected_by_default() {
-        // By default, only JSON's 4 whitespace code points are allowed.
-        // NO-BREAK SPACE (U+00A0) should be rejected.
-        let mut parser = DefaultStreamingParser::new(ParserOptions::default());
-        let mut it = parser.feed("\u{00A0}[]");
-        let first = it.next().unwrap();
-        match first {
-            Err(ParserError { source: ErrorSource::SyntaxError(SyntaxError::InvalidCharacter(c)), .. }) => {
-                assert_eq!(c, '\u{00A0}');
-            }
-            other => panic!("expected InvalidCharacter error, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn unicode_whitespace_accepted_when_enabled() {
-        let mut parser = DefaultStreamingParser::new(ParserOptions { allow_unicode_whitespace: true, ..Default::default() });
-        // Include various Unicode whitespace around a trivial array
-        let input = "\u{00A0}\u{2028}[ ]\u{2029}\u{FEFF}";
-        let mut it = parser.feed(input);
-        match it.next().unwrap().unwrap() { ParseEvent::ArrayBegin { .. } => {}, _ => panic!() }
-        match it.next().unwrap().unwrap() { ParseEvent::ArrayEnd { .. } => {}, _ => panic!() }
-    }
-
-}
+mod tests;

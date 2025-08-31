@@ -1,6 +1,10 @@
 #![expect(clippy::inline_always)]
 
 use alloc::{collections::VecDeque, string::String};
+#[cfg(debug_assertions)]
+use alloc::string::ToString;
+#[cfg(debug_assertions)]
+use alloc::vec::Vec;
 
 #[derive(Debug)]
 pub(crate) struct Buffer {
@@ -76,5 +80,13 @@ impl Iterator for Buffer {
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         self.consume_char()
+    }
+}
+
+impl Buffer {
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_bytes(&self) -> Vec<u8> {
+        // Collect chars into a String, then return its UTF-8 bytes.
+        self.data.iter().collect::<String>().into_bytes()
     }
 }
