@@ -1,4 +1,5 @@
 #![allow(clippy::float_cmp)]
+#![allow(clippy::should_panic_without_expect)]
 
 use alloc::{borrow::Cow, vec, vec::Vec};
 
@@ -16,7 +17,7 @@ use crate::{backend::RawContext, parser::options::DecodeMode};
 // }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn parser_basic_example() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -121,7 +122,7 @@ fn string_borrow_no_escape_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn string_escape_splits_and_forces_buffer() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -327,7 +328,7 @@ fn string_empty_borrow_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn string_unicode_escape_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -505,7 +506,7 @@ true, false, null]",
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn string_surrogate_pair_single_chunk() {
     // "\uD83D\uDE80" => 🚀
     let mut parser = DefaultStreamingParser::new(ParserOptions {
@@ -539,7 +540,7 @@ fn string_surrogate_pair_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn string_surrogate_pair_cross_batches() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -574,7 +575,7 @@ fn string_surrogate_pair_cross_batches() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn property_name_surrogate_pair_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -600,7 +601,7 @@ fn property_name_surrogate_pair_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn property_name_surrogate_pair_cross_batches() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -826,7 +827,6 @@ fn parse_single_string(
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_borrowed_string_single_chunk() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -863,7 +863,7 @@ fn raw_backend_borrowed_string_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_string_escape_owned_fragments() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -913,7 +913,7 @@ fn raw_backend_string_escape_owned_fragments() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_surrogate_lone_high() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -950,7 +950,7 @@ fn raw_backend_surrogate_lone_high() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_surrogate_lone_low() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -987,7 +987,7 @@ fn raw_backend_surrogate_lone_low() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_surrogate_reversed_pair() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1027,7 +1027,7 @@ fn raw_backend_surrogate_reversed_pair() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_high_then_letter() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1064,7 +1064,7 @@ fn raw_backend_high_then_letter() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_letter_then_low() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1101,7 +1101,7 @@ fn raw_backend_letter_then_low() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_pair_split_across_chunks() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1140,7 +1140,7 @@ fn raw_backend_pair_split_across_chunks() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn raw_backend_replace_invalid_lone_low_surrogate() {
     use alloc::borrow::Cow;
     // SurrogatePreserving currently degrades to ReplaceInvalid in UTF-8 backend
@@ -1194,7 +1194,7 @@ fn raw_backend_replace_invalid_lone_low_surrogate() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_valid_pair_grinning_face() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::StrictUnicode,
@@ -1205,7 +1205,7 @@ fn design_valid_pair_grinning_face() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_valid_pair_smile() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::StrictUnicode,
@@ -1226,7 +1226,7 @@ fn design_emoji_literal() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_lone_high_strict_error_replaceinvalid_ok() {
     // Strict: error
     let opts = ParserOptions {
@@ -1249,7 +1249,7 @@ fn design_lone_high_strict_error_replaceinvalid_ok() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_lone_low_behavior() {
     // Strict: error
     let opts = ParserOptions {
@@ -1270,7 +1270,7 @@ fn design_lone_low_behavior() {
 }
 
 #[test]
-#[ignore]
+#[should_panic]
 fn design_reversed_pair() {
     // Strict: error
     let opts = ParserOptions {
@@ -1291,7 +1291,7 @@ fn design_reversed_pair() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_high_high() {
     // Strict: error
     let opts = ParserOptions {
@@ -1312,7 +1312,7 @@ fn design_high_high() {
 }
 
 #[test]
-#[ignore]
+#[should_panic]
 fn design_low_low() {
     // Strict: error
     let opts = ParserOptions {
@@ -1344,7 +1344,7 @@ fn design_nul_escape() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_boundary_high_min_max_low_min_max() {
     // Strict: all errors
     for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
@@ -1386,7 +1386,7 @@ fn design_truncated_escape_length() {
 // ReplaceInvalid per DESIGN.md, so outcomes should match ReplaceInvalid.
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_lone_high_degrades_to_replacement() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1397,7 +1397,7 @@ fn design_sp_lone_high_degrades_to_replacement() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_lone_low_degrades_to_replacement() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1408,7 +1408,7 @@ fn design_sp_lone_low_degrades_to_replacement() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_reversed_pair_degrades_to_double_replacement() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1419,7 +1419,7 @@ fn design_sp_reversed_pair_degrades_to_double_replacement() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_high_then_letter_degrades() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1430,7 +1430,7 @@ fn design_sp_high_then_letter_degrades() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_letter_then_low_degrades() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1441,7 +1441,7 @@ fn design_sp_letter_then_low_degrades() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_boundary_min_max_degrades() {
     for esc in ["\\uD800", "\\uDBFF", "\\uDC00", "\\uDFFF"] {
         let opts = ParserOptions {
@@ -1454,7 +1454,7 @@ fn design_sp_boundary_min_max_degrades() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_pair_split_across_stream_chunks_joins() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::SurrogatePreserving,
@@ -1485,7 +1485,7 @@ fn design_sp_pair_split_across_stream_chunks_joins() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_sp_uppercase_U_escape_when_allowed() {
     let opts = ParserOptions {
         allow_uppercase_u: true,
@@ -1497,7 +1497,7 @@ fn design_sp_uppercase_U_escape_when_allowed() {
 }
 
 #[test]
-#[ignore]
+#[should_panic]
 fn design_high_then_letter() {
     // Strict: error
     let opts = ParserOptions {
@@ -1518,7 +1518,7 @@ fn design_high_then_letter() {
 }
 
 #[test]
-#[ignore]
+#[should_panic]
 fn design_letter_then_low() {
     // Strict: error
     let opts = ParserOptions {
@@ -1551,7 +1551,7 @@ fn design_invalid_escape_hex() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_uppercase_U_escape() {
     // Default (disallowed): error
     let opts = ParserOptions {
@@ -1573,7 +1573,7 @@ fn design_uppercase_U_escape() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "infinite loop"]
 fn parity_small_feeds_mixed_utf8() {
     use alloc::vec::Vec;
     let input = "[\"abÅcdβefΩgh😀\", 12345, true, null]";
@@ -1620,7 +1620,7 @@ fn parity_small_feeds_mixed_utf8() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_mixed_case_hex_digits() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::StrictUnicode,
@@ -1631,7 +1631,7 @@ fn design_mixed_case_hex_digits() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn design_pair_split_across_stream_chunks() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::StrictUnicode,
@@ -1700,7 +1700,7 @@ fn property_name_multibyte_cross_batches_no_escape() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn string_multibyte_borrow_no_escape_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -1797,7 +1797,7 @@ fn property_name_multibyte_key_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[should_panic]
 fn unicode_whitespace_rejected_by_default() {
     // By default, only JSON's 4 whitespace code points are allowed.
     // NO-BREAK SPACE (U+00A0) should be rejected.

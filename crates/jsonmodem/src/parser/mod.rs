@@ -35,6 +35,7 @@ pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
 use crate::backend::{EventCtx, PathCtx, PathKind, RustContext};
+use crate::parser::scanner::Scanner;
 
 // ------------------------------------------------------------------------------------------------
 // Lexer - internal tokens & states
@@ -150,6 +151,8 @@ type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
+    // Carryover for Scanner (ring + positions + scratch), used in parallel wiring.
+    tape: scanner::Tape,
     end_of_input: bool,
 
     /// Current *global* character position.
@@ -196,6 +199,8 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
+    // Scanner for this iteration (not yet used by parser logic; finalized on drop).
+    scanner: Scanner<'src>,
 }
 
 impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
@@ -204,6 +209,9 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
         // so the later field-drop won’t double-drop it.
         let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
+        // Finalize scanner and write back carryover state for next feed
+        let tape = core::mem::take(&mut self.scanner).finish();
+        self.parser.tape = tape;
     }
 }
 
@@ -226,6 +234,8 @@ pub struct ClosedStreamingParser<'src, B: PathCtx + EventCtx> {
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
+    // Scanner for closed iteration (finalizes to tape on drop)
+    scanner: Scanner<'src>,
 }
 
 impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
@@ -234,6 +244,8 @@ impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
         // so the later field-drop won’t double-drop it.
         let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
+        let tape = core::mem::take(&mut self.scanner).finish();
+        self.parser.tape = tape;
     }
 }
 
@@ -260,6 +272,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     pub fn new_with_factory(f: &mut B, options: ParserOptions) -> StreamingParserImpl<B> {
         Self {
             source: Buffer::new(),
+            tape: scanner::Tape::default(),
             end_of_input: false,
             partial_lex: false,
 
@@ -299,11 +312,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.feed_str(text);
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
+        let scanner = Scanner::from_carryover(core::mem::take(&mut self.tape), text);
         StreamingParserIteratorWith {
             parser: self,
             factory,
             path,
             _marker: core::marker::PhantomData,
+            scanner,
         }
     }
 
@@ -322,11 +337,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.close();
         let path = unsafe { context.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
+        let scanner = Scanner::from_carryover(core::mem::take(&mut self.tape), "");
         ClosedStreamingParser {
             parser: self,
             factory: context,
             path,
             _marker: core::marker::PhantomData,
+            scanner,
         }
     }
 
