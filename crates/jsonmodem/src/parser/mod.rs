@@ -403,7 +403,6 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     _marker: core::marker::PhantomData<&'src ()>,
     batch: BatchView<'src>,
     cursor: BatchCursor,
-    #[cfg(debug_assertions)]
     scanner: Option<scanner::Scanner<'src>>,
 }
 
@@ -448,10 +447,9 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
             // Legacy path: always push tail for continued parsing.
             self.parser.source.push(rest);
             pushed_tail_bytes = Some(rest.as_bytes().to_vec());
-            // Dual-write to Tape ring only when not using shadow Scanner; when shadow is
-            // active, finish() will handle it.
-            let use_dual_write = cfg!(not(debug_assertions)) || self.scanner.is_none();
-            if use_dual_write {
+            // Dual-write to Tape ring only when no Scanner is present; when a Scanner
+            // exists, finish() will handle mirroring.
+            if self.scanner.is_none() {
                 self.parser.tape.push_ring_bytes(rest.as_bytes());
             }
         }
@@ -481,15 +479,15 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
             .tape
             .set_positions(self.parser.pos, self.parser.line, self.parser.column);
 
-        // Debug-only assertions and scanner finalization.
-        #[cfg(debug_assertions)]
-        {
-            if let Some(scanner) = self.scanner.take() {
-                // Finalize scanner and write tape back to parser
-                let tape = scanner.finish();
-                self.parser.tape = tape;
-            } else {
-                // When not using the shadow scanner, verify we mirrored the unread tail.
+        // Finalize scanner and write tape back to parser when present; otherwise
+        // dual-write invariants were handled above.
+        if let Some(scanner) = self.scanner.take() {
+            let tape = scanner.finish();
+            self.parser.tape = tape;
+        } else {
+            #[cfg(debug_assertions)]
+            {
+                // When not using the scanner, verify we mirrored the unread tail and scratch.
                 if let Some(bytes) = pushed_tail_bytes.as_ref() {
                     let tape_bytes = self.parser.tape.debug_ring_bytes();
                     assert!(
@@ -672,7 +670,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.batch_cursor = BatchCursor::default();
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
-        #[cfg(debug_assertions)]
         let scanner = Some(scanner::Scanner::from_carryover(core::mem::take(&mut self.tape), text));
         StreamingParserIteratorWith {
             parser: self,
@@ -681,7 +678,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             _marker: core::marker::PhantomData,
             batch: BatchView { text, start_pos, end_pos, len_chars: batch_len },
             cursor: BatchCursor::default(),
-            #[cfg(debug_assertions)]
             scanner,
         }
     }
