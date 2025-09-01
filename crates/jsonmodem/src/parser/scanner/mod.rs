@@ -373,7 +373,25 @@ impl<'src> Scanner<'src> {
                         }
                     }
                 }
-                FragmentPolicy::Allowed => { /* no implicit copying */ }
+                FragmentPolicy::Allowed => {
+                    // Coalesce value string prefixes on iterator drop: copy batch prefix
+                    // so the next feed can continue in owned mode and emit a single fragment.
+                    if anchor.source == Source::Batch && !anchor.owned {
+                        if let Some(start) = anchor.start_byte_in_batch {
+                            let end = cmp::min(self.batch_bytes, self.batch.len());
+                            if end > start {
+                                let slice = &self.batch.as_bytes()[start..end];
+                                match &mut self.scratch {
+                                    TokenScratch::Text(s) => {
+                                        s.push_str(unsafe { core::str::from_utf8_unchecked(slice) })
+                                    }
+                                    TokenScratch::Raw(b) => b.extend_from_slice(slice),
+                                }
+                                anchor.owned = true;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -506,14 +524,22 @@ impl<'src> Scanner<'src> {
         };
         // If token starts in the ring, we can never borrow; start owned immediately.
         let owned = matches!(source, Source::Ring);
-        self.scratch.clear();
+        // If scratch already has a carried prefix (from a previous feed), preserve it and
+        // continue in owned mode rather than clearing it.
+        let has_carry = match &self.scratch {
+            TokenScratch::Text(s) => !s.is_empty(),
+            TokenScratch::Raw(b) => !b.is_empty(),
+        };
+        if !has_carry {
+            self.scratch.clear();
+        }
         self.anchor = Some(TokenAnchor {
             source,
             start_char,
             start_byte_in_batch,
-            owned,
+            owned: owned || has_carry,
             had_escape: false,
-            is_raw: false,
+            is_raw: matches!(self.scratch, TokenScratch::Raw(_)),
             policy,
         });
     }
@@ -539,6 +565,30 @@ impl<'src> Scanner<'src> {
             a.is_raw = true;
         }
         self.scratch.to_raw();
+    }
+
+    /// Appends UTF-8 text to the current token, switching to owned mode if needed.
+    pub fn append_text(&mut self, s: &str) {
+        self.switch_to_owned_prefix_if_needed();
+        match &mut self.scratch {
+            TokenScratch::Text(buf) => buf.push_str(s),
+            TokenScratch::Raw(b) => b.extend_from_slice(s.as_bytes()),
+        }
+        if let Some(a) = &mut self.anchor {
+            a.owned = true;
+        }
+    }
+
+    /// Appends raw bytes to the current token, switching to raw/owned mode.
+    pub fn append_raw_bytes(&mut self, bytes: &[u8]) {
+        self.ensure_raw();
+        match &mut self.scratch {
+            TokenScratch::Raw(b) => b.extend_from_slice(bytes),
+            TokenScratch::Text(s) => s.push_str(unsafe { core::str::from_utf8_unchecked(bytes) }),
+        }
+        if let Some(a) = &mut self.anchor {
+            a.owned = true;
+        }
     }
 
     /// Copies the already‑consumed batch prefix into the scratch if not already
