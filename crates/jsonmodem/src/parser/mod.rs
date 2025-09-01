@@ -1039,6 +1039,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline(always)]
+    fn shadow_pos_eq<'src>(&self, scanner: &Scanner<'src>) {
+        #[cfg(debug_assertions)]
+        {
+            let (sp, sl, sc) = scanner.debug_positions();
+            debug_assert_eq!((sp, sl, sc), (self.pos, self.line, self.column));
+        }
+    }
+
+    #[inline(always)]
     fn consume_whitespace<'src>(
         &mut self,
         batch: Option<&BatchView<'src>>,
@@ -1233,12 +1242,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.consume_whitespace(batch, cursor.as_deref_mut(), scanner);
                     Ok(None)
                 }
-                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
+                Empty => {
+                    self.shadow_pos_eq(scanner);
+                    Ok(Some(self.new_token(LexToken::Eof, true)))
+                },
                 EndOfInput => {
                     {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Eof, false)))
                 }
                 Char(_) => self.lex_state_step(
@@ -1258,6 +1271,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 Char(c) if matches!(c, 'n' | 't' | 'f') => {
@@ -1381,7 +1396,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             // -------------------------- LITERALS -----------------------------
             ValueLiteral => match next_char {
-                Empty => Ok(Some(self.new_token(LexToken::Eof, true))),
+                Empty => {
+                    self.shadow_pos_eq(scanner);
+                    Ok(Some(self.new_token(LexToken::Eof, true)))
+                },
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         let from_source = self.reading_from_source(batch);
@@ -1416,6 +1434,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             Token::Boolean(b) => LexToken::Boolean(b),
                             _ => unreachable!(),
                         };
+                        self.shadow_pos_eq(scanner);
                         Ok(Some(self.new_token(lt, false)))
                     }
                     literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
@@ -1427,6 +1446,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Sign => match next_char {
                 Empty => {
                     self.token_is_owned = true;
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Eof, true)))
                 }
                 Char(c @ '0') => {
@@ -1461,6 +1481,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Zero => match next_char {
                 Empty => {
                     self.token_is_owned = true;
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Eof, true)))
                 }
                 Char(c @ '.') => {
@@ -1492,6 +1513,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 _ => {
                     let tok = self.produce_number(batch, scanner);
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1499,6 +1521,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalInteger => match next_char {
                 Empty => {
                     self.token_is_owned = true;
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Eof, true)))
                 }
                 Char(c @ '.') => {
@@ -1572,6 +1595,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.emit_fragment(true, 0);
                     };
                     let tok = self.produce_number(batch, scanner);
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1579,6 +1603,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             DecimalPoint => match next_char {
                 Empty => {
                     self.token_is_owned = true;
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Eof, true)))
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
@@ -1699,6 +1724,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.emit_fragment(true, 0);
                     };
                     let tok = self.produce_number(batch, scanner);
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1970,12 +1996,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     {
                         if let Some(s) = scanner.try_borrow_slice(1) {
                             self.pos = saved_pos;
+                            self.shadow_pos_eq(scanner);
                             return Ok(Some(LexToken::PropertyNameBorrowed(s)));
                         } else {
                             use scanner::TokenBuf as SBuf;
                             match scanner.emit_fragment(true, 1) {
                                 SBuf::OwnedText(s) => {
                                     self.pos = saved_pos;
+                                    self.shadow_pos_eq(scanner);
                                     return Ok(Some(LexToken::PropertyNameOwned(s)));
                                 }
                                 SBuf::Raw(bytes) => {
@@ -1983,10 +2011,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     let s =
                                         alloc::string::String::from_utf8_lossy(&bytes).into_owned();
                                     self.pos = saved_pos;
+                                    self.shadow_pos_eq(scanner);
                                     return Ok(Some(LexToken::PropertyNameOwned(s)));
                                 }
                                 SBuf::Borrowed(s) => {
                                     self.pos = saved_pos;
+                                    self.shadow_pos_eq(scanner);
                                     return Ok(Some(LexToken::PropertyNameBorrowed(s)));
                                 }
                             }
@@ -1996,6 +2026,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.emit_fragment(true, 1);
                         let tok = self.produce_string(false, batch);
                         self.pos = saved_pos;
+                        self.shadow_pos_eq(scanner);
                         return Ok(Some(tok));
                     }
                     // Values: flip to Scanner result; compare to legacy in debug.
@@ -2112,6 +2143,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(Some(scanner_tok))
                 }
                 Char(_c) => {
+                    // Ensure scanner is anchored when resuming across feeds.
+                    {
+                        scanner.ensure_begun(scanner::FragmentPolicy::Allowed);
+                    }
                     // Fast-path: copy as many consecutive non-escaped, non-terminating
                     // characters as possible in a single pass.
                     if self.reading_from_source(batch) {
@@ -2703,6 +2738,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(b'}'), false)))
                 }
 
@@ -2735,6 +2771,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -2753,6 +2790,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -2766,6 +2804,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(b']'), false)))
                 }
                 _ => {
@@ -2780,6 +2819,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let _ = scanner.advance();
                     };
                     self.advance_char(batch, cursor.as_deref_mut());
+                    self.shadow_pos_eq(scanner);
                     Ok(Some(self.new_token(LexToken::Punctuator(c as u8), false)))
                 }
                 c => Err(self.read_and_invalid_char(c)),
