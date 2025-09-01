@@ -1077,6 +1077,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &mut self,
         partial: bool,
         batch: Option<&BatchView<'src>>,
+        scanner: &mut Scanner<'src>,
     ) -> LexToken<'src> {
         self.partial_lex = partial;
         // Property names never emit partial fragments. If we are mid‑property
@@ -1085,46 +1086,24 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         if partial && self.parse_state == ParseState::BeforePropertyName {
             return LexToken::Eof;
         }
-
-        let start = self.token_start_pos.take().unwrap_or(self.pos);
-        let end = self.pos; // inclusive of all chars read so far; callers adjust if needed
-        let try_borrow = if !self.string_had_escape && !self.token_is_owned {
-            self.borrow_slice(batch, start, end)
-        } else {
-            None
-        };
-
-        // If we're emitting a partial fragment, the next fragment (if any)
-        // starts at the current position. Property names never emit partial
-        // fragments, so we must not disturb `token_start_pos` for them — it is
-        // used by `Drop` to preserve already-read content across feeds.
+        // If we're emitting a partial fragment for values, mark next start.
         if partial && self.parse_state != ParseState::BeforePropertyName {
             self.token_start_pos = Some(self.pos);
         }
 
-        if self.parse_state == ParseState::BeforePropertyName {
-            if let Some(s) = try_borrow {
-                return LexToken::PropertyNameBorrowed(s);
+        // Always emit from scanner; use end_adjust 0 for partials here.
+        let end_adjust = 0;
+        use scanner::TokenBuf as SBuf;
+        match (self.parse_state == ParseState::BeforePropertyName, scanner.emit_fragment(!partial, end_adjust)) {
+            (true, SBuf::Borrowed(s)) => LexToken::PropertyNameBorrowed(s),
+            (true, SBuf::OwnedText(s)) => LexToken::PropertyNameOwned(s),
+            (true, SBuf::Raw(bytes)) => {
+                // Property names must be UTF-8; degrade raw to UTF-8 replacement lossily for tests.
+                LexToken::PropertyNameOwned(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
             }
-            if self.source.peek().is_none() {
-                // Owned fragment assembled during batch-mode lexing
-                LexToken::PropertyNameOwned(self.take_owned_from_buffers())
-            } else {
-                LexToken::PropertyNameBuffered
-            }
-        } else {
-            if let Some(s) = try_borrow {
-                LexToken::StringBorrowed(s)
-            } else if self.source.peek().is_none() {
-                // Owned fragment assembled during batch-mode lexing
-                if self.token_is_raw_bytes {
-                    LexToken::StringRawOwned(self.take_owned_raw_from_buffers())
-                } else {
-                    LexToken::StringOwned(self.take_owned_from_buffers())
-                }
-            } else {
-                LexToken::StringBuffered
-            }
+            (false, SBuf::Borrowed(s)) => LexToken::StringBorrowed(s),
+            (false, SBuf::OwnedText(s)) => LexToken::StringOwned(s),
+            (false, SBuf::Raw(bytes)) => LexToken::StringRawOwned(bytes),
         }
     }
 
@@ -1853,6 +1832,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         self.token_buffer.push_str(s);
                                     } else {
                                         self.owned_batch_buffer.push_str(s);
+                                        {
+                                            scanner.push_text(s);
+                                        }
                                     }
                                 }
                             }
@@ -1883,6 +1865,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 if end_c > start_c {
                                     let s = b.slice_chars(start_c, end_c);
                                     self.owned_batch_buffer.push_str(s);
+                                    {
+                                        scanner.push_text(s);
+                                    }
                                     had_prefix = true;
                                 }
                             }
@@ -1900,7 +1885,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             {
                                 let _ = scanner.emit_fragment(false, 0);
                             };
-                            let tok = self.produce_string(true, batch);
+                            let tok = self.produce_string(true, batch, scanner);
                             Ok(Some(self.new_token(tok, true)))
                         } else {
                             Ok(None)
@@ -1933,6 +1918,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     } else {
                                         self.owned_batch_buffer.push('\u{FFFD}');
                                     }
+                                    {
+                                        scanner.push_char('\u{FFFD}');
+                                    }
                                 } else {
                                     {
                                         scanner.ensure_raw();
@@ -1943,6 +1931,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     let b2 = 0x80 | ((u as u32 >> 6) & 0x3F) as u8;
                                     let b3 = 0x80 | (u as u32 & 0x3F) as u8;
                                     self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                    {
+                                        scanner.push_raw_bytes(&[b1, b2, b3]);
+                                    }
                                 }
                             }
                         }
@@ -1994,12 +1985,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     } else if self.parse_state == ParseState::BeforePropertyName {
                         // Property name fallback: keep legacy emission and only advance scanner for parity.
                         let _ = scanner.emit_fragment(true, 1);
-                        let tok = self.produce_string(false, batch);
+                        let tok = self.produce_string(false, batch, scanner);
                         self.pos = saved_pos;
                         return Ok(Some(tok));
                     }
-                    // Values: flip to Scanner result; compare to legacy in debug.
-                    let legacy_tok = self.produce_string(false, batch);
+                    // Values: flip to Scanner result.
                     use scanner::TokenBuf as SBuf;
                     let scanner_tok = if !self.string_had_escape
                         && !self.token_is_raw_bytes
@@ -2028,31 +2018,18 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         // Escapes/raw present: keep legacy emission and only advance scanner for parity.
                         let _ = scanner.emit_fragment(true, 1);
                         self.pos = saved_pos;
-                        legacy_tok.clone()
+                        // Legacy owned/raw emission (buffers were maintained in parallel).
+                        if self.token_is_raw_bytes {
+                            LexToken::StringRawOwned(self.take_owned_raw_from_buffers())
+                        } else {
+                            LexToken::StringOwned(self.take_owned_from_buffers())
+                        }
                     };
 
                     #[cfg(debug_assertions)]
-                    if !self.string_had_escape {
-                        // Positions parity
+                    {
                         let (sp, sl, sc) = scanner.debug_positions();
-                        debug_assert_eq!(
-                            (sp, sl, sc),
-                            (self.pos, self.line, self.column),
-                            "string positions diverged after close"
-                        );
-                        // Payload parity
-                        let ok = match (&legacy_tok, &scanner_tok) {
-                            (LexToken::StringBorrowed(a), LexToken::StringBorrowed(b)) => a == b,
-                            (LexToken::StringOwned(a), LexToken::StringOwned(b)) => a == b,
-                            (LexToken::StringRawOwned(a), LexToken::StringRawOwned(b)) => a == b,
-                            // Allow borrowed vs owned equivalence on content
-                            (LexToken::StringBorrowed(a), LexToken::StringOwned(b)) => a == b,
-                            (LexToken::StringOwned(a), LexToken::StringBorrowed(b)) => a == b,
-                            (LexToken::StringBuffered, LexToken::StringOwned(_)) => true,
-                            (LexToken::StringBuffered, LexToken::StringBorrowed(_)) => true,
-                            _ => false,
-                        };
-                        debug_assert!(ok, "scanner/legacy value string mismatch: legacy={legacy_tok:?} scanner={scanner_tok:?}");
+                        debug_assert_eq!((sp, sl, sc), (self.pos, self.line, self.column));
                     }
                     Ok(Some(scanner_tok))
                 }
@@ -2063,7 +2040,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => {
                     // Flip partial value emission to Scanner only when no escapes/raw; else legacy.
                     self.partial_lex = true;
-                    let legacy_tok = self.produce_string(true, batch);
+                    let legacy_tok = if self.string_had_escape || self.token_is_raw_bytes {
+                        // Legacy partial emission (buffered) when escapes/raw involved.
+                        LexToken::StringBuffered
+                    } else {
+                        self.produce_string(true, batch, scanner)
+                    };
                     let scanner_tok: LexToken<'src> = if !self.string_had_escape && !self.token_is_raw_bytes {
                         if let Some(s) = scanner.try_borrow_slice(0) {
                             LexToken::StringBorrowed(s)
@@ -2233,7 +2215,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             StringEscape => match next_char {
-                Empty => Ok(Some(self.produce_string(true, batch))),
+                Empty => Ok(Some(self.produce_string(true, batch, scanner))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     let from_source = self.reading_from_source(batch);
                     #[cfg(debug_assertions)]
@@ -2246,10 +2228,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let mut tmp = [0u8; 4];
                         let s = ch.encode_utf8(&mut tmp);
                         self.owned_batch_raw.extend_from_slice(s.as_bytes());
+                        {
+                            scanner.push_raw_bytes(s.as_bytes());
+                        }
                     } else if from_source {
                         self.token_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     } else {
                         self.owned_batch_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     }
                     self.lex_state = LexState::String;
                     // After consuming an escape, mark the start for future preloads
@@ -2269,10 +2260,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let mut tmp = [0u8; 4];
                         let s = ch.encode_utf8(&mut tmp);
                         self.owned_batch_raw.extend_from_slice(s.as_bytes());
+                        {
+                            scanner.push_raw_bytes(s.as_bytes());
+                        }
                     } else if from_source {
                         self.token_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     } else {
                         self.owned_batch_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     }
                     self.lex_state = LexState::String;
                     self.token_start_pos = Some(self.pos);
@@ -2291,10 +2291,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let mut tmp = [0u8; 4];
                         let s = ch.encode_utf8(&mut tmp);
                         self.owned_batch_raw.extend_from_slice(s.as_bytes());
+                        {
+                            scanner.push_raw_bytes(s.as_bytes());
+                        }
                     } else if from_source {
                         self.token_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     } else {
                         self.owned_batch_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     }
                     self.lex_state = LexState::String;
                     self.token_start_pos = Some(self.pos);
@@ -2313,10 +2322,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         let mut tmp = [0u8; 4];
                         let s = ch.encode_utf8(&mut tmp);
                         self.owned_batch_raw.extend_from_slice(s.as_bytes());
+                        {
+                            scanner.push_raw_bytes(s.as_bytes());
+                        }
                     } else if from_source {
                         self.token_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     } else {
                         self.owned_batch_buffer.push(ch);
+                        {
+                            scanner.push_char(ch);
+                        }
                     }
                     self.lex_state = LexState::String;
                     self.token_start_pos = Some(self.pos);
@@ -2382,7 +2400,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             StringEscapeUnicode => {
                 match next_char {
-                    Empty => Ok(Some(self.produce_string(true, batch))),
+                    Empty => Ok(Some(self.produce_string(true, batch, scanner))),
                     Char(c) if c.is_ascii_hexdigit() => {
                         #[cfg(debug_assertions)]
                         self.shadow_peek_eq(scanner, Char(c));
@@ -2411,6 +2429,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                             let b2 = 0x80 | ((u as u32 >> 6) & 0x3F) as u8;
                                             let b3 = 0x80 | (u as u32 & 0x3F) as u8;
                                             self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                            {
+                                                scanner.push_raw_bytes(&[b1, b2, b3]);
+                                            }
                                         }
                                         options::DecodeMode::ReplaceInvalid => {
                                             if self.reading_from_source(batch) {
@@ -2426,10 +2447,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     let mut tmp = [0u8; 4];
                                     let s = char.encode_utf8(&mut tmp);
                                     self.owned_batch_raw.extend_from_slice(s.as_bytes());
+                                    {
+                                        scanner.push_raw_bytes(s.as_bytes());
+                                    }
                                 } else if self.reading_from_source(batch) {
                                     self.token_buffer.push(char);
+                                    {
+                                        scanner.push_char(char);
+                                    }
                                 } else {
                                     self.owned_batch_buffer.push(char);
+                                    {
+                                        scanner.push_char(char);
+                                    }
                                 }
                                 self.last_was_lone_low = false;
                                 self.lex_state = LexState::String;
@@ -2465,6 +2495,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                         let b2 = 0x80 | ((u as u32 >> 6) & 0x3F) as u8;
                                                         let b3 = 0x80 | (u as u32 & 0x3F) as u8;
                                                         self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                                        {
+                                                            scanner.push_raw_bytes(&[b1, b2, b3]);
+                                                        }
                                                         // Current high becomes pending (await low) unless last was a lone low surrogate
                                                         if self.last_was_lone_low {
                                                             // Treat as standalone high (reversed sequence), emit now
@@ -2473,6 +2506,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                             let b2 = 0x80 | ((u2 as u32 >> 6) & 0x3F) as u8;
                                                             let b3 = 0x80 | (u2 as u32 & 0x3F) as u8;
                                                             self.owned_batch_raw.extend_from_slice(&[b1, b2, b3]);
+                                                            {
+                                                                scanner.push_raw_bytes(&[b1, b2, b3]);
+                                                            }
                                                             self.last_was_lone_low = false;
                                                             self.lex_state = LexState::String;
                                                             Ok(None)
@@ -2484,6 +2520,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                     }
                                                     options::DecodeMode::ReplaceInvalid => {
                                                         if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                                                        {
+                                                            scanner.push_char('\u{FFFD}');
+                                                        }
                                                         self.pending_high_surrogate = Some(code as u16);
                                                         self.lex_state = LexState::StringEscapeUnicodeExpectBackslash;
                                                         Ok(None)
@@ -2537,10 +2576,19 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                         let s = ch.encode_utf8(&mut tmp);
                                                         self.owned_batch_raw
                                                             .extend_from_slice(s.as_bytes());
+                                                        {
+                                                            scanner.push_raw_bytes(s.as_bytes());
+                                                        }
                                                     } else if self.reading_from_source(batch) {
                                                         self.token_buffer.push(ch);
+                                                        {
+                                                            scanner.push_char(ch);
+                                                        }
                                                     } else {
                                                         self.owned_batch_buffer.push(ch);
+                                                        {
+                                                            scanner.push_char(ch);
+                                                        }
                                                     }
                                                     self.lex_state = LexState::String;
                                                     Ok(None)
@@ -2571,6 +2619,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                     }
                                                     options::DecodeMode::ReplaceInvalid => {
                                                         if self.reading_from_source(batch) { self.token_buffer.push('\u{FFFD}'); } else { self.owned_batch_buffer.push('\u{FFFD}'); }
+                                                        {
+                                                            scanner.push_char('\u{FFFD}');
+                                                        }
                                                         self.lex_state = LexState::String;
                                                         Ok(None)
                                                     }
@@ -2599,7 +2650,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             // Expect a backslash starting the second half of the surrogate pair
             StringEscapeUnicodeExpectBackslash => match next_char {
-                Empty => Ok(Some(self.produce_string(true, batch))),
+                Empty => Ok(Some(self.produce_string(true, batch, scanner))),
                 Char('\\') => {
                     {
                         let _ = scanner.advance();
@@ -2633,6 +2684,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             } else {
                                 self.owned_batch_buffer.push('\u{FFFD}');
                             }
+                            {
+                                scanner.push_char('\u{FFFD}');
+                            }
                         }
                         self.lex_state = LexState::String;
                         Ok(None)
@@ -2642,7 +2696,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             // Expect the 'u' introducing the low surrogate digits
             StringEscapeUnicodeExpectU => match next_char {
-                Empty => Ok(Some(self.produce_string(true, batch))),
+                Empty => Ok(Some(self.produce_string(true, batch, scanner))),
                 Char(c) if c == 'u' || (c == 'U' && self.allow_uppercase_u) => {
                     {
                         let _ = scanner.advance();
@@ -2676,6 +2730,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 self.token_buffer.push('\u{FFFD}');
                             } else {
                                 self.owned_batch_buffer.push('\u{FFFD}');
+                            }
+                            {
+                                scanner.push_char('\u{FFFD}');
                             }
                         }
                         self.lex_state = LexState::String;

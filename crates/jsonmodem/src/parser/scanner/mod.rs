@@ -300,6 +300,30 @@ impl<'src> Scanner<'src> {
         }
     }
 
+    /// Append UTF-8 text to the current token scratch, ensuring owned mode if needed.
+    pub fn push_text(&mut self, s: &str) {
+        self.switch_to_owned_prefix_if_needed();
+        match &mut self.scratch {
+            TokenScratch::Text(buf) => buf.push_str(s),
+            TokenScratch::Raw(b) => b.extend_from_slice(s.as_bytes()),
+        }
+    }
+
+    /// Append a single char to the current token scratch.
+    pub fn push_char(&mut self, ch: char) {
+        self.switch_to_owned_prefix_if_needed();
+        self.scratch.push_char(ch);
+    }
+
+    /// Append raw bytes to the current token scratch in raw mode.
+    pub fn push_raw_bytes(&mut self, bytes: &[u8]) {
+        self.ensure_raw();
+        match &mut self.scratch {
+            TokenScratch::Raw(b) => b.extend_from_slice(bytes),
+            TokenScratch::Text(s) => s.push_str(unsafe { core::str::from_utf8_unchecked(bytes) }),
+        }
+    }
+
     #[cfg(debug_assertions)]
     #[inline]
     pub fn debug_positions(&self) -> (usize, usize, usize) {
