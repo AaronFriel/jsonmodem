@@ -1,6 +1,6 @@
-//! InputSession: per-feed owner for unread input and token state.
+//! Scanner: per-feed owner for unread input and token state.
 //!
-//! This internal module defines `InputSession`, a small, single‑owner façade
+//! This internal module defines `Scanner`, a small, single‑owner façade
 //! that the streaming parser uses during a single `feed(...)` to:
 //!
 //! - Read from the unread input ring (UTF‑8 bytes) and the current batch
@@ -33,12 +33,11 @@
 //!
 //! Example (number fully in batch)
 //! ```ignore
-//! use jsonmodem::parser::input_session::{InputSession, FragmentPolicy, TokenBuf, CarryOver};
-//! use jsonmodem::parser::options::DecodeMode;
+//! use jsonmodem::parser::scanner::{Scanner, FragmentPolicy, TokenBuf, Tape};
 //!
 //! // No unread ring; new batch "12345,"
-//! let carry = CarryOver::default();
-//! let mut s = InputSession::from_carryover(carry, "12345,", DecodeMode::StrictUnicode);
+//! let carry = Tape::default();
+//! let mut s = Scanner::from_carryover(carry, "12345,");
 //! s.begin(FragmentPolicy::Disallowed);
 //! s.copy_while_ascii(|b| (b as char).is_ascii_digit());
 //! match s.emit_fragment(true, 0) {
@@ -79,7 +78,7 @@ pub enum TokenBuf<'src> {
     Borrowed(&'src str),
     OwnedText(String),
     /// Raw bytes for a token fragment (e.g., surrogate-preserving output).
-    /// The parser/backend owns the decode policy; `InputSession` does not
+    /// The parser/backend owns the decode policy; `Scanner` does not
     /// attach hints.
     Raw(Vec<u8>),
 }
@@ -89,6 +88,12 @@ pub enum TokenBuf<'src> {
 pub enum TokenScratch {
     Text(String),
     Raw(Vec<u8>),
+}
+
+impl Default for TokenScratch {
+    fn default() -> Self {
+        TokenScratch::Text(String::new())
+    }
 }
 
 impl TokenScratch {
@@ -154,7 +159,7 @@ pub struct TokenAnchor {
 
 /// State persisted across feeds when the iterator is dropped or input ends.
 ///
-/// The parser moves this state into an `InputSession` at the start of each
+/// The parser moves this state into a `Scanner` at the start of each
 /// feed, and receives it back from [`finish`] at the end. It contains:
 /// - the unread UTF‑8 ring,
 /// - global position counters,
@@ -248,6 +253,7 @@ pub struct Unit {
     pub source: Source,
 }
 
+#[derive(Default)]
 pub struct Scanner<'src> {
     // Unread input
     ring: VecDeque<u8>,
@@ -524,7 +530,7 @@ impl<'src> Scanner<'src> {
     /// Batch‑only ASCII fast path: copies consecutive ASCII bytes satisfying
     /// `pred`. If the token is in owned mode, appends to the scratch; otherwise
     /// only advances cursors to keep borrow eligibility.
-    pub fn copy_while_ascii(&mut self, mut pred: impl Fn(u8) -> bool) -> usize {
+    pub fn copy_while_ascii(&mut self, pred: impl Fn(u8) -> bool) -> usize {
         if self.cur_source() != Source::Batch {
             return 0;
         }
@@ -554,7 +560,7 @@ impl<'src> Scanner<'src> {
 
     /// Source‑stable char loop: copies while `pred` holds and the source
     /// (ring/batch) doesn’t change. Appends only in owned mode.
-    pub fn copy_while_char(&mut self, mut pred: impl Fn(char) -> bool) -> usize {
+    pub fn copy_while_char(&mut self, pred: impl Fn(char) -> bool) -> usize {
         let mut copied = 0usize;
         let start_source = self.cur_source();
         loop {
