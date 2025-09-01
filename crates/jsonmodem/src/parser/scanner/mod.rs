@@ -122,11 +122,15 @@ impl TokenScratch {
         }
     }
 
-    fn to_raw(&mut self) {
+    fn to_raw(&mut self) -> &mut Vec<u8> {
         if let TokenScratch::Text(s) = self {
             let mut out = Vec::with_capacity(s.len());
             out.extend_from_slice(s.as_bytes());
             *self = TokenScratch::Raw(out);
+        }
+        match self {
+            TokenScratch::Raw(b) => b,
+            TokenScratch::Text(_) => unreachable!(), // Should never happen
         }
     }
 
@@ -331,11 +335,7 @@ impl<'src> Scanner<'src> {
 
     /// Append raw bytes to the current token scratch in raw mode.
     pub fn push_raw_bytes(&mut self, bytes: &[u8]) {
-        self.ensure_raw();
-        match &mut self.scratch {
-            TokenScratch::Raw(b) => b.extend_from_slice(bytes),
-            TokenScratch::Text(s) => s.push_str(unsafe { core::str::from_utf8_unchecked(bytes) }),
-        }
+        self.ensure_raw().extend_from_slice(bytes);
     }
 
     #[cfg(debug_assertions)]
@@ -571,14 +571,14 @@ impl<'src> Scanner<'src> {
 
     /// Ensures the current token switches to Raw accumulation (WTF‑8) and moves
     /// any previously accumulated UTF‑8 text into the raw buffer. Idempotent.
-    pub fn ensure_raw(&mut self) {
+    pub fn ensure_raw(&mut self) -> &mut Vec<u8> {
         // Ensure any existing prefix (possibly in batch) is copied into scratch before
         // switching representation so we don't lose it.
         self.switch_to_owned_prefix_if_needed();
         if let Some(a) = &mut self.anchor {
             a.is_raw = true;
         }
-        self.scratch.to_raw();
+        self.scratch.to_raw()
     }
 
     /// Appends UTF-8 text to the current token, switching to owned mode if needed.
@@ -595,11 +595,7 @@ impl<'src> Scanner<'src> {
 
     /// Appends raw bytes to the current token, switching to raw/owned mode.
     pub fn append_raw_bytes(&mut self, bytes: &[u8]) {
-        self.ensure_raw();
-        match &mut self.scratch {
-            TokenScratch::Raw(b) => b.extend_from_slice(bytes),
-            TokenScratch::Text(s) => s.push_str(unsafe { core::str::from_utf8_unchecked(bytes) }),
-        }
+        self.ensure_raw().extend_from_slice(bytes);
         if let Some(a) = &mut self.anchor {
             a.owned = true;
         }
@@ -696,15 +692,14 @@ impl<'src> Scanner<'src> {
 
     /// Returns a borrowed batch slice if the token started in `Batch`, is still
     /// borrow‑eligible (no escapes, not raw, not owned), and the byte range is
-    /// valid. `end_adjust_bytes` allows excluding delimiters (e.g., closing
-    /// quotes).
-    pub fn try_borrow_slice(&self, end_adjust_bytes: usize) -> Option<&'src str> {
+    /// valid.
+    pub fn try_borrow_slice(&self) -> Option<&'src str> {
         let a = self.anchor.as_ref()?;
         if a.source != Source::Batch || a.owned || a.had_escape || a.is_raw {
             return None;
         }
         let start = a.start_byte_in_batch?;
-        let end = self.batch_bytes.checked_sub(end_adjust_bytes)?;
+        let end = self.batch_bytes;
         if end < start || end > self.batch.len() {
             return None;
         }
@@ -714,12 +709,12 @@ impl<'src> Scanner<'src> {
     /// Emits a token fragment.
     ///
     /// - If `is_final` is true and the token is still borrow‑eligible, returns
-    ///   `Borrowed(&batch[start..end-adjust])`.
+    ///   `Borrowed(&batch[start..end])`.
     /// - Otherwise, returns either `OwnedText(String)` or `Raw(Vec<u8>, hint)`
     ///   depending on the current accumulation mode and decode mode.
-    pub fn emit_fragment(&mut self, is_final: bool, end_adjust_bytes: usize) -> TokenBuf<'src> {
+    pub fn emit_fragment(&mut self, is_final: bool) -> TokenBuf<'src> {
         if is_final {
-            if let Some(s) = self.try_borrow_slice(end_adjust_bytes) {
+            if let Some(s) = self.try_borrow_slice() {
                 return TokenBuf::Borrowed(s);
             }
         }
@@ -727,6 +722,74 @@ impl<'src> Scanner<'src> {
             TokenScratch::Text(s) => TokenBuf::OwnedText(s),
             TokenScratch::Raw(b) => TokenBuf::Raw(b),
         }
+    }
+
+    // --- Simplified helpers (emit-then-advance semantics) -----------------
+
+    /// Emits the final fragment for the current token (no delimiter adjustment)
+    /// and clears the anchor so `finish()` will not coalesce it again.
+    pub fn emit_final(&mut self) -> TokenBuf<'src> {
+        let buf = self.emit_fragment(true);
+        // Token is complete; drop the anchor to avoid finish() copying prefixes.
+        self.anchor = None;
+        buf
+    }
+
+    /// Emits a non-empty partial fragment if any data has accumulated.
+    /// - If borrow-eligible, returns a borrowed slice and acknowledges it so
+    ///   later `finish()` will not duplicate it.
+    /// - Otherwise, switches to owned (idempotent), and returns `OwnedText`/`Raw`
+    ///   if the scratch is non-empty. Returns `None` if there is nothing to emit.
+    pub fn emit_partial(&mut self) -> Option<TokenBuf<'src>> {
+        if let Some(s) = self.try_borrow_slice() {
+            if !s.is_empty() {
+                self.acknowledge_partial_borrow();
+                return Some(TokenBuf::Borrowed(s));
+            }
+            return None;
+        }
+
+        // Ensure any batch prefix is captured before checking scratch.
+        self.switch_to_owned_prefix_if_needed();
+        let is_empty = match &self.scratch {
+            TokenScratch::Text(s) => s.is_empty(),
+            TokenScratch::Raw(b) => b.is_empty(),
+        };
+        if is_empty {
+            return None;
+        }
+        Some(self.emit_fragment(false))
+    }
+
+    /// For transform boundaries (e.g., escape start):
+    /// - For Allowed strings, if still borrow-eligible, returns the borrowed
+    ///   prefix and acknowledges it; otherwise switches to owned and returns None.
+    /// - For Disallowed tokens (keys/numbers), switches to owned and returns None.
+    pub fn yield_prefix(&mut self) -> Option<TokenBuf<'src>> {
+        let policy = self.anchor.as_ref().map(|a| a.policy);
+        match policy {
+            Some(FragmentPolicy::Allowed) => {
+                if let Some(s) = self.try_borrow_slice() {
+                    if !s.is_empty() {
+                        self.acknowledge_partial_borrow();
+                        return Some(TokenBuf::Borrowed(s));
+                    }
+                    return None;
+                }
+                // Not borrow-eligible: commit to owned.
+                self.switch_to_owned_prefix_if_needed();
+                None
+            }
+            Some(FragmentPolicy::Disallowed) | None => {
+                self.switch_to_owned_prefix_if_needed();
+                None
+            }
+        }
+    }
+
+    /// Explicitly switch to owned mode by copying the batch prefix once.
+    pub fn own_prefix(&mut self) {
+        self.switch_to_owned_prefix_if_needed();
     }
 }
 

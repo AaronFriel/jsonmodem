@@ -14,7 +14,7 @@ fn number_borrowed_when_fully_in_batch() {
     // copy ASCII digits fast from batch
     let n = s.copy_while_ascii(|b| (b as char).is_ascii_digit());
     assert_eq!(n, 5);
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::Borrowed(frag) => assert_eq!(frag, "12345"),
         other => panic!("expected borrowed, got {other:?}"),
     }
@@ -31,7 +31,7 @@ fn number_owned_when_split_ring_then_batch() {
     assert_eq!(copied_ring, 2);
     let copied_batch = s.copy_while_ascii(|b| (b as char).is_ascii_digit());
     assert_eq!(copied_batch, 3);
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::OwnedText(sv) => assert_eq!(sv, "12345"),
         other => panic!("expected owned, got {other:?}"),
     }
@@ -42,14 +42,14 @@ fn key_string_borrowed_simple() {
     let batch = "abc\""; // closing quote included
     let mut s = Scanner::from_carryover(carry(""), batch);
     s.begin(FragmentPolicy::Disallowed);
-    // Consume three ASCII letters
+    // Consume three ASCII letters, then emit final before quote
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
-    // Consume closing quote
-    let _ = s.advance(); // '"'
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::Borrowed(f) => assert_eq!(f, "abc"),
         other => panic!("expected borrowed, got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn key_string_switches_to_owned_on_escape_prefix_copy_once() {
     let _ = s.advance();
     // Continue reading remaining letters
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // rest
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::OwnedText(v) => assert_eq!(v, "abcXrest"),
         other => panic!("expected owned text, got {other:?}"),
     }
@@ -82,14 +82,14 @@ fn raw_allowed_for_keys_reported_as_raw() {
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // 'A'
     // Switch to raw (e.g., due to an unpaired surrogate escape)
     s.ensure_raw();
-    // Consume closing quote
-    let _ = s.advance();
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::Raw(bytes) => {
             assert_eq!(bytes, b"A");
         }
         other => panic!("expected raw, got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 }
 
 #[test]
@@ -116,12 +116,12 @@ fn utf8_multibyte_borrow_and_end_adjust_for_keys_and_values() {
     sess.begin(FragmentPolicy::Disallowed);
     // Advance over å
     let _ = sess.advance();
-    // Consume closing quote
-    let _ = sess.advance();
-    match sess.emit_fragment(true, 1) {
+    match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "å"),
         other => panic!("expected borrowed 'å', got {other:?}"),
     }
+    assert_eq!(sess.peek().unwrap().ch, '"');
+    let _ = sess.advance();
 
     // Mixed ASCII and non-ASCII for value, with borrow across entire batch
     let s2 = "abcÅdef\""; // Å is non-ASCII
@@ -130,36 +130,35 @@ fn utf8_multibyte_borrow_and_end_adjust_for_keys_and_values() {
     sess.copy_while_ascii(|b| (b as char).is_ascii()); // 'abc'
     let _ = sess.advance(); // 'Å'
     sess.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // 'def'
-    let _ = sess.advance(); // '"'
-    match sess.emit_fragment(true, 1) {
+    match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "abcÅdef"),
         other => panic!("expected borrowed 'abcÅdef', got {other:?}"),
     }
+    assert_eq!(sess.peek().unwrap().ch, '"');
+    let _ = sess.advance();
 }
 
 #[test]
 fn empty_key_and_value_strings_borrow_correctly() {
     // Key: ""
-    let mut s = Scanner::from_carryover(carry(""), "\"\"");
-    s.begin(FragmentPolicy::Disallowed);
-    let _ = s.advance(); // opening quote already consumed by parser normally; here we simulate after it: we consume first quote as content? our begin is after opening, so content starts at index 1; simulate consuming closing quote
-    // We actually want begin after opening is consumed. So reset:
     let mut s = Scanner::from_carryover(carry(""), "\"");
     s.begin(FragmentPolicy::Disallowed);
-    let _ = s.advance(); // closing quote
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, ""),
         other => panic!("expected borrowed empty key, got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 
     // Value: ""
     let mut s = Scanner::from_carryover(carry(""), "\"");
     s.begin(FragmentPolicy::Allowed);
-    let _ = s.advance(); // closing quote
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, ""),
         other => panic!("expected borrowed empty value, got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 }
 
 #[test]
@@ -171,7 +170,7 @@ fn switch_to_owned_prefix_is_idempotent_and_no_duplication() {
     // Copy prefix twice; second call must be a no-op
     s.switch_to_owned_prefix_if_needed();
     s.switch_to_owned_prefix_if_needed();
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::OwnedText(t) => assert_eq!(t, "abcdef"),
         other => panic!("expected owned text without duplication, got {other:?}"),
     }
@@ -183,7 +182,7 @@ fn numbers_borrow_exclude_delimiters_and_peek_delim() {
     let mut s = Scanner::from_carryover(carry(""), "12345,");
     s.begin(FragmentPolicy::Disallowed);
     s.copy_while_ascii(|b| (b as char).is_ascii_digit());
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "12345"),
         other => panic!("expected borrowed number, got {other:?}"),
     }
@@ -193,7 +192,7 @@ fn numbers_borrow_exclude_delimiters_and_peek_delim() {
     let mut s = Scanner::from_carryover(carry(""), "678]");
     s.begin(FragmentPolicy::Disallowed);
     s.copy_while_ascii(|b| (b as char).is_ascii_digit());
-    match s.emit_fragment(true, 0) {
+    match s.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "678"),
         other => panic!("expected borrowed number, got {other:?}"),
     }
@@ -204,16 +203,16 @@ fn numbers_borrow_exclude_delimiters_and_peek_delim() {
 fn raw_hint_matches_decode_mode_for_keys() {
     let mut s = Scanner::from_carryover(carry(""), "A\"");
     s.begin(FragmentPolicy::Disallowed);
-    s.copy_while_ascii(|b| (b as char).is_ascii());
+    s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.ensure_raw();
+    match s.emit_final() { TokenBuf::Raw(_) => (), other => panic!("expected raw, got {other:?}") }
+    assert_eq!(s.peek().unwrap().ch, '"');
     let _ = s.advance();
-    match s.emit_fragment(true, 1) { TokenBuf::Raw(_) => (), other => panic!("expected raw, got {other:?}") }
 
     let mut s = Scanner::from_carryover(carry(""), "A\"");
     s.begin(FragmentPolicy::Disallowed);
-    s.copy_while_ascii(|b| (b as char).is_ascii());
+    s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.ensure_raw();
-    let _ = s.advance();
     // raw hint removed: backend owns policy
 }
 
@@ -233,24 +232,21 @@ fn try_borrow_fails_after_escape_or_raw_or_owned() {
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.mark_escape();
     // consume quote
-    let _ = s.advance();
-    assert!(s.try_borrow_slice(1).is_none());
+    assert!(s.try_borrow_slice().is_none());
 
     // is_raw
     let mut s = Scanner::from_carryover(carry(""), batch);
     s.begin(FragmentPolicy::Disallowed);
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.ensure_raw();
-    let _ = s.advance();
-    assert!(s.try_borrow_slice(1).is_none());
+    assert!(s.try_borrow_slice().is_none());
 
     // owned=true
     let mut s = Scanner::from_carryover(carry(""), batch);
     s.begin(FragmentPolicy::Disallowed);
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.switch_to_owned_prefix_if_needed();
-    let _ = s.advance();
-    assert!(s.try_borrow_slice(1).is_none());
+    assert!(s.try_borrow_slice().is_none());
 }
 
 #[test]
@@ -261,11 +257,12 @@ fn ensure_raw_is_idempotent_and_preserves_prefix() {
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // AB
     s.ensure_raw();
     s.ensure_raw(); // second call should be a no-op
-    let _ = s.advance(); // '"'
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::Raw(bytes) => assert_eq!(bytes, b"AB"),
         other => panic!("expected raw, got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 }
 
 #[test]
@@ -277,17 +274,15 @@ fn value_fragment_partial_and_final_borrowing() {
     // Force owned by switching to owned prefix after 'abc'
     s.copy_while_ascii(|b| (b as char).is_ascii_lowercase()); // 'abc'
     s.switch_to_owned_prefix_if_needed();
-    match s.emit_fragment(false, 0) {
-        TokenBuf::OwnedText(t) => assert_eq!(t, "abc"),
-        other => panic!("expected owned partial, got {other:?}"),
-    }
+    if let Some(TokenBuf::OwnedText(t)) = s.emit_partial() { assert_eq!(t, "abc"); } else { panic!("expected owned partial") }
     // Continue with remaining 'DEF' and closing quote, keep borrow-eligible
     s.copy_while_ascii(|b| (b as char).is_ascii_uppercase());
-    let _ = s.advance(); // '"'
-    match s.emit_fragment(true, 1) {
+    match s.emit_final() {
         TokenBuf::OwnedText(t) => assert_eq!(t, "DEF"),
         other => panic!("expected owned final (continued owned mode), got {other:?}"),
     }
+    assert_eq!(s.peek().unwrap().ch, '"');
+    let _ = s.advance();
 }
 
 #[test]
