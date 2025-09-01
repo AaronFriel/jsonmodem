@@ -220,7 +220,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, '
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path)
+            .next_event_with(&mut self.factory, &mut self.path, &mut self.scanner)
     }
 }
 
@@ -261,7 +261,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path)
+            .next_event_with(&mut self.factory, &mut self.path, &mut self.scanner)
     }
 }
 
@@ -361,8 +361,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
+        _scanner: &mut Scanner<'src>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal(f, path) {
+        match self.next_event_internal(f, path, _scanner) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -382,6 +383,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &'a mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
+        _scanner: &mut Scanner<'src>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
