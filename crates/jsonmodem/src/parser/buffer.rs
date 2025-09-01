@@ -1,10 +1,10 @@
 #![expect(clippy::inline_always)]
 
-use alloc::{collections::VecDeque, string::String};
 #[cfg(debug_assertions)]
 use alloc::string::ToString;
 #[cfg(debug_assertions)]
 use alloc::vec::Vec;
+use alloc::{collections::VecDeque, string::String};
 
 #[derive(Debug)]
 pub(crate) struct Buffer {

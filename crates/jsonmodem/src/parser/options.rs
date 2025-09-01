@@ -76,5 +76,7 @@ pub enum DecodeMode {
 }
 
 impl Default for DecodeMode {
-    fn default() -> Self { DecodeMode::StrictUnicode }
+    fn default() -> Self {
+        DecodeMode::StrictUnicode
+    }
 }

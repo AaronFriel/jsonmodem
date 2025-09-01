@@ -1,5 +1,5 @@
-mod rust;
 pub mod raw;
+mod rust;
 
 use alloc::string::String;
 use core::{
@@ -7,8 +7,8 @@ use core::{
     fmt::{Debug, Display},
 };
 
-pub use rust::RustContext;
 pub use raw::RawContext;
+pub use rust::RustContext;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RawStrHint {

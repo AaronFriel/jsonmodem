@@ -34,8 +34,10 @@ pub use options::ParserOptions;
 pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
-use crate::backend::{EventCtx, PathCtx, PathKind, RustContext};
-use crate::parser::scanner::Scanner;
+use crate::{
+    backend::{EventCtx, PathCtx, PathKind, RustContext},
+    parser::scanner::{Peeked, Scanner},
+};
 
 // ------------------------------------------------------------------------------------------------
 // Lexer - internal tokens & states
@@ -383,7 +385,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &'a mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
-        _scanner: &mut Scanner<'src>,
+        scanner: &mut Scanner<'src>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
@@ -397,7 +399,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 self.path = MaybeUninit::new(f.frozen_new());
             }
 
-            let token = match self.lex() {
+            let token = match self.lex(scanner) {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -439,14 +441,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex(&mut self) -> Result<Token, ParserError<B>> {
+    fn lex<'src>(&mut self, scanner: &mut Scanner<'src>) -> Result<Token, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
 
         loop {
             let next_char = self.peek_char();
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char)? {
+            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, scanner)? {
                 #[cfg(test)]
                 self.lexed_tokens.push(tok.clone());
                 return Ok(tok);
@@ -521,35 +523,38 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[expect(clippy::too_many_lines)]
     #[inline(always)]
-    fn lex_state_step(
+    fn lex_state_step<'src>(
         &mut self,
         lex_state: LexState,
         next_char: PeekedChar,
+        scanner: &mut Scanner<'src>,
     ) -> Result<Option<Token>, ParserError<B>> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
             Default => {
-                match next_char {
-                    Char(
-                        '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n' | '\r'
-                        | '\u{2028}' | '\u{2029}',
-                    ) => {
-                        // Skip whitespace
-                        self.advance_char();
-                        Ok(None)
+                match scanner.peek_guard() {
+                    Peeked::Char(g) => match (next_char, g.ch()) {
+                        (Char(c), '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n'
+                        | '\r' | '\u{2028}' | '\u{2029}') => {
+                            debug_assert_eq!(g.ch(), c);
+                            scanner.skip();
+                            Ok(None)
+                        }
+                            (Char(c), ch) if ch.is_whitespace() => {
+                                debug_assert_eq!(g.ch(), c);
+                                self.advance_char();
+                            Ok(None)
+                            }
+                            _ => self.lex_state_step(self.parse_state.into(), next_char, scanner),
+                        },
+                    Peeked::Empty if !self.end_of_input => {
+                        Ok(Some(self.new_token(Token::Eof, true)))
                     }
-                    Char(c) if c.is_whitespace() => {
-                        self.advance_char();
-                        Ok(None)
+                    Peeked::Empty /* if self.end_of_input */ => {
+                                self.advance_char();
+                                Ok(Some(self.new_token(Token::Eof, false)))
                     }
-                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                    EndOfInput => {
-                        self.advance_char();
-                        Ok(Some(self.new_token(Token::Eof, false)))
-                    }
-
-                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char),
                 }
             }
 

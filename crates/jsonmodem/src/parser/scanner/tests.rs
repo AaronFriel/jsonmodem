@@ -49,7 +49,7 @@ fn key_string_borrowed_simple() {
         other => panic!("expected borrowed, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 }
 
 #[test]
@@ -61,10 +61,11 @@ fn key_string_switches_to_owned_on_escape_prefix_copy_once() {
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // abc
     // Encounter escape: mark_escape should copy prefix into scratch and set owned
     s.mark_escape();
-    // After escape handling the lexer would append decoded unit; simulate pushing 'X'
+    // After escape handling the lexer would append decoded unit; simulate pushing
+    // 'X'
     s.scratch.as_text_mut().push('X');
     // Skip the backslash (already consumed by lexer in real flow)
-    let _ = s.advance();
+    let _ = s.skip();
     // Continue reading remaining letters
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // rest
     match s.emit_final() {
@@ -89,7 +90,7 @@ fn raw_allowed_for_keys_reported_as_raw() {
         other => panic!("expected raw, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 }
 
 #[test]
@@ -115,27 +116,27 @@ fn utf8_multibyte_borrow_and_end_adjust_for_keys_and_values() {
     let mut sess = Scanner::from_carryover(carry(""), s1);
     sess.begin(FragmentPolicy::Disallowed);
     // Advance over å
-    let _ = sess.advance();
+    let _ = sess.skip();
     match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "å"),
         other => panic!("expected borrowed 'å', got {other:?}"),
     }
     assert_eq!(sess.peek().unwrap().ch, '"');
-    let _ = sess.advance();
+    let _ = sess.skip();
 
     // Mixed ASCII and non-ASCII for value, with borrow across entire batch
     let s2 = "abcÅdef\""; // Å is non-ASCII
     let mut sess = Scanner::from_carryover(carry(""), s2);
     sess.begin(FragmentPolicy::Allowed);
     sess.copy_while_ascii(|b| (b as char).is_ascii()); // 'abc'
-    let _ = sess.advance(); // 'Å'
+    let _ = sess.skip(); // 'Å'
     sess.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // 'def'
     match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "abcÅdef"),
         other => panic!("expected borrowed 'abcÅdef', got {other:?}"),
     }
     assert_eq!(sess.peek().unwrap().ch, '"');
-    let _ = sess.advance();
+    let _ = sess.skip();
 }
 
 #[test]
@@ -148,7 +149,7 @@ fn empty_key_and_value_strings_borrow_correctly() {
         other => panic!("expected borrowed empty key, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 
     // Value: ""
     let mut s = Scanner::from_carryover(carry(""), "\"");
@@ -158,7 +159,7 @@ fn empty_key_and_value_strings_borrow_correctly() {
         other => panic!("expected borrowed empty value, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 }
 
 #[test]
@@ -205,9 +206,12 @@ fn raw_hint_matches_decode_mode_for_keys() {
     s.begin(FragmentPolicy::Disallowed);
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.ensure_raw();
-    match s.emit_final() { TokenBuf::Raw(_) => (), other => panic!("expected raw, got {other:?}") }
+    match s.emit_final() {
+        TokenBuf::Raw(_) => (),
+        other => panic!("expected raw, got {other:?}"),
+    }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 
     let mut s = Scanner::from_carryover(carry(""), "A\"");
     s.begin(FragmentPolicy::Disallowed);
@@ -218,7 +222,8 @@ fn raw_hint_matches_decode_mode_for_keys() {
 
 #[test]
 fn surrogate_flags_round_trip_in_carryover() {
-    // Surrogate pairing state is owned by the parser; InputSession/CarryOver no longer track it.
+    // Surrogate pairing state is owned by the parser; InputSession/CarryOver no
+    // longer track it.
     let s = Scanner::from_carryover(carry(""), "");
     let _ = s.finish();
 }
@@ -262,19 +267,24 @@ fn ensure_raw_is_idempotent_and_preserves_prefix() {
         other => panic!("expected raw, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 }
 
 #[test]
 fn value_fragment_partial_and_final_borrowing() {
-    // Value string fragments: partial emits owned when accumulated; final can be borrowed.
+    // Value string fragments: partial emits owned when accumulated; final can be
+    // borrowed.
     let batch = "abcDEF\""; // we'll split work: own 'abc', then leave 'DEF' borrowable
     let mut s = Scanner::from_carryover(carry(""), batch);
     s.begin(FragmentPolicy::Allowed);
     // Force owned by switching to owned prefix after 'abc'
     s.copy_while_ascii(|b| (b as char).is_ascii_lowercase()); // 'abc'
     s.switch_to_owned_prefix_if_needed();
-    if let Some(TokenBuf::OwnedText(t)) = s.emit_partial() { assert_eq!(t, "abc"); } else { panic!("expected owned partial") }
+    if let Some(TokenBuf::OwnedText(t)) = s.emit_partial() {
+        assert_eq!(t, "abc");
+    } else {
+        panic!("expected owned partial")
+    }
     // Continue with remaining 'DEF' and closing quote, keep borrow-eligible
     s.copy_while_ascii(|b| (b as char).is_ascii_uppercase());
     match s.emit_final() {
@@ -282,7 +292,7 @@ fn value_fragment_partial_and_final_borrowing() {
         other => panic!("expected owned final (continued owned mode), got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.advance();
+    let _ = s.skip();
 }
 
 #[test]
@@ -297,19 +307,19 @@ fn newline_updates_positions_across_ring_and_batch() {
     assert_eq!(s.line, 1);
     assert_eq!(s.col, 1);
     // Consume 'A' (ring)
-    let _ = s.advance();
+    let _ = s.skip();
     assert_eq!(s.line, 1);
     assert_eq!(s.col, 2);
     // Consume '\n' (ring)
-    let _ = s.advance();
+    let _ = s.skip();
     assert_eq!(s.line, 2);
     assert_eq!(s.col, 1);
     // Now from batch: 'B'
-    let _ = s.advance();
+    let _ = s.skip();
     assert_eq!(s.line, 2);
     assert_eq!(s.col, 2);
     // '\n'
-    let _ = s.advance();
+    let _ = s.skip();
     assert_eq!(s.line, 3);
     assert_eq!(s.col, 1);
 }

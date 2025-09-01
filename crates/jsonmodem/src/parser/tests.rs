@@ -379,9 +379,7 @@ fn string_unicode_escape_cross_batches() {
         panic_on_error: true,
         ..Default::default()
     });
-    {
-
-    }
+    {}
     let mut it = parser.feed(r#"["A\u"#);
     assert!(matches!(
         it.next().unwrap().unwrap(),
@@ -396,86 +394,87 @@ fn string_unicode_escape_cross_batches() {
             ..
         } => {
             // TODO: scanner should fix
-            // assert!(matches!(fragment, Cow::Borrowed(_)), "Expected borrowed fragment, got {fragment:?}");
+            // assert!(matches!(fragment, Cow::Borrowed(_)), "Expected borrowed fragment,
+            // got {fragment:?}");
             assert_eq!(fragment, alloc::borrow::Cow::<str>::Borrowed("A"));
             assert!(is_initial);
-            assert!(!is_final);use alloc::{vec, vec::Vec};
+            assert!(!is_final);
+            use alloc::{vec, vec::Vec};
 
-use super::*;
+            use super::*;
 
-// #[test]
-// fn parser_compiles() {
-//     // Smoke test: ensure types are sized and constructible
-//     let _ = DefaultStreamingParser::new(ParserOptions::default());
-//     let _ = ClosedStreamingParser {
-//         parser: DefaultStreamingParser::new(ParserOptions::default()),
-//         builder: RustContext,
-//     };
-// }
+            // #[test]
+            // fn parser_compiles() {
+            //     // Smoke test: ensure types are sized and constructible
+            //     let _ = DefaultStreamingParser::new(ParserOptions::default());
+            //     let _ = ClosedStreamingParser {
+            //         parser: DefaultStreamingParser::new(ParserOptions::default()),
+            //         builder: RustContext,
+            //     };
+            // }
 
-#[test]
-fn parser_basic_example() {
-    let mut parser = DefaultStreamingParser::new(ParserOptions {
-        panic_on_error: true,
-        ..Default::default()
-    });
-    let mut events: Vec<_> = vec![];
-    events.extend(parser.feed(
-        "[\"hello\", {\"\": \"world\"}, 0, 1, 1.2,
+            #[test]
+            fn parser_basic_example() {
+                let mut parser = DefaultStreamingParser::new(ParserOptions {
+                    panic_on_error: true,
+                    ..Default::default()
+                });
+                let mut events: Vec<_> = vec![];
+                events.extend(parser.feed(
+                    "[\"hello\", {\"\": \"world\"}, 0, 1, 1.2,
 true, false, null]",
-    ));
-    events.extend(parser.finish());
+                ));
+                events.extend(parser.finish());
 
-    assert_eq!(
-        events,
-        vec![
-            Ok(ParseEvent::ArrayBegin { path: vec![] }),
-            Ok(ParseEvent::String {
-                path: vec![PathItem::Index(0)],
-                fragment: "hello".into(),
-                is_initial: true,
-                is_final: true,
-            }),
-            Ok(ParseEvent::ObjectBegin {
-                path: vec![PathItem::Index(1)]
-            }),
-            Ok(ParseEvent::String {
-                path: vec![PathItem::Index(1), PathItem::Key("".into())],
-                fragment: "world".into(),
-                is_initial: true,
-                is_final: true,
-            }),
-            Ok(ParseEvent::ObjectEnd {
-                path: vec![PathItem::Index(1)]
-            }),
-            Ok(ParseEvent::Number {
-                path: vec![PathItem::Index(2)],
-                value: 0.0,
-            }),
-            Ok(ParseEvent::Number {
-                path: vec![PathItem::Index(3)],
-                value: 1.0,
-            }),
-            Ok(ParseEvent::Number {
-                path: vec![PathItem::Index(4)],
-                value: 1.2,
-            }),
-            Ok(ParseEvent::Boolean {
-                path: vec![PathItem::Index(5)],
-                value: true,
-            }),
-            Ok(ParseEvent::Boolean {
-                path: vec![PathItem::Index(6)],
-                value: false,
-            }),
-            Ok(ParseEvent::Null {
-                path: vec![PathItem::Index(7)],
-            }),
-            Ok(ParseEvent::ArrayEnd { path: vec![] }),
-        ]
-    );
-}
-
+                assert_eq!(
+                    events,
+                    vec![
+                        Ok(ParseEvent::ArrayBegin { path: vec![] }),
+                        Ok(ParseEvent::String {
+                            path: vec![PathItem::Index(0)],
+                            fragment: "hello".into(),
+                            is_initial: true,
+                            is_final: true,
+                        }),
+                        Ok(ParseEvent::ObjectBegin {
+                            path: vec![PathItem::Index(1)]
+                        }),
+                        Ok(ParseEvent::String {
+                            path: vec![PathItem::Index(1), PathItem::Key("".into())],
+                            fragment: "world".into(),
+                            is_initial: true,
+                            is_final: true,
+                        }),
+                        Ok(ParseEvent::ObjectEnd {
+                            path: vec![PathItem::Index(1)]
+                        }),
+                        Ok(ParseEvent::Number {
+                            path: vec![PathItem::Index(2)],
+                            value: 0.0,
+                        }),
+                        Ok(ParseEvent::Number {
+                            path: vec![PathItem::Index(3)],
+                            value: 1.0,
+                        }),
+                        Ok(ParseEvent::Number {
+                            path: vec![PathItem::Index(4)],
+                            value: 1.2,
+                        }),
+                        Ok(ParseEvent::Boolean {
+                            path: vec![PathItem::Index(5)],
+                            value: true,
+                        }),
+                        Ok(ParseEvent::Boolean {
+                            path: vec![PathItem::Index(6)],
+                            value: false,
+                        }),
+                        Ok(ParseEvent::Null {
+                            path: vec![PathItem::Index(7)],
+                        }),
+                        Ok(ParseEvent::ArrayEnd { path: vec![] }),
+                    ]
+                );
+            }
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -490,7 +489,10 @@ true, false, null]",
             is_final,
             ..
         } => {
-            assert!(matches!(fragment, Cow::Owned(_)), "Expected owned fragment, got {fragment:?}");
+            assert!(
+                matches!(fragment, Cow::Owned(_)),
+                "Expected owned fragment, got {fragment:?}"
+            );
             assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("B".to_string()));
             assert!(!is_initial);
             assert!(is_final);

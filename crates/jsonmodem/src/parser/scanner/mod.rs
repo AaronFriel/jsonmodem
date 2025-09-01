@@ -318,7 +318,8 @@ impl<'src> Scanner<'src> {
         }
     }
 
-    /// Append UTF-8 text to the current token scratch, ensuring owned mode if needed.
+    /// Append UTF-8 text to the current token scratch, ensuring owned mode if
+    /// needed.
     pub fn push_text(&mut self, s: &str) {
         self.switch_to_owned_prefix_if_needed();
         match &mut self.scratch {
@@ -443,7 +444,7 @@ impl<'src> Scanner<'src> {
 
     /// Consumes one character from the current source and updates
     /// `pos/line/col`.
-    pub fn advance(&mut self) -> Option<Unit> {
+    pub fn skip(&mut self) -> Option<Unit> {
         if !self.ring.is_empty() {
             let (ch, len) = Self::decode_from_ring(&self.ring)?;
             // consume len bytes
@@ -538,8 +539,8 @@ impl<'src> Scanner<'src> {
         };
         // If token starts in the ring, we can never borrow; start owned immediately.
         let owned = matches!(source, Source::Ring);
-        // If scratch already has a carried prefix (from a previous feed), preserve it and
-        // continue in owned mode rather than clearing it.
+        // If scratch already has a carried prefix (from a previous feed), preserve it
+        // and continue in owned mode rather than clearing it.
         let has_carry = match &self.scratch {
             TokenScratch::Text(s) => !s.is_empty(),
             TokenScratch::Raw(b) => !b.is_empty(),
@@ -581,7 +582,8 @@ impl<'src> Scanner<'src> {
         self.scratch.to_raw()
     }
 
-    /// Appends UTF-8 text to the current token, switching to owned mode if needed.
+    /// Appends UTF-8 text to the current token, switching to owned mode if
+    /// needed.
     pub fn append_text(&mut self, s: &str) {
         self.switch_to_owned_prefix_if_needed();
         match &mut self.scratch {
@@ -684,7 +686,7 @@ impl<'src> Scanner<'src> {
                     self.scratch.push_char(u.ch);
                 }
             }
-            let _ = self.advance();
+            let _ = self.skip();
             copied += 1;
         }
         copied
@@ -738,8 +740,9 @@ impl<'src> Scanner<'src> {
     /// Emits a non-empty partial fragment if any data has accumulated.
     /// - If borrow-eligible, returns a borrowed slice and acknowledges it so
     ///   later `finish()` will not duplicate it.
-    /// - Otherwise, switches to owned (idempotent), and returns `OwnedText`/`Raw`
-    ///   if the scratch is non-empty. Returns `None` if there is nothing to emit.
+    /// - Otherwise, switches to owned (idempotent), and returns
+    ///   `OwnedText`/`Raw` if the scratch is non-empty. Returns `None` if there
+    ///   is nothing to emit.
     pub fn emit_partial(&mut self) -> Option<TokenBuf<'src>> {
         if let Some(s) = self.try_borrow_slice() {
             if !s.is_empty() {
@@ -763,8 +766,10 @@ impl<'src> Scanner<'src> {
 
     /// For transform boundaries (e.g., escape start):
     /// - For Allowed strings, if still borrow-eligible, returns the borrowed
-    ///   prefix and acknowledges it; otherwise switches to owned and returns None.
-    /// - For Disallowed tokens (keys/numbers), switches to owned and returns None.
+    ///   prefix and acknowledges it; otherwise switches to owned and returns
+    ///   None.
+    /// - For Disallowed tokens (keys/numbers), switches to owned and returns
+    ///   None.
     pub fn yield_prefix(&mut self) -> Option<TokenBuf<'src>> {
         let policy = self.anchor.as_ref().map(|a| a.policy);
         match policy {
@@ -811,10 +816,14 @@ pub struct PeekGuard<'a, 'src> {
 
 impl<'a, 'src> PeekGuard<'a, 'src> {
     #[inline]
-    pub fn ch(&self) -> char { self.unit.ch }
+    pub fn ch(&self) -> char {
+        self.unit.ch
+    }
 
     #[inline]
-    pub fn unit(&self) -> Unit { self.unit }
+    pub fn unit(&self) -> Unit {
+        self.unit
+    }
 
     /// Advance the underlying scanner and return the peeked Unit. In debug
     /// builds, asserts that the advanced character matches the guard.
@@ -822,7 +831,7 @@ impl<'a, 'src> PeekGuard<'a, 'src> {
     pub fn consume(self) -> Unit {
         #[cfg(debug_assertions)]
         {
-            let adv = self.scanner.advance().expect("scanner advanced after peek");
+            let adv = self.scanner.skip().expect("scanner advanced after peek");
             debug_assert_eq!(adv.ch, self.unit.ch, "peek/advance mismatch");
             adv
         }
@@ -840,7 +849,10 @@ impl<'src> Scanner<'src> {
     /// the scanner can be advanced exactly once via `consume()`.
     pub fn peek_guard(&mut self) -> Peeked<'_, 'src> {
         match self.peek() {
-            Some(u) => Peeked::Char(PeekGuard { scanner: self, unit: u }),
+            Some(u) => Peeked::Char(PeekGuard {
+                scanner: self,
+                unit: u,
+            }),
             None => Peeked::Empty,
         }
     }
