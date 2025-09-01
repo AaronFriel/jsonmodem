@@ -444,7 +444,7 @@ impl<'src> Scanner<'src> {
 
     /// Consumes one character from the current source and updates
     /// `pos/line/col`.
-    pub fn skip(&mut self) -> Option<Unit> {
+    pub fn consume(&mut self) -> Option<Unit> {
         if !self.ring.is_empty() {
             let (ch, len) = Self::decode_from_ring(&self.ring)?;
             // consume len bytes
@@ -467,6 +467,14 @@ impl<'src> Scanner<'src> {
                 source: Source::Batch,
             })
         }
+    }
+
+    /// Skips one character from the current source, identical to `consume()`
+    /// with respect to position/ring/batch cursors. Provided for clarity when
+    /// the caller intends to advance without touching token scratch.
+    #[inline]
+    pub fn skip(&mut self) -> Option<Unit> {
+        self.consume()
     }
 
     #[inline]
@@ -686,7 +694,7 @@ impl<'src> Scanner<'src> {
                     self.scratch.push_char(u.ch);
                 }
             }
-            let _ = self.skip();
+            let _ = self.consume();
             copied += 1;
         }
         copied
@@ -831,14 +839,13 @@ impl<'a, 'src> PeekGuard<'a, 'src> {
     pub fn consume(self) -> Unit {
         #[cfg(debug_assertions)]
         {
-            let adv = self.scanner.skip().expect("scanner advanced after peek");
+            let adv = self.scanner.consume().expect("scanner advanced after peek");
             debug_assert_eq!(adv.ch, self.unit.ch, "peek/advance mismatch");
             adv
         }
         #[cfg(not(debug_assertions))]
         {
-            // In release, perform the advance without an extra check.
-            let _ = self.scanner.advance();
+            let _ = self.scanner.consume();
             self.unit
         }
     }

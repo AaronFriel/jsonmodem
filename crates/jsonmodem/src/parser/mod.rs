@@ -34,10 +34,7 @@ pub use options::ParserOptions;
 pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
-use crate::{
-    backend::{EventCtx, PathCtx, PathKind, RustContext},
-    parser::scanner::{Peeked, Scanner},
-};
+use crate::backend::{EventCtx, PathCtx, PathKind, RustContext};
 
 // ------------------------------------------------------------------------------------------------
 // Lexer - internal tokens & states
@@ -153,8 +150,6 @@ type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     // Raw source buffer (always grows then gets truncated after each “round”).
     source: Buffer,
-    // Carryover for Scanner (ring + positions + scratch), used in parallel wiring.
-    tape: scanner::Tape,
     end_of_input: bool,
 
     /// Current *global* character position.
@@ -201,8 +196,6 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
-    // Scanner for this iteration (not yet used by parser logic; finalized on drop).
-    scanner: Scanner<'src>,
 }
 
 impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
@@ -211,9 +204,6 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
         // so the later field-drop won’t double-drop it.
         let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
-        // Finalize scanner and write back carryover state for next feed
-        let tape = core::mem::take(&mut self.scanner).finish();
-        self.parser.tape = tape;
     }
 }
 
@@ -222,7 +212,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for StreamingParserIteratorWith<'_, '
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path, &mut self.scanner)
+            .next_event_with(&mut self.factory, &mut self.path)
     }
 }
 
@@ -236,8 +226,6 @@ pub struct ClosedStreamingParser<'src, B: PathCtx + EventCtx> {
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
-    // Scanner for closed iteration (finalizes to tape on drop)
-    scanner: Scanner<'src>,
 }
 
 impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
@@ -246,8 +234,6 @@ impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
         // so the later field-drop won’t double-drop it.
         let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
-        let tape = core::mem::take(&mut self.scanner).finish();
-        self.parser.tape = tape;
     }
 }
 
@@ -263,7 +249,7 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.parser
-            .next_event_with(&mut self.factory, &mut self.path, &mut self.scanner)
+            .next_event_with(&mut self.factory, &mut self.path)
     }
 }
 
@@ -274,7 +260,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     pub fn new_with_factory(f: &mut B, options: ParserOptions) -> StreamingParserImpl<B> {
         Self {
             source: Buffer::new(),
-            tape: scanner::Tape::default(),
             end_of_input: false,
             partial_lex: false,
 
@@ -314,13 +299,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.feed_str(text);
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
-        let scanner = Scanner::from_carryover(core::mem::take(&mut self.tape), text);
         StreamingParserIteratorWith {
             parser: self,
             factory,
             path,
             _marker: core::marker::PhantomData,
-            scanner,
         }
     }
 
@@ -339,13 +322,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.close();
         let path = unsafe { context.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
-        let scanner = Scanner::from_carryover(core::mem::take(&mut self.tape), "");
         ClosedStreamingParser {
             parser: self,
             factory: context,
             path,
             _marker: core::marker::PhantomData,
-            scanner,
         }
     }
 
@@ -363,9 +344,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
-        _scanner: &mut Scanner<'src>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
-        match self.next_event_internal(f, path, _scanner) {
+        match self.next_event_internal(f, path) {
             None => None,
             Some(Ok(event)) => Some(Ok(event)),
             Some(Err(err)) => {
@@ -385,7 +365,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         &'a mut self,
         f: &'cx mut B,
         path: &mut B::Thawed,
-        scanner: &mut Scanner<'src>,
     ) -> Option<Result<ParseEvent<'src, B>, ParserError<B>>> {
         if self.parse_state == ParseState::Error {
             return None;
@@ -399,7 +378,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 self.path = MaybeUninit::new(f.frozen_new());
             }
 
-            let token = match self.lex(scanner) {
+            let token = match self.lex() {
                 Ok(tok) => tok,
                 Err(err) => {
                     #[cfg(test)]
@@ -441,14 +420,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     // ------------------------------------------------------------------------------------------------
 
     #[inline(always)]
-    fn lex<'src>(&mut self, scanner: &mut Scanner<'src>) -> Result<Token, ParserError<B>> {
+    fn lex(&mut self) -> Result<Token, ParserError<B>> {
         if !self.partial_lex {
             self.lex_state = LexState::Default;
         }
 
         loop {
             let next_char = self.peek_char();
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, scanner)? {
+            if let Some(tok) = self.lex_state_step(self.lex_state, next_char)? {
                 #[cfg(test)]
                 self.lexed_tokens.push(tok.clone());
                 return Ok(tok);
@@ -523,38 +502,35 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[expect(clippy::too_many_lines)]
     #[inline(always)]
-    fn lex_state_step<'src>(
+    fn lex_state_step(
         &mut self,
         lex_state: LexState,
         next_char: PeekedChar,
-        scanner: &mut Scanner<'src>,
     ) -> Result<Option<Token>, ParserError<B>> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
             Default => {
-                match scanner.peek_guard() {
-                    Peeked::Char(g) => match (next_char, g.ch()) {
-                        (Char(c), '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n'
-                        | '\r' | '\u{2028}' | '\u{2029}') => {
-                            debug_assert_eq!(g.ch(), c);
-                            scanner.skip();
-                            Ok(None)
-                        }
-                            (Char(c), ch) if ch.is_whitespace() => {
-                                debug_assert_eq!(g.ch(), c);
-                                self.advance_char();
-                            Ok(None)
-                            }
-                            _ => self.lex_state_step(self.parse_state.into(), next_char, scanner),
-                        },
-                    Peeked::Empty if !self.end_of_input => {
-                        Ok(Some(self.new_token(Token::Eof, true)))
+                match next_char {
+                    Char(
+                        '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n' | '\r'
+                        | '\u{2028}' | '\u{2029}',
+                    ) => {
+                        // Skip whitespace
+                        self.advance_char();
+                        Ok(None)
                     }
-                    Peeked::Empty /* if self.end_of_input */ => {
-                                self.advance_char();
-                                Ok(Some(self.new_token(Token::Eof, false)))
+                    Char(c) if c.is_whitespace() => {
+                        self.advance_char();
+                        Ok(None)
                     }
+                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                    EndOfInput => {
+                        self.advance_char();
+                        Ok(Some(self.new_token(Token::Eof, false)))
+                    }
+
+                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char),
                 }
             }
 

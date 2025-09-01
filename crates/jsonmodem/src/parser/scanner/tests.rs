@@ -49,7 +49,7 @@ fn key_string_borrowed_simple() {
         other => panic!("expected borrowed, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn key_string_switches_to_owned_on_escape_prefix_copy_once() {
     // 'X'
     s.scratch.as_text_mut().push('X');
     // Skip the backslash (already consumed by lexer in real flow)
-    let _ = s.skip();
+    let _ = s.consume();
     // Continue reading remaining letters
     s.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // rest
     match s.emit_final() {
@@ -90,7 +90,7 @@ fn raw_allowed_for_keys_reported_as_raw() {
         other => panic!("expected raw, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 }
 
 #[test]
@@ -116,27 +116,27 @@ fn utf8_multibyte_borrow_and_end_adjust_for_keys_and_values() {
     let mut sess = Scanner::from_carryover(carry(""), s1);
     sess.begin(FragmentPolicy::Disallowed);
     // Advance over å
-    let _ = sess.skip();
+    let _ = sess.consume();
     match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "å"),
         other => panic!("expected borrowed 'å', got {other:?}"),
     }
     assert_eq!(sess.peek().unwrap().ch, '"');
-    let _ = sess.skip();
+    let _ = sess.consume();
 
     // Mixed ASCII and non-ASCII for value, with borrow across entire batch
     let s2 = "abcÅdef\""; // Å is non-ASCII
     let mut sess = Scanner::from_carryover(carry(""), s2);
     sess.begin(FragmentPolicy::Allowed);
     sess.copy_while_ascii(|b| (b as char).is_ascii()); // 'abc'
-    let _ = sess.skip(); // 'Å'
+    let _ = sess.consume(); // 'Å'
     sess.copy_while_ascii(|b| (b as char).is_ascii_alphabetic()); // 'def'
     match sess.emit_final() {
         TokenBuf::Borrowed(t) => assert_eq!(t, "abcÅdef"),
         other => panic!("expected borrowed 'abcÅdef', got {other:?}"),
     }
     assert_eq!(sess.peek().unwrap().ch, '"');
-    let _ = sess.skip();
+    let _ = sess.consume();
 }
 
 #[test]
@@ -149,7 +149,7 @@ fn empty_key_and_value_strings_borrow_correctly() {
         other => panic!("expected borrowed empty key, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 
     // Value: ""
     let mut s = Scanner::from_carryover(carry(""), "\"");
@@ -159,7 +159,7 @@ fn empty_key_and_value_strings_borrow_correctly() {
         other => panic!("expected borrowed empty value, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 }
 
 #[test]
@@ -201,6 +201,48 @@ fn numbers_borrow_exclude_delimiters_and_peek_delim() {
 }
 
 #[test]
+fn skip_and_consume_sequences_match_units_and_positions() {
+    let mut s = Scanner::from_carryover(carry(""), "abc");
+    s.begin(FragmentPolicy::Allowed);
+    let u1 = s.skip().unwrap();
+    assert_eq!(u1.ch, 'a');
+    let u2 = s.consume().unwrap();
+    assert_eq!(u2.ch, 'b');
+    let u3 = s.skip().unwrap();
+    assert_eq!(u3.ch, 'c');
+    assert!(s.peek().is_none());
+    // Positions advanced by 3 characters; line/col updated accordingly
+    #[cfg(debug_assertions)]
+    {
+        let (pos, _line, _col) = s.debug_positions();
+        assert_eq!(pos, 3);
+    }
+}
+
+#[test]
+fn skip_works_across_ring_and_batch() {
+    // Ring contains 'x', 'y'; batch contains 'z'
+    let mut c = Tape::default();
+    c.ring.extend(b"xy".iter().copied());
+    let mut s = Scanner::from_carryover(c, "z");
+    s.begin(FragmentPolicy::Allowed);
+    let u1 = s.skip().unwrap();
+    assert_eq!(u1.ch, 'x');
+    let u2 = s.skip().unwrap();
+    assert_eq!(u2.ch, 'y');
+    let u3 = s.consume().unwrap();
+    assert_eq!(u3.ch, 'z');
+    assert!(s.peek().is_none());
+}
+
+#[test]
+fn skip_returns_none_on_empty() {
+    let mut s = Scanner::from_carryover(carry(""), "");
+    assert!(s.skip().is_none());
+    assert!(s.consume().is_none());
+}
+
+#[test]
 fn raw_hint_matches_decode_mode_for_keys() {
     let mut s = Scanner::from_carryover(carry(""), "A\"");
     s.begin(FragmentPolicy::Disallowed);
@@ -211,7 +253,7 @@ fn raw_hint_matches_decode_mode_for_keys() {
         other => panic!("expected raw, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 
     let mut s = Scanner::from_carryover(carry(""), "A\"");
     s.begin(FragmentPolicy::Disallowed);
@@ -267,7 +309,7 @@ fn ensure_raw_is_idempotent_and_preserves_prefix() {
         other => panic!("expected raw, got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 }
 
 #[test]
@@ -292,7 +334,7 @@ fn value_fragment_partial_and_final_borrowing() {
         other => panic!("expected owned final (continued owned mode), got {other:?}"),
     }
     assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.skip();
+    let _ = s.consume();
 }
 
 #[test]
@@ -307,19 +349,19 @@ fn newline_updates_positions_across_ring_and_batch() {
     assert_eq!(s.line, 1);
     assert_eq!(s.col, 1);
     // Consume 'A' (ring)
-    let _ = s.skip();
+    let _ = s.consume();
     assert_eq!(s.line, 1);
     assert_eq!(s.col, 2);
     // Consume '\n' (ring)
-    let _ = s.skip();
+    let _ = s.consume();
     assert_eq!(s.line, 2);
     assert_eq!(s.col, 1);
     // Now from batch: 'B'
-    let _ = s.skip();
+    let _ = s.consume();
     assert_eq!(s.line, 2);
     assert_eq!(s.col, 2);
     // '\n'
-    let _ = s.skip();
+    let _ = s.consume();
     assert_eq!(s.line, 3);
     assert_eq!(s.col, 1);
 }
