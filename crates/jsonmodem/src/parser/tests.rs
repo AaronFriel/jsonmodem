@@ -376,29 +376,29 @@ fn string_unicode_escape_cross_batches() {
         panic_on_error: true,
         ..Default::default()
     });
+    {
+
+    }
     let mut it = parser.feed(r#"["A\u"#);
     assert!(matches!(
         it.next().unwrap().unwrap(),
         ParseEvent::ArrayBegin { .. }
     ));
-    // Escape starts but incomplete; no fragment yet (we emit on encountering
-    // escape)
-    drop(it);
-    let mut it = parser.feed(r#"0042"]"#);
-    // Now comes a single buffered fragment with decoded 'AB'.
+    // Now comes a single borrowed fragment with decoded 'A'.
     match it.next().unwrap().unwrap() {
         ParseEvent::String {
             fragment,
             is_initial,
-            is_final,
             ..
         } => {
-            assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("AB".to_string()));
+            assert!(matches!(fragment, Cow::Borrowed(_)), "Expected borrowed fragment, got {fragment:?}");
+            assert_eq!(fragment, alloc::borrow::Cow::<str>::Borrowed("A"));
             assert!(is_initial);
-            assert!(is_final);
         }
         other => panic!("unexpected event: {other:?}"),
     }
+    drop(it);
+    let mut it = parser.feed(r#"0042"]"#);
     assert!(matches!(
         it.next().unwrap().unwrap(),
         ParseEvent::ArrayEnd { .. }

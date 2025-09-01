@@ -292,6 +292,20 @@ impl<'src> Scanner<'src> {
         }
     }
 
+    /// Acknowledges that a partial borrowed fragment has been emitted up to the
+    /// current position. This advances the anchor's start to the current
+    /// `pos_char`/`batch_bytes` so that `finish()` will not copy the already
+    /// emitted prefix into the scratch, preserving borrow-first behavior across
+    /// feeds.
+    pub fn acknowledge_partial_borrow(&mut self) {
+        if let Some(a) = &mut self.anchor {
+            if a.source == Source::Batch && !a.owned {
+                a.start_char = self.pos_char;
+                a.start_byte_in_batch = Some(self.batch_bytes);
+            }
+        }
+    }
+
     /// Ensure an anchor exists; begin if not started.
     #[inline]
     pub fn ensure_begun(&mut self, policy: FragmentPolicy) {
