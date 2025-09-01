@@ -1233,6 +1233,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     #[cfg(debug_assertions)]
                     self.shadow_peek_eq(shadow, Char(c));
                     #[cfg(debug_assertions)]
+                    self.shadow_begin(shadow, scanner::FragmentPolicy::Disallowed);
+                    #[cfg(debug_assertions)]
                     self.shadow_advance(shadow);
                     self.advance_char(batch, cursor.as_deref_mut());
                     if from_source { self.token_buffer.push(c); }
@@ -1331,6 +1333,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.shadow_advance(shadow);
                         self.advance_char(batch, cursor.as_deref_mut());
                         if from_source { self.token_buffer.push(c); }
+                        #[cfg(debug_assertions)]
+                        self.shadow_emit(shadow, true, 0);
                         let lt = match tok { Token::Null => LexToken::Null, Token::Boolean(b) => LexToken::Boolean(b), _ => unreachable!() };
                         Ok(Some(self.new_token(lt, false)))
                     }
