@@ -137,6 +137,7 @@ TODO Checklist (next actionable items)
 - [x] Instantiate Scanner in release builds.
 - [ ] Flip the no‑escape string path unconditionally in release builds (after short bake).
 - [ ] Route numbers and `true/false/null` to Scanner; map `TokenBuf` to `LexToken`.
+- [ ] Remove Option<Scanner> in ClosedStreamingParser by maintaining a persistent Scanner across closed iteration, then delete the remaining Option.
 - [ ] Wire escape handling to Scanner’s `mark_escape` path for text mode.
 - [ ] Implement surrogate‑preserving behavior via `ensure_raw` and WTF‑8 output for values.
 - [ ] Add debug‑only stream comparator harness to diff legacy vs Scanner token streams for a corpus.
