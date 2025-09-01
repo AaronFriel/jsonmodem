@@ -793,6 +793,59 @@ impl<'src> Scanner<'src> {
     }
 }
 
+// -------------------------- Peek Guard API --------------------------
+
+/// Result of a guarded peek; either a character with a guard that can be
+/// consumed exactly once, or empty.
+pub enum Peeked<'a, 'src> {
+    Char(PeekGuard<'a, 'src>),
+    Empty,
+}
+
+/// Guard tying a peeked Unit to the Scanner borrow. Consuming the guard
+/// advances the scanner exactly once and returns the same Unit.
+pub struct PeekGuard<'a, 'src> {
+    scanner: &'a mut Scanner<'src>,
+    unit: Unit,
+}
+
+impl<'a, 'src> PeekGuard<'a, 'src> {
+    #[inline]
+    pub fn ch(&self) -> char { self.unit.ch }
+
+    #[inline]
+    pub fn unit(&self) -> Unit { self.unit }
+
+    /// Advance the underlying scanner and return the peeked Unit. In debug
+    /// builds, asserts that the advanced character matches the guard.
+    #[inline]
+    pub fn consume(self) -> Unit {
+        #[cfg(debug_assertions)]
+        {
+            let adv = self.scanner.advance().expect("scanner advanced after peek");
+            debug_assert_eq!(adv.ch, self.unit.ch, "peek/advance mismatch");
+            adv
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // In release, perform the advance without an extra check.
+            let _ = self.scanner.advance();
+            self.unit
+        }
+    }
+}
+
+impl<'src> Scanner<'src> {
+    /// Returns a guard over the next character if present. The guard ensures
+    /// the scanner can be advanced exactly once via `consume()`.
+    pub fn peek_guard(&mut self) -> Peeked<'_, 'src> {
+        match self.peek() {
+            Some(u) => Peeked::Char(PeekGuard { scanner: self, unit: u }),
+            None => Peeked::Empty,
+        }
+    }
+}
+
 #[inline]
 fn utf8_len_from_lead(b0: u8) -> Option<usize> {
     if b0 < 0x80 {
