@@ -1701,7 +1701,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.advance_char(batch, cursor.as_deref_mut());
                         self.lex_state = LexState::StringEscape;
                         if had_prefix {
-                            // Emit the fragment accumulated so far (partial)
+                            // Parallel approach: shadow emit (discard) and return legacy fragment.
+                            #[cfg(debug_assertions)]
+                            self.shadow_emit(shadow, false, 0);
                             let tok = self.produce_string(true, batch);
                             Ok(Some(self.new_token(tok, true)))
                         } else {
@@ -1744,27 +1746,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let end_pos = self.pos.saturating_sub(1);
                     let saved_pos = self.pos;
                     self.pos = end_pos;
-                    // Produce the string token. In debug builds, prefer Scanner output
-                    // for the no-escape path (phase: strings without escapes), falling
-                    // back to legacy production otherwise.
+                    // Parallel approach: drive Scanner (shadow) and legacy, use legacy result.
                     #[cfg(debug_assertions)]
-                    {
-                        let started_in_this_batch = batch
-                            .and_then(|b| self.token_start_pos.map(|s| s >= b.start_pos && s <= b.end_pos))
-                            .unwrap_or(false);
-                        if let (Some(scn), true) = (shadow.as_mut(), !self.string_had_escape && !self.token_is_raw_bytes && started_in_this_batch) {
-                            use scanner::TokenBuf as SBuf;
-                            if let Some(s) = scn.try_borrow_slice(1) {
-                                let tok = match self.parse_state {
-                                    ParseState::BeforePropertyName => LexToken::PropertyNameBorrowed(s),
-                                    _ => LexToken::StringBorrowed(s),
-                                };
-                                self.pos = saved_pos;
-                                return Ok(Some(tok));
-                            }
-                        }
-                    }
-                    // Legacy production path
+                    self.shadow_emit(shadow, true, 1);
                     let tok = self.produce_string(false, batch);
                     self.pos = saved_pos;
                     Ok(Some(tok))
@@ -1773,7 +1757,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
-                Empty => Ok(Some(self.produce_string(true, batch))),
+                Empty => {
+                    #[cfg(debug_assertions)]
+                    self.shadow_emit(shadow, false, 0);
+                    Ok(Some(self.produce_string(true, batch)))
+                },
                 Char(_c) => {
                     // Fast-path: copy as many consecutive non-escaped, non-terminating
                     // characters as possible in a single pass.

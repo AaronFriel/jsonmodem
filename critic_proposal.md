@@ -132,7 +132,7 @@ Status Summary (as of 2025‑09‑01)
 TODO Checklist (next actionable items)
 - [x] Implement Scanner‑driven whitespace: verified no‑output surface; parity holds in tests.
 - [x] Route no‑escape strings (final) to Scanner when available; map `TokenBuf` to `LexToken` at closing‑quote.
-- [ ] Route value partial fragments without escapes to Scanner (borrow when eligible) and keep `token_start_pos` semantics intact.
+- [x] Route value partial fragments without escapes to Scanner (shadow emit only, legacy result used). Keep `token_start_pos` semantics intact.
 - [x] Instantiate Scanner in release builds.
 - [ ] Flip the no‑escape string path unconditionally in release builds (after short bake).
 - [ ] Route numbers and `true/false/null` to Scanner; map `TokenBuf` to `LexToken`.
