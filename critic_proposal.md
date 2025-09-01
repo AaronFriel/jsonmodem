@@ -121,7 +121,7 @@ Status Summary (as of 2025‑09‑01)
 - [x] Phase 1: Dual‑write unread batch tail (Tape ring mirrors legacy ring; debug checks present).
 - [x] Phase 2: Dual‑write in‑flight preservation for non‑fragmenting tokens (Tape scratch mirrors legacy prefix; debug checks present).
 - [x] Phase 3: Shadow read with invariants (`shadow_*` helpers across numbers/strings/escapes; ASCII/char copy counters asserted).
-- [x] Phase 4: Whitespace consumption via Scanner (no observable output; parity maintained).
+- [x] Phase 4: Whitespace shadowing via Scanner (legacy still drives consumption; invariants asserted). Flip to Scanner result pending.
 - [ ] Phase 5: Switch strings without escapes (keys/values) to Scanner. (In progress: final emission via Scanner enabled where available.)
 - [ ] Phase 6: Switch numbers and literals to Scanner.
 - [ ] Phase 7: Escapes (UTF‑8 text) via Scanner.
@@ -130,7 +130,8 @@ Status Summary (as of 2025‑09‑01)
 - [ ] Phase 10: Cutover and removal of legacy Buffer/BatchView and parser‑resident buffers.
 
 TODO Checklist (next actionable items)
-- [x] Implement Scanner‑driven whitespace: verified no‑output surface; parity holds in tests.
+- [x] Shadow whitespace via Scanner and assert invariants; keep legacy as source of truth.
+- [ ] Flip whitespace consumption to use Scanner result (advance via Scanner and mirror legacy state), then remove legacy single‑step in `consume_whitespace`.
 - [x] Route no‑escape strings (final) to Scanner when available; map `TokenBuf` to `LexToken` at closing‑quote.
 - [x] Route value partial fragments without escapes to Scanner (shadow emit only, legacy result used). Keep `token_start_pos` semantics intact.
 - [x] Shadow numbers and literals in parallel (begin/copy/emit via Scanner) while continuing to return legacy results.
@@ -165,8 +166,16 @@ Phase 3 — Shadow read (discard) with invariants
 - [x] Positions kept in sync through step‑wise invariants.
 
 Phase 4 — Switch first reads: whitespace
-- [ ] Switch only whitespace skipping to use `Scanner`; keep legacy for everything else.
-- [ ] Tests: enable a small set that exercises ASCII and optional Unicode whitespace and confirms identical events.
+- [x] Shadow whitespace via Scanner; legacy advances too. No output is produced, so shadowing both sides is sufficient.
+- [x] Tests: invariants covered by the suite (ASCII + optional Unicode). No behavior change needed.
+
+Parallel Implementations (Carmack‑style)
+- Drive both legacy and Scanner for each surface. Keep returning legacy tokens until parity is proven.
+- Add `debug_assert!` invariants:
+  - peek/source equivalence; run‑length equality for copy loops; position counters at boundaries.
+  - payload equality at token emits (strings/numbers/literals). For raw, compare WTF‑8 bytes rendered to UTF‑8 against legacy.
+- Flip surface by surface: once parity holds across tests, return Scanner tokens for that surface, keep legacy shadow for a bake period, then remove dead code.
+- Non‑optional at runtime: both streaming and closed iterators construct a Scanner and pass it down; APIs still accept `Option<Scanner>` temporarily to ease staging. TODO: remove `Option` after ClosedStreamingParser persists the Scanner end‑to‑end.
 
 Phase 5 — Strings without escapes
 - [ ] For keys and value strings that contain no escapes:

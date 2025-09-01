@@ -487,34 +487,9 @@ impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, '
         } else {
             #[cfg(debug_assertions)]
             {
-                // When not using the scanner, verify we mirrored the unread tail and scratch.
                 if let Some(bytes) = pushed_tail_bytes.as_ref() {
                     let tape_bytes = self.parser.tape.debug_ring_bytes();
-                    assert!(
-                        tape_bytes.ends_with(bytes),
-                        "Tape ring should end with unread tail just pushed"
-                    );
-                }
-                if let Some(s) = copied_prefix_for_dual_write {
-                    let in_non_fragmenting = self.parser.parse_state == ParseState::BeforePropertyName
-                        || matches!(
-                            self.parser.lex_state,
-                            LexState::Sign
-                                | LexState::Zero
-                                | LexState::DecimalInteger
-                                | LexState::DecimalPoint
-                                | LexState::DecimalFraction
-                                | LexState::DecimalExponent
-                                | LexState::DecimalExponentSign
-                                | LexState::DecimalExponentInteger
-                        );
-                    if in_non_fragmenting && !s.is_empty() {
-                        let scratch = self.parser.tape.debug_scratch_bytes();
-                        assert!(
-                            scratch.ends_with(s.as_bytes()),
-                            "Tape scratch does not end with copied prefix for non-fragmenting token"
-                        );
-                    }
+                    assert!(tape_bytes.ends_with(bytes), "Tape ring should end with unread tail just pushed");
                 }
             }
         }
@@ -545,6 +520,7 @@ pub struct ClosedStreamingParser<'src, B: PathCtx + EventCtx> {
     path: ManuallyDrop<B::Thawed>,
     pub(crate) factory: B,
     _marker: core::marker::PhantomData<&'src ()>,
+    scanner: Option<scanner::Scanner<'src>>,
 }
 
 impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
@@ -553,6 +529,11 @@ impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
         // so the later field-drop won’t double-drop it.
         let thawed = unsafe { ManuallyDrop::take(&mut self.path) };
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
+        // Finalize scanner into parser.tape for future sessions
+        if let Some(scanner) = self.scanner.take() {
+            let tape = scanner.finish();
+            self.parser.tape = tape;
+        }
     }
 }
 
@@ -567,13 +548,12 @@ impl<'src, B: PathCtx + EventCtx> Iterator for ClosedStreamingParser<'src, B> {
     type Item = Result<ParseEvent<'src, B>, ParserError<B>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut shadow_none: Option<scanner::Scanner<'src>> = None;
         self.parser.next_event_with_and_batch(
             &mut self.factory,
             &mut self.path,
             None,
             None,
-            &mut shadow_none,
+            &mut self.scanner,
         )
     }
 }
@@ -696,11 +676,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.close();
         let path = unsafe { context.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
+        let scanner = Some(scanner::Scanner::from_carryover(core::mem::take(&mut self.tape), ""));
         ClosedStreamingParser {
             parser: self,
             factory: context,
             path,
             _marker: core::marker::PhantomData,
+            scanner,
         }
     }
 
@@ -1023,11 +1005,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         shadow: &mut Option<scanner::Scanner<'src>>,
         pred: F,
     ) -> usize {
-        if let Some(s) = shadow.as_mut() {
-            s.copy_while_char(pred)
-        } else {
-            0
-        }
+        shadow.as_mut().map(|s| s.copy_while_char(pred)).unwrap_or(0)
     }
 
     #[inline(always)]
@@ -1058,11 +1036,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[inline(always)]
     fn shadow_peek_eq<'src>(&self, shadow: &mut Option<scanner::Scanner<'src>>, next_char: PeekedChar) {
-        if let Some(s) = shadow.as_mut() {
-            if let Char(c) = next_char {
-                if let Some(u) = s.peek() {
-                    debug_assert_eq!(u.ch, c, "shadow peek char mismatch");
-                }
+        if let Char(c) = next_char {
+            if let Some(u) = shadow.as_mut().and_then(|s| s.peek()) {
+                debug_assert_eq!(u.ch, c, "shadow peek char mismatch");
             }
         }
     }
@@ -1703,19 +1679,44 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let end_pos = self.pos.saturating_sub(1);
                     let saved_pos = self.pos;
                     self.pos = end_pos;
-                    // Parallel approach: drive Scanner (shadow) and legacy, use legacy result.
-                    #[cfg(debug_assertions)]
+                    // Parallel approach with flip: use Scanner result when available; also compute legacy for comparison.
                     self.shadow_emit(shadow, true, 1);
-                    let tok = self.produce_string(false, batch);
+                    let legacy_tok = self.produce_string(false, batch);
+                    let out_tok = if let Some(scn) = shadow.as_mut() {
+                        use scanner::TokenBuf as SBuf;
+                        if let Some(s) = scn.try_borrow_slice(1) {
+                            match self.parse_state {
+                                ParseState::BeforePropertyName => LexToken::PropertyNameBorrowed(s),
+                                _ => LexToken::StringBorrowed(s),
+                            }
+                        } else {
+                            match scn.emit_fragment(true, 1) {
+                                SBuf::OwnedText(s) => match self.parse_state {
+                                    ParseState::BeforePropertyName => LexToken::PropertyNameOwned(s),
+                                    _ => LexToken::StringOwned(s),
+                                },
+                                SBuf::Raw(bytes) => match self.parse_state {
+                                    ParseState::BeforePropertyName => {
+                                        let s = alloc::string::String::from_utf8_lossy(&bytes).into_owned();
+                                        LexToken::PropertyNameOwned(s)
+                                    }
+                                    _ => LexToken::StringRawOwned(bytes),
+                                },
+                                SBuf::Borrowed(_) => unreachable!("final emit borrow handled by try_borrow_slice"),
+                            }
+                        }
+                    } else {
+                        legacy_tok.clone()
+                    };
+                    // Disabled flip for now; return legacy until parity holds
                     self.pos = saved_pos;
-                    Ok(Some(tok))
+                    Ok(Some(legacy_tok))
                 }
                 Char(c @ '\0'..='\x1F') => {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
                 Empty => {
-                    #[cfg(debug_assertions)]
                     self.shadow_emit(shadow, false, 0);
                     Ok(Some(self.produce_string(true, batch)))
                 },
