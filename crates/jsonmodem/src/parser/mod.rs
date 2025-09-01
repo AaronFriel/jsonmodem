@@ -1022,12 +1022,30 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline(always)]
+    fn shadow_source_eq<'src>(&self, scanner: &Scanner<'src>, batch: Option<&BatchView<'src>>) {
+        #[cfg(debug_assertions)]
+        {
+            let expected = if self.reading_from_source(batch) {
+                scanner::Source::Ring
+            } else {
+                scanner::Source::Batch
+            };
+            debug_assert_eq!(
+                scanner.debug_cur_source(),
+                expected,
+                "scanner source mismatch (ring/batch)"
+            );
+        }
+    }
+
+    #[inline(always)]
     fn consume_whitespace<'src>(
         &mut self,
         batch: Option<&BatchView<'src>>,
         cursor: Option<&mut BatchCursor>,
         scanner: &mut Scanner<'src>,
     ) {
+        self.shadow_source_eq(scanner, batch);
         // Shadow: advance once to mirror the single legacy advance below.
         {
             let _ = scanner.advance();
@@ -1110,10 +1128,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
     }
 
-    fn produce_number<'src>(&mut self, batch: Option<&BatchView<'src>>) -> LexToken<'src> {
+    fn produce_number<'src>(&mut self, batch: Option<&BatchView<'src>>, scanner: &mut Scanner<'src>) -> LexToken<'src> {
         let start = self.token_start_pos.take().unwrap_or(self.pos);
         let end = self.pos;
-        if self.token_is_owned {
+        // Legacy decision for parity comparison
+        let legacy = if self.token_is_owned {
             if self.source.peek().is_none() {
                 LexToken::NumberOwned(self.take_owned_from_buffers())
             } else {
@@ -1122,13 +1141,56 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         } else if let Some(s) = self.borrow_slice(batch, start, end) {
             LexToken::NumberBorrowed(s)
         } else {
-            // Can't borrow; commit to buffered/owned mode for the remainder
             self.token_is_owned = true;
             if self.source.peek().is_none() {
                 LexToken::NumberOwned(self.take_owned_from_buffers())
             } else {
                 LexToken::NumberBuffered
             }
+        };
+
+        // Scanner-derived token
+        let scanner_tok = if let Some(s) = scanner.try_borrow_slice(0) {
+            LexToken::NumberBorrowed(s)
+        } else {
+            match scanner.emit_fragment(true, 0) {
+                scanner::TokenBuf::Borrowed(s) => LexToken::NumberBorrowed(s),
+                scanner::TokenBuf::OwnedText(s) => LexToken::NumberOwned(s),
+                scanner::TokenBuf::Raw(b) => {
+                    // Numbers never raw; degrade to UTF-8 String
+                    let s = alloc::string::String::from_utf8_lossy(&b).into_owned();
+                    LexToken::NumberOwned(s)
+                }
+            }
+        };
+
+        #[cfg(debug_assertions)]
+        if !self.token_is_owned {
+            // Compare payload kinds/values and positions
+            let (sp, sl, sc) = scanner.debug_positions();
+            debug_assert_eq!(
+                (sp, sl, sc),
+                (self.pos, self.line, self.column),
+                "number positions diverged after emit"
+            );
+            let equal = match (&legacy, &scanner_tok) {
+                (LexToken::NumberBorrowed(a), LexToken::NumberBorrowed(b)) => a == b,
+                (LexToken::NumberOwned(a), LexToken::NumberOwned(b)) => a == b,
+                // Borrowed vs Owned with same content
+                (LexToken::NumberBorrowed(a), LexToken::NumberOwned(b)) => a == b,
+                (LexToken::NumberOwned(a), LexToken::NumberBorrowed(b)) => a == b,
+                (LexToken::NumberBuffered, LexToken::NumberOwned(_)) => true,
+                (LexToken::NumberBuffered, LexToken::NumberBorrowed(_)) => true,
+                _ => false,
+            };
+            debug_assert!(equal, "scanner/legacy number mismatch: legacy={legacy:?} scanner={scanner_tok:?}");
+        }
+
+        // When owned path, prefer legacy payload if scanner scratch is empty.
+        match (&legacy, &scanner_tok) {
+            (LexToken::NumberOwned(ls), LexToken::NumberOwned(ss)) if ss.is_empty() && !ls.is_empty() => legacy,
+            (LexToken::NumberBuffered, LexToken::NumberOwned(ss)) if ss.is_empty() => legacy,
+            _ => scanner_tok,
         }
     }
 
@@ -1202,6 +1264,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.token_is_owned = false;
                     self.token_buffer.clear();
                     let from_source = self.reading_from_source(batch);
+                    self.shadow_source_eq(scanner, batch);
                     self.shadow_peek_eq(scanner, Char(c));
                     {
                         let policy = scanner::FragmentPolicy::Disallowed;
@@ -1220,6 +1283,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c @ '-') => {
                     let from_source = self.reading_from_source(batch);
+                    self.shadow_source_eq(scanner, batch);
                     self.token_is_owned = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
@@ -1243,6 +1307,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c @ '0') => {
                     let from_source = self.reading_from_source(batch);
+                    self.shadow_source_eq(scanner, batch);
                     self.token_is_owned = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
@@ -1266,6 +1331,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char(c) if c.is_ascii_digit() => {
                     let from_source = self.reading_from_source(batch);
+                    self.shadow_source_eq(scanner, batch);
                     self.token_is_owned = from_source;
                     self.token_start_pos = Some(self.pos);
                     self.token_buffer.clear();
@@ -1290,6 +1356,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Char('"') => {
                     self.token_is_owned = self.reading_from_source(batch);
+                    self.shadow_source_eq(scanner, batch);
                     self.token_is_raw_bytes = false;
                     self.owned_batch_buffer.clear();
                     self.owned_batch_raw.clear();
@@ -1339,6 +1406,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         {
                             let _ = scanner.emit_fragment(true, 0);
                         };
+                        #[cfg(debug_assertions)]
+                        {
+                            let (sp, sl, sc) = scanner.debug_positions();
+                            debug_assert_eq!((sp, sl, sc), (self.pos, self.line, self.column));
+                        }
                         let lt = match tok {
                             Token::Null => LexToken::Null,
                             Token::Boolean(b) => LexToken::Boolean(b),
@@ -1419,7 +1491,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let tok = self.produce_number(batch);
+                    let tok = self.produce_number(batch, scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1499,7 +1571,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     {
                         let _ = scanner.emit_fragment(true, 0);
                     };
-                    let tok = self.produce_number(batch);
+                    let tok = self.produce_number(batch, scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1626,7 +1698,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     {
                         let _ = scanner.emit_fragment(true, 0);
                     };
-                    let tok = self.produce_number(batch);
+                    let tok = self.produce_number(batch, scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1749,7 +1821,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     {
                         let _ = scanner.emit_fragment(true, 0);
                     };
-                    let tok = self.produce_number(batch);
+                    let tok = self.produce_number(batch, scanner);
                     Ok(Some(self.new_token(tok, false)))
                 }
             },
@@ -1919,43 +1991,131 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 }
                             }
                         }
+                    } else if self.parse_state == ParseState::BeforePropertyName {
+                        // Property name fallback: keep legacy emission and only advance scanner for parity.
+                        let _ = scanner.emit_fragment(true, 1);
+                        let tok = self.produce_string(false, batch);
+                        self.pos = saved_pos;
+                        return Ok(Some(tok));
                     }
-                    // Otherwise, return legacy and keep scanner running for parity.
-                    let _ = scanner.emit_fragment(true, 1);
-                    let tok = self.produce_string(false, batch);
-                    self.pos = saved_pos;
-                    Ok(Some(tok))
+                    // Values: flip to Scanner result; compare to legacy in debug.
+                    let legacy_tok = self.produce_string(false, batch);
+                    use scanner::TokenBuf as SBuf;
+                    let scanner_tok = if !self.string_had_escape
+                        && !self.token_is_raw_bytes
+                        && started_in_this_batch
+                    {
+                        if let Some(s) = scanner.try_borrow_slice(1) {
+                            self.pos = saved_pos;
+                            LexToken::StringBorrowed(s)
+                        } else {
+                            match scanner.emit_fragment(true, 1) {
+                                SBuf::Borrowed(s) => {
+                                    self.pos = saved_pos;
+                                    LexToken::StringBorrowed(s)
+                                }
+                                SBuf::OwnedText(s) => {
+                                    self.pos = saved_pos;
+                                    LexToken::StringOwned(s)
+                                }
+                                SBuf::Raw(bytes) => {
+                                    self.pos = saved_pos;
+                                    LexToken::StringRawOwned(bytes)
+                                }
+                            }
+                        }
+                    } else {
+                        // Escapes/raw present: keep legacy emission and only advance scanner for parity.
+                        let _ = scanner.emit_fragment(true, 1);
+                        self.pos = saved_pos;
+                        legacy_tok.clone()
+                    };
+
+                    #[cfg(debug_assertions)]
+                    if !self.string_had_escape {
+                        // Positions parity
+                        let (sp, sl, sc) = scanner.debug_positions();
+                        debug_assert_eq!(
+                            (sp, sl, sc),
+                            (self.pos, self.line, self.column),
+                            "string positions diverged after close"
+                        );
+                        // Payload parity
+                        let ok = match (&legacy_tok, &scanner_tok) {
+                            (LexToken::StringBorrowed(a), LexToken::StringBorrowed(b)) => a == b,
+                            (LexToken::StringOwned(a), LexToken::StringOwned(b)) => a == b,
+                            (LexToken::StringRawOwned(a), LexToken::StringRawOwned(b)) => a == b,
+                            // Allow borrowed vs owned equivalence on content
+                            (LexToken::StringBorrowed(a), LexToken::StringOwned(b)) => a == b,
+                            (LexToken::StringOwned(a), LexToken::StringBorrowed(b)) => a == b,
+                            (LexToken::StringBuffered, LexToken::StringOwned(_)) => true,
+                            (LexToken::StringBuffered, LexToken::StringBorrowed(_)) => true,
+                            _ => false,
+                        };
+                        debug_assert!(ok, "scanner/legacy value string mismatch: legacy={legacy_tok:?} scanner={scanner_tok:?}");
+                    }
+                    Ok(Some(scanner_tok))
                 }
                 Char(c @ '\0'..='\x1F') => {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
                 Empty => {
-                    // Capture borrowable slice from Scanner (no consumption), then scanner-emit and
-                    // compare to legacy.
-                    let mut shadow_slice: Option<&str> = None;
-                    if !self.string_had_escape && !self.token_is_raw_bytes {
-                        shadow_slice = scanner.try_borrow_slice(0);
-                    }
-                    {
+                    // Flip partial value emission to Scanner only when no escapes/raw; else legacy.
+                    self.partial_lex = true;
+                    let legacy_tok = self.produce_string(true, batch);
+                    let scanner_tok: LexToken<'src> = if !self.string_had_escape && !self.token_is_raw_bytes {
+                        if let Some(s) = scanner.try_borrow_slice(0) {
+                            LexToken::StringBorrowed(s)
+                        } else {
+                            match scanner.emit_fragment(false, 0) {
+                                scanner::TokenBuf::Borrowed(s) => LexToken::StringBorrowed(s),
+                                scanner::TokenBuf::OwnedText(s) => LexToken::StringOwned(s),
+                                scanner::TokenBuf::Raw(bytes) => LexToken::StringRawOwned(bytes),
+                            }
+                        }
+                    } else {
                         let _ = scanner.emit_fragment(false, 0);
+                        legacy_tok.clone()
                     };
-                    let tok = self.produce_string(true, batch);
-                    if let Some(s) = shadow_slice {
-                        debug_assert!(
-                            {
-                                match &tok {
-                                    LexToken::StringBorrowed(ls) => s == *ls,
-                                    LexToken::StringOwned(ls) => s == ls,
-                                    _ => true,
-                                }
-                            },
-                            "scanner/legacy mismatch on partial value"
-                        );
+                    #[cfg(debug_assertions)]
+                    if !self.string_had_escape {
+                        let (sp, sl, sc) = scanner.debug_positions();
+                        debug_assert_eq!((sp, sl, sc), (self.pos, self.line, self.column));
+                        // Only assert when legacy/scanner fragments are non-empty data.
+                        let non_empty_legacy = match &legacy_tok {
+                            LexToken::StringBorrowed(s) => !s.is_empty(),
+                            LexToken::StringOwned(s) => !s.is_empty(),
+                            LexToken::StringRawOwned(b) => !b.is_empty(),
+                            _ => false,
+                        };
+                        let non_empty_scanner = match &scanner_tok {
+                            LexToken::StringBorrowed(s) => !s.is_empty(),
+                            LexToken::StringOwned(s) => !s.is_empty(),
+                            LexToken::StringRawOwned(b) => !b.is_empty(),
+                            _ => false,
+                        };
+                        if non_empty_legacy && non_empty_scanner {
+                            let ok = match (&legacy_tok, &scanner_tok) {
+                                (LexToken::StringBorrowed(a), LexToken::StringBorrowed(b)) => a == b,
+                                (LexToken::StringOwned(a), LexToken::StringOwned(b)) => a == b,
+                                (LexToken::StringRawOwned(a), LexToken::StringRawOwned(b)) => a == b,
+                                (LexToken::StringBorrowed(a), LexToken::StringOwned(b)) => a == b,
+                                (LexToken::StringOwned(a), LexToken::StringBorrowed(b)) => a == b,
+                                (LexToken::StringBuffered, LexToken::StringOwned(_)) => true,
+                                (LexToken::StringBuffered, LexToken::StringBorrowed(_)) => true,
+                                _ => false,
+                            };
+                            debug_assert!(ok, "scanner/legacy mismatch on partial value: legacy={legacy_tok:?} scanner={scanner_tok:?}");
+                        }
                     }
-                    Ok(Some(tok))
+                    Ok(Some(scanner_tok))
                 }
                 Char(_c) => {
+                    // Ensure the scanner is anchored for this fragment (continuations across feeds).
+                    {
+                        scanner.ensure_begun(scanner::FragmentPolicy::Allowed);
+                    }
                     // Fast-path: copy as many consecutive non-escaped, non-terminating
                     // characters as possible in a single pass.
                     if self.reading_from_source(batch) {

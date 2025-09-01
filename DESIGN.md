@@ -10,6 +10,9 @@ Goals
 Non-Goals
 - Rewriting general JSON grammar; scope is Unicode escape, surrogate handling, and serialization choices.
 
+Note
+- This document focuses on decode/encode behavior. For the ongoing Scanner refactor of the streaming parser internals, see critic_proposal.md and the task checklist in critic_todo.md.
+
 ## Terminology
 - High surrogate: U+D800–U+DBFF (inclusive).
 - Low surrogate: U+DC00–U+DFFF (inclusive).

@@ -4,20 +4,20 @@ Purpose
 - Track concrete, testable tasks to complete the Scanner refactor described in critic_proposal.md. Check off items as they land.
 
 Milestone 0 — Consistency & Wiring
-- [ ] Rename “InputSession” wording to “Scanner” in `crates/jsonmodem/src/parser/scanner/mod.rs` top docs.
-- [ ] Cross‑link: add a short pointer from `DESIGN.md` to `critic_proposal.md` and `critic_todo.md`.
+- [x] Rename “InputSession” wording to “Scanner” in `crates/jsonmodem/src/parser/scanner/mod.rs` top docs.
+- [x] Cross‑link: add a short pointer from `DESIGN.md` to `critic_proposal.md` and `critic_todo.md`.
 - [x] Iterators own `Scanner<'src>` and finalize via `finish()` on Drop.
 - [x] Persist `Tape` on parser between feeds.
 
 Milestone 1 — Shadow Parity Scaffolding
-- [ ] Ensure debug‑only parity checks compare: source (ring/batch), positions `(pos,line,col)`, and emitted payloads at each emit site.
-- [ ] Add a targeted parity test that forces many ring↔batch transitions (short feeds, mixed ASCII/UTF‑8).
+- [x] Ensure debug‑only parity checks compare: source (ring/batch), positions `(pos,line,col)`, and emitted payloads at each emit site.
+- [x] Add a targeted parity test that forces many ring↔batch transitions (short feeds, mixed ASCII/UTF‑8).
 
 Milestone 2 — Flip Surfaces (incremental)
 - [x] Keys without escapes: emit via Scanner (borrow vs own), no Raw.
-- [ ] Value strings without escapes: borrow when fully in batch; otherwise own; allow fragments across feeds.
-- [ ] Numbers: never fragment; borrow when fully in batch; otherwise own. No Raw.
-- [ ] Literals (`true/false/null`): route through Scanner for position/advance; ensure parity asserts stay green.
+- [x] Value strings without escapes: borrow when fully in batch; otherwise own; allow fragments across feeds.
+- [x] Numbers: never fragment; borrow when fully in batch; otherwise own. No Raw.
+- [x] Literals (`true/false/null`): route through Scanner for position/advance; ensure parity asserts stay green.
 
 Milestone 3 — Remove Rescans & Legacy Plumbing
 - [ ] Delete `BatchView` and `BatchCursor` once string/number paths use byte anchors.

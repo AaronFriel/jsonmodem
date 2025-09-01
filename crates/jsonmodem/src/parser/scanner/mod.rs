@@ -292,6 +292,26 @@ impl<'src> Scanner<'src> {
         }
     }
 
+    /// Ensure an anchor exists; begin if not started.
+    #[inline]
+    pub fn ensure_begun(&mut self, policy: FragmentPolicy) {
+        if self.anchor.is_none() {
+            self.begin(policy);
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub fn debug_positions(&self) -> (usize, usize, usize) {
+        (self.pos_char, self.line, self.col)
+    }
+
+    #[cfg(debug_assertions)]
+    #[inline]
+    pub fn debug_cur_source(&self) -> Source {
+        self.cur_source()
+    }
+
     /// Finalizes the session and returns carryover state for the next feed.
     ///
     /// Side effects:

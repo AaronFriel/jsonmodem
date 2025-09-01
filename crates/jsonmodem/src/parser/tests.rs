@@ -1449,6 +1449,53 @@ fn design_uppercase_U_escape() {
 }
 
 #[test]
+#[ignore]
+fn parity_small_feeds_mixed_utf8() {
+    use alloc::vec::Vec;
+    let input = "[\"abÅcdβefΩgh😀\", 12345, true, null]";
+    // Control: parse in one go
+    let mut parser = DefaultStreamingParser::new(ParserOptions {
+        panic_on_error: true,
+        ..Default::default()
+    });
+    let control: Vec<_> = parser.feed(input).collect::<Vec<_>>();
+    let mut control_tail: Vec<_> = parser.finish().collect();
+    let mut control_all = control;
+    control_all.append(&mut control_tail);
+
+    // Now feed in tiny chunks (2 bytes) to force ring↔batch transitions
+    let mut parser2 = DefaultStreamingParser::new(ParserOptions {
+        panic_on_error: true,
+        ..Default::default()
+    });
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Cut at a UTF-8 boundary: step forward until boundary if needed
+        let mut j = (i + 2).min(bytes.len());
+        while j < bytes.len() && (bytes[j] & 0b1100_0000) == 0b1000_0000 {
+            j += 1; // continue until next char boundary
+        }
+        let chunk = core::str::from_utf8(&bytes[i..j]).unwrap();
+        out.extend(parser2.feed(chunk));
+        // occasionally drop iterator to spill tail
+        // (out is an Iterator, so we already collected its items)
+        i = j;
+    }
+    out.extend(parser2.finish());
+
+    assert_eq!(control_all.len(), out.len());
+    for (a, b) in control_all.into_iter().zip(out.into_iter()) {
+        match (a, b) {
+            (Ok(e1), Ok(e2)) => assert_eq!(format!("{:?}", e1), format!("{:?}", e2)),
+            (Err(_), Err(_)) => {}
+            other => panic!("mismatch: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn design_mixed_case_hex_digits() {
     let opts = ParserOptions {
         decode_mode: DecodeMode::StrictUnicode,
