@@ -70,6 +70,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bstr"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234113d19d0d7d613b40e86fb654acf958910802bcceab913a4f9e7cda03b1a4"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,6 +483,7 @@ dependencies = [
 name = "jsonmodem"
 version = "0.1.2"
 dependencies = [
+ "bstr",
  "criterion",
  "insta",
  "is_ci",
