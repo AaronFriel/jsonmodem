@@ -9,8 +9,8 @@ use crate::{
 pub struct RawContext;
 
 impl PathCtx for RawContext {
-    type Frozen = Vec<PathItem>;
-    type Thawed = Vec<PathItem>;
+    type Frozen = Vec<PathItem<Vec<u8>, usize>>;
+    type Thawed = Vec<PathItem<Vec<u8>, usize>>;
 
     fn frozen_new(&mut self) -> Self::Frozen {
         Vec::new()
@@ -55,6 +55,10 @@ impl EventCtx for RawContext {
     type Num<'src> = f64;
     type Str<'src> = Cow<'src, [u8]>;
     type Error = core::num::ParseFloatError;
+
+    fn push_key_from_raw_str(&mut self, t: &mut Self::Thawed, key: &[u8]) {
+        t.push(PathItem::Key(key.into()));
+    }
 
     fn new_null(&mut self) -> Result<Self::Null, Self::Error> {
         Ok(())

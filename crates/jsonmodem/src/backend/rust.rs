@@ -63,6 +63,10 @@ impl EventCtx for RustContext {
     type Str<'src> = Cow<'src, str>;
     type Error = ParseFloatError;
 
+    fn push_key_from_raw_str(&mut self, t: &mut Self::Thawed, key: &[u8]) {
+        t.push(PathItem::Key(String::from_utf8_lossy(key).into()));
+    }
+
     fn new_null(&mut self) -> Result<Self::Null, Self::Error> {
         Ok(())
     }

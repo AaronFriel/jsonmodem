@@ -51,7 +51,7 @@ pub trait PathCtx {
     fn last_kind(&self, t: &Self::Thawed) -> Option<PathKind>;
 }
 
-pub trait EventCtx {
+pub trait EventCtx: PathCtx {
     type Null;
     type Bool;
     /// A number value; typically owned but may borrow for to support, for
@@ -60,6 +60,8 @@ pub trait EventCtx {
     /// A string *fragment*; may borrow from the input ('src) or allocate.
     type Str<'src>;
     type Error: Error + Debug + Display + PartialEq;
+
+    fn push_key_from_raw_str(&mut self, t: &mut Self::Thawed, key: &[u8]);
 
     fn new_null(&mut self) -> Result<Self::Null, Self::Error>;
     fn new_bool(&mut self, b: bool) -> Result<Self::Bool, Self::Error>;

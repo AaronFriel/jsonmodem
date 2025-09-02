@@ -137,6 +137,120 @@ fn utf8_multibyte_borrow_and_end_adjust_for_keys_and_values() {
     let _ = sess.consume();
 }
 
+/// Repro for cross-feed duplication when a partial fragment is emitted
+/// without clearing the anchor (simulates an incorrect caller that used
+/// `emit_fragment(true)` instead of `emit()`). The final fragment becomes
+/// Owned("abcdef") instead of the expected borrowed "def".
+#[test]
+fn repro_cross_feed_borrow_then_owned_duplication() {
+    // Feed 1: read "abc" of a value string (caller keeps anchor alive)
+    let mut s = Scanner::from_state(carry(""), "abc");
+    // Start token and consume ascii letters from the batch
+    // Use per-char consume(), which always appends to scratch when a token is active
+    // regardless of ownership. This mirrors the parser’s char-by-char path.
+    assert_eq!(s.consume().unwrap().ch, 'a');
+    assert_eq!(s.consume().unwrap().ch, 'b');
+    assert_eq!(s.consume().unwrap().ch, 'c');
+    // Incorrect emission path: emit a final-looking fragment but DO NOT clear anchor
+    // (using emit_fragment instead of emit). This returns a borrowed slice.
+    match s.emit_fragment(true) {
+        Capture::Borrowed(t) => assert_eq!(t, "abc"),
+        other => panic!("expected borrowed, got {other:?}"),
+    }
+
+    // Drop the session – finish() will coalesce the batch prefix into scratch
+    // because the anchor is still present and not owned.
+    let carry = s.finish();
+    // Validate that the scratch now holds the previously emitted prefix.
+    assert_eq!(carry.test_scratch_text(), Some("abc"));
+
+    // Feed 2: continue with "def"] and emit final – the coalesced prefix
+    // will be duplicated into the final owned buffer.
+    let mut s = Scanner::from_state(carry, "def\"]");
+    assert_eq!(s.consume().unwrap().ch, 'd');
+    assert_eq!(s.consume().unwrap().ch, 'e');
+    assert_eq!(s.consume().unwrap().ch, 'f');
+    match s.emit() {
+        Capture::Owned(v) => assert_eq!(v, "abcdef"),
+        other => panic!("expected owned concatenation, got {other:?}"),
+    }
+}
+
+/// Expectation: after emitting a borrowed prefix across feeds, the tail should
+/// still be borrowable and must not include the already-emitted prefix.
+///
+/// This mirrors the parser flow for string_cross_batch_borrows_fragments:
+/// - feed1: emit() once at string start (empty borrowed), then consume "abc"
+///   and emit() a partial fragment (borrowed "abc").
+/// - feed2: consume "def" and emit() final; expected Borrowed("def").
+/// Current buggy behavior returns Owned("abcdef") due to scratch carryover.
+#[test]
+fn value_string_cross_feed_should_not_duplicate_prefix() {
+    // Feed 1: prefix segment
+    let mut s = Scanner::from_state(carry(""), "abc");
+    // Parser calls emit at string entry to reset; returns empty borrowed.
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, ""),
+        other => panic!("expected empty borrowed at entry, got {other:?}"),
+    }
+    let n = s.consume_while_ascii(|b| (b as char).is_ascii_lowercase());
+    assert_eq!(n, 3);
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, "abc"),
+        other => panic!("expected borrowed prefix, got {other:?}"),
+    }
+    let carry = s.finish();
+
+    // Feed 2: tail segment
+    let mut s = Scanner::from_state(carry, "def\"]");
+    let n = s.consume_while_ascii(|b| (b as char).is_ascii_lowercase());
+    assert_eq!(n, 3);
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, "def"),
+        other => panic!("expected final borrowed tail 'def', got {other:?}"),
+    }
+}
+
+/// End-to-end repro mirroring the parser log sequence the user observed.
+/// Steps:
+/// 1) feed "[\"" and skip '[' then finish (leaves '"' in ring)
+/// 2) next feed "abc": skip the leading '"', emit() => Borrowed("") at entry,
+///    then consume 'a','b','c' and emit() => Borrowed("abc")
+/// 3) next feed "def\"]": consume 'd','e','f' and emit() => Owned("abcdef")
+#[test]
+fn repro_from_logs_owned_concat_after_partial_borrow() {
+    // Step 1
+    let mut s = Scanner::from_state(carry(""), "[\"");
+    let _ = s.skip(); // '['
+    let carry = s.finish();
+
+    // Step 2
+    let mut s = Scanner::from_state(carry, "abc");
+    let _ = s.skip(); // '"' from ring
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, ""),
+        other => panic!("expected empty borrowed entry, got {other:?}"),
+    }
+    assert_eq!(s.consume().unwrap().ch, 'a');
+    assert_eq!(s.consume().unwrap().ch, 'b');
+    assert_eq!(s.consume().unwrap().ch, 'c');
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, "abc"),
+        other => panic!("expected borrowed 'abc', got {other:?}"),
+    }
+    let carry = s.finish();
+
+    // Step 3
+    let mut s = Scanner::from_state(carry, "def\"]");
+    assert_eq!(s.consume().unwrap().ch, 'd');
+    assert_eq!(s.consume().unwrap().ch, 'e');
+    assert_eq!(s.consume().unwrap().ch, 'f');
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, "def"),
+        other => panic!("expected final borrowed tail 'def', got {other:?}"),
+    }
+}
+
 #[test]
 fn empty_key_and_value_strings_borrow_correctly() {
     // Key: ""
@@ -420,6 +534,31 @@ fn ensure_raw_is_idempotent_and_preserves_prefix() {
     }
     assert_eq!(s.peek().unwrap().ch, '"');
     let _ = s.consume();
+}
+
+#[test]
+fn test_scanner_span_owned() {
+    let s = Scanner::from_state(carry(""), "12");
+    let carry = s.finish(); // Ensure "12" is owned
+    let mut s = Scanner::from_state(carry, "345");
+    s.consume_while_ascii(|b| b.is_ascii_digit());
+    match s.emit() {
+
+        Capture::Owned(t) => assert_eq!(t, "12345"),
+        other => panic!("expected owned, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_scanner_span_emoji() {
+    let mut s = Scanner::from_state(carry(""), "[\"😀\"]");
+    s.skip();
+    s.skip();
+    s.consume();
+    match s.emit() {
+        Capture::Borrowed(t) => assert_eq!(t, "😀"),
+        other => panic!("expected owned, got {other:?}"),
+    }
 }
 
 #[test]

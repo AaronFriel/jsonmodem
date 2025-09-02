@@ -72,6 +72,19 @@ impl Buffer {
         }
         copied
     }
+
+    #[inline]
+    pub(crate) fn copy_n(&mut self, dst: &mut String, n: usize) -> usize {
+        let to_copy = core::cmp::min(n, self.data.len());
+        for _ in 0..to_copy {
+            if let Some(ch) = self.consume_char() {
+                dst.push(ch);
+            } else {
+                break;
+            }
+        }
+        to_copy
+    }
 }
 
 impl Iterator for Buffer {
