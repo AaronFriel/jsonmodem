@@ -828,7 +828,6 @@ fn parse_single_string(
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_borrowed_string_single_chunk() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
