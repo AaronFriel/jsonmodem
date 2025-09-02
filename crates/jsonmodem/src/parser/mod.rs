@@ -706,25 +706,27 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    match scanner.emit() {
+                    let value_buf = core::mem::take(&mut self.buffer);
+                    let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Borrowed value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::NumberBorrowed(v)
                         }
                         scanner::Capture::Owned(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Owned value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::Number(v)
                         }
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
-                    }
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    };
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
@@ -757,25 +759,27 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    match scanner.emit() {
+                    let value_buf = core::mem::take(&mut self.buffer);
+                    let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Borrowed value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::NumberBorrowed(v)
                         }
                         scanner::Capture::Owned(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Owned value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::Number(v)
                         }
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
-                    }
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    };
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
@@ -828,25 +832,27 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    match scanner.emit() {
+                    let value_buf = core::mem::take(&mut self.buffer);
+                    let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Borrowed value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::NumberBorrowed(v)
                         }
                         scanner::Capture::Owned(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Owned value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::Number(v)
                         }
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
-                    }
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    };
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
@@ -913,25 +919,27 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 _ => {
-                    let value = core::mem::take(&mut self.buffer);
-                    match scanner.emit() {
+                    let value_buf = core::mem::take(&mut self.buffer);
+                    let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Borrowed value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::NumberBorrowed(v)
                         }
                         scanner::Capture::Owned(v) => {
                             debug_assert_eq!(
-                                v, value,
+                                v, value_buf,
                                 "Owned value mismatch, scanner state: {scanner:?}"
                             );
+                            Token::Number(v)
                         }
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
-                    }
-                    Ok(Some(self.new_token(Token::Number(value), false)))
+                    };
+                    Ok(Some(self.new_token(tok, false)))
                 }
             },
 
@@ -1299,6 +1307,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Token::Boolean(b) => {
                 let value = f.new_bool(b).map_err(|e| self.event_context_error(e))?;
                 Some(ParseEvent::Boolean {
+                    path: path.clone(),
+                    value,
+                })
+            }
+            Token::NumberBorrowed(n) => {
+                let value = f
+                    .new_number(n)
+                    .map_err(|e| self.event_context_error(e))?;
+                Some(ParseEvent::Number {
                     path: path.clone(),
                     value,
                 })

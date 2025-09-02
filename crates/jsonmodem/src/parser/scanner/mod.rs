@@ -585,8 +585,7 @@ impl<'src> Scanner<'src> {
         });
         #[cfg(test)]
         eprintln!(
-            "Scanner::ensure_anchor_started: source={:?}, owned={}, start_byte_in_batch={:?}",
-            source, owned, start_byte_in_batch
+            "Scanner::ensure_anchor_started: source={source:?}, owned={owned}, start_byte_in_batch={start_byte_in_batch:?}"
         );
     }
 
@@ -715,10 +714,7 @@ impl<'src> Scanner<'src> {
         let mut copied = 0usize;
         let start_source = self.cur_source();
         #[cfg(test)]
-        eprintln!(
-            "Scanner::consume_while_char: start_source={:?}",
-            start_source
-        );
+        eprintln!("Scanner::consume_while_char: start_source={start_source:?}");
         loop {
             let Some(u) = self.peek() else { break };
             if u.source != start_source {
@@ -770,7 +766,7 @@ impl<'src> Scanner<'src> {
     ///   `Borrowed(&batch[start..end])`.
     /// - Otherwise, returns either `OwnedText(String)` or `Raw(Vec<u8>, hint)`
     ///   depending on the current accumulation mode and decode mode.
-    pub fn emit_fragment(&mut self, is_final: bool) -> Capture<'src> {
+    pub(self) fn emit_fragment(&mut self, is_final: bool) -> Capture<'src> {
         if is_final {
             if let Some(s) = self.try_borrow_slice() {
                 // Returning a borrowed slice: scratch holds redundant data
@@ -802,33 +798,6 @@ impl<'src> Scanner<'src> {
         #[cfg(test)]
         eprintln!("Scanner::emit: output {buf:?}, state {self:?}");
         buf
-    }
-
-    /// Emits a non-empty partial fragment if any data has accumulated.
-    /// - If borrow-eligible, returns a borrowed slice and acknowledges it so
-    ///   later `finish()` will not duplicate it.
-    /// - Otherwise, switches to owned (idempotent), and returns
-    ///   `OwnedText`/`Raw` if the scratch is non-empty. Returns `None` if there
-    ///   is nothing to emit.
-    pub fn emit_partial(&mut self) -> Option<Capture<'src>> {
-        if let Some(s) = self.try_borrow_slice() {
-            if !s.is_empty() {
-                self.acknowledge_partial_borrow();
-                return Some(Capture::Borrowed(s));
-            }
-            return None;
-        }
-
-        // Ensure any batch prefix is captured before checking scratch.
-        self.switch_to_owned_prefix_if_needed();
-        let is_empty = match &self.scratch {
-            CaptureBuf::Text(s) => s.is_empty(),
-            CaptureBuf::Raw(b) => b.is_empty(),
-        };
-        if is_empty {
-            return None;
-        }
-        Some(self.emit_fragment(false))
     }
 }
 

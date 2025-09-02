@@ -562,30 +562,6 @@ fn test_scanner_span_emoji() {
 }
 
 #[test]
-fn value_fragment_partial_and_final_borrowing() {
-    // Value string fragments: partial emits owned when accumulated; final can be
-    // borrowed.
-    let batch = "abcDEF\""; // we'll split work: own 'abc', then leave 'DEF' borrowable
-    let mut s = Scanner::from_state(carry(""), batch);
-    // Force owned by switching to owned prefix after 'abc'
-    s.consume_while_ascii(|b| (b as char).is_ascii_lowercase()); // 'abc'
-    s.switch_to_owned_prefix_if_needed();
-    if let Some(Capture::Owned(t)) = s.emit_partial() {
-        assert_eq!(t, "abc");
-    } else {
-        panic!("expected owned partial")
-    }
-    // Continue with remaining 'DEF' and closing quote, keep borrow-eligible
-    s.consume_while_ascii(|b| (b as char).is_ascii_uppercase());
-    match s.emit() {
-        Capture::Owned(t) => assert_eq!(t, "DEF"),
-        other => panic!("expected owned final (continued owned mode), got {other:?}"),
-    }
-    assert_eq!(s.peek().unwrap().ch, '"');
-    let _ = s.consume();
-}
-
-#[test]
 fn newline_updates_positions_across_ring_and_batch() {
     // Put a newline in ring and another in batch; ensure line/col advance.
     let carry = {
