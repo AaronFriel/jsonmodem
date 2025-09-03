@@ -37,7 +37,7 @@ pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
 use crate::{
-    backend::{EventCtx, PathCtx, PathKind, RawStrHint, RustContext},
+    backend::{EventCtx, PathCtx, PathKind, RustContext},
     parser::scanner::{Scanner, ScannerState},
 };
 
@@ -1196,7 +1196,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             }
             Token::StringRaw(fragment) => {
                 let fragment = f
-                    .new_str_raw_owned(fragment, RawStrHint::ReplaceInvalid)
+                    .new_str_raw_owned(fragment)
                     .map_err(|e| self.event_context_error(e))?;
                 let is_initial = self.initialized_string;
                 let is_final = !self.partial_lex;
@@ -1294,7 +1294,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
 impl StreamingParserImpl<RustContext> {
     pub fn new(options: ParserOptions) -> Self {
-        Self::new_with_factory(&mut RustContext, options)
+        let mut ctx = RustContext::default();
+        Self::new_with_factory(&mut ctx, options)
     }
 
     /// Feeds a chunk of JSON text into the parser.
@@ -1306,12 +1307,12 @@ impl StreamingParserImpl<RustContext> {
         &'p mut self,
         text: &'src str,
     ) -> StreamingParserIteratorWith<'p, 'src, RustContext> {
-        self.feed_with(RustContext, text)
+        self.feed_with(RustContext::default(), text)
     }
 
     #[must_use]
     pub fn finish(self) -> ClosedStreamingParser<'static, RustContext> {
-        self.finish_with(RustContext)
+        self.finish_with(RustContext::default())
     }
 }
 

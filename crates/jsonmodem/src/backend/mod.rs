@@ -11,13 +11,6 @@ pub use raw::RawContext;
 pub use rust::RustContext;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum RawStrHint {
-    StrictUnicode,
-    SurrogatePreserving,
-    ReplaceInvalid,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PathKind {
     Key,
     Index,
@@ -74,16 +67,10 @@ pub trait EventCtx: PathCtx {
     fn new_str_owned<'a>(&mut self, frag: String) -> Result<Self::Str<'a>, Self::Error>;
 
     /// Create a string fragment from raw bytes (WTF-8 or other non-UTF8).
-    ///
-    /// This is only used when the parser is configured to preserve
-    /// unpaired surrogates (DecodeMode::SurrogatePreserving) and hence cannot
-    /// represent the fragment as valid UTF-8. Implementations may choose to
-    /// preserve the bytes, replace invalid sequences with U+FFFD, or error,
-    /// guided by the provided hint.
+    /// Backend defines how to interpret/normalize bytes.
     fn new_str_raw_owned<'a>(
         &mut self,
         bytes: alloc::vec::Vec<u8>,
-        hint: RawStrHint,
     ) -> Result<Self::Str<'a>, Self::Error>;
 }
 

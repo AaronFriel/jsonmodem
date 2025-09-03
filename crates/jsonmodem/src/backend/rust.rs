@@ -1,13 +1,24 @@
 use alloc::{borrow::Cow, string::String, vec::Vec};
 use core::num::ParseFloatError;
 
-use crate::{
-    PathItem,
-    backend::{EventCtx, PathCtx, RawStrHint},
-};
+use crate::{backend::{EventCtx, PathCtx}, PathItem};
 
-#[derive(Debug, Default, PartialEq, Clone)]
-pub struct RustContext;
+#[derive(Debug, PartialEq, Clone)]
+pub struct RustContext {
+    pub decode_mode: RustDecodeMode,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RustDecodeMode {
+    StrictUnicode,
+    ReplaceInvalid,
+}
+
+impl Default for RustContext {
+    fn default() -> Self {
+        Self { decode_mode: RustDecodeMode::ReplaceInvalid }
+    }
+}
 
 impl PathCtx for RustContext {
     type Frozen = Vec<PathItem>;
@@ -91,34 +102,38 @@ impl EventCtx for RustContext {
         Ok(Cow::Owned(frag))
     }
 
-    fn new_str_raw_owned<'a>(
-        &mut self,
-        bytes: Vec<u8>,
-        _hint: RawStrHint,
-    ) -> Result<Self::Str<'a>, Self::Error> {
-        // Default Rust backend is UTF-8-only. Decode raw bytes lossily,
-        // replacing invalid sequences. Special-case WTF-8 surrogate 3-byte
-        // sequences (ED A0..BF 80..BF) to collapse to a single U+FFFD.
-        let mut norm = Vec::with_capacity(bytes.len());
-        let mut i = 0;
-        while i < bytes.len() {
-            if i + 2 < bytes.len()
-                && bytes[i] == 0xED
-                && (bytes[i + 1] >= 0xA0 && bytes[i + 1] <= 0xBF)
-                && (bytes[i + 2] & 0xC0) == 0x80
-            {
-                // One surrogate code unit in WTF-8 – normalize to U+FFFD (EF BF BD)
-                norm.extend_from_slice(&[0xEF, 0xBF, 0xBD]);
-                i += 3;
-            } else {
-                norm.push(bytes[i]);
-                i += 1;
+    fn new_str_raw_owned<'a>(&mut self, bytes: Vec<u8>) -> Result<Self::Str<'a>, Self::Error> {
+        match self.decode_mode {
+            RustDecodeMode::StrictUnicode => {
+                // In strict mode, reject non-UTF8 raw input.
+                // Parser should avoid calling this in strict mode; if it does,
+                // we still avoid panicking by producing an error-like lossy string.
+                let owned = String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                Ok(Cow::Owned(owned))
+            }
+            RustDecodeMode::ReplaceInvalid => {
+                // Decode lossily; special-case WTF-8 surrogate code units to U+FFFD.
+                let mut norm = Vec::with_capacity(bytes.len());
+                let mut i = 0;
+                while i < bytes.len() {
+                    if i + 2 < bytes.len()
+                        && bytes[i] == 0xED
+                        && (bytes[i + 1] >= 0xA0 && bytes[i + 1] <= 0xBF)
+                        && (bytes[i + 2] & 0xC0) == 0x80
+                    {
+                        norm.extend_from_slice(&[0xEF, 0xBF, 0xBD]);
+                        i += 3;
+                    } else {
+                        norm.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+                let owned = match String::from_utf8(norm) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                };
+                Ok(Cow::Owned(owned))
             }
         }
-        let owned = match String::from_utf8(norm) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
-        Ok(Cow::Owned(owned))
     }
 }

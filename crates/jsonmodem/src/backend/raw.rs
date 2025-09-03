@@ -1,9 +1,6 @@
 use alloc::{borrow::Cow, string::String, vec::Vec};
 
-use crate::{
-    PathItem,
-    backend::{EventCtx, PathCtx, RawStrHint},
-};
+use crate::{backend::{EventCtx, PathCtx}, PathItem};
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct RawContext;
@@ -84,7 +81,6 @@ impl EventCtx for RawContext {
     fn new_str_raw_owned<'a>(
         &mut self,
         bytes: Vec<u8>,
-        _hint: RawStrHint,
     ) -> Result<Self::Str<'a>, Self::Error> {
         Ok(Cow::Owned(bytes))
     }
