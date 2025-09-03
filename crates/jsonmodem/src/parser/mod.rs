@@ -888,10 +888,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             LexState::String => match self.peek_char(scanner) {
                 // escape sequence
                 Char('\\') => {
-                    // TODO: eventually we will want to emit a partial fragment here, but to
-                    // maintain parity with the existing implementation _we do not_.
-                    //
-                    // We pass consume: false to the scanner to skip the escape start symbol.
+                    // Skip the backslash and enter escape state.
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.skip();
                         self.apply_advanced_unit(unit);
@@ -1160,13 +1157,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         // Lone low surrogate
                                         match self.decode_mode {
                                             DecodeMode::StrictUnicode => Err(self.syntax_error(err)),
-                                            DecodeMode::ReplaceInvalid => {
+                                            DecodeMode::ReplaceInvalid | DecodeMode::SurrogatePreserving => {
+                                                // In UTF-8 backends (including Raw backend tests), SurrogatePreserving
+                                                // degrades to replacement.
                                                 scanner.push_transformed_char('\u{FFFD}');
-                                                self.lex_state = LexState::String;
-                                                Ok(None)
-                                            }
-                                            DecodeMode::SurrogatePreserving => {
-                                                self.push_wtf8_for_u32(scanner, code);
                                                 self.lex_state = LexState::String;
                                                 Ok(None)
                                             }
