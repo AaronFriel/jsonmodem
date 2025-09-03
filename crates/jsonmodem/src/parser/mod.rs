@@ -461,7 +461,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
 
         loop {
-            let next_char = self.peek_char();
+            let next_char = self.peek_char(scanner);
             if let Some(tok) = self.lex_state_step(self.lex_state, next_char, scanner)? {
                 #[cfg(test)]
                 self.lexed_tokens.push(tok.to_owned());
@@ -474,15 +474,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     /// buffer depleted, `Some(EOI)` for forced end‑of‑input, else
     /// `Some(ch)`.
     #[inline(always)]
-    fn peek_char(&mut self) -> PeekedChar {
-        if let Some(ch) = self.source.peek() {
-            return Char(ch);
+    fn peek_char(&mut self, scanner: &Scanner<'_>) -> PeekedChar {
+        if let Some(unit) = scanner.peek() {
+            return Char(unit.ch);
         }
-
         if self.end_of_input {
             return EndOfInput;
         }
-
         Empty
     }
 
@@ -492,13 +490,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[inline(always)]
     fn advance_char(&mut self, scanner: &mut Scanner<'_>, consume: bool) {
-        if consume {
-            scanner.consume();
+        let adv = if consume {
+            scanner.consume()
         } else {
-            scanner.skip();
-        }
-        if let Some(ch) = self.source.next() {
-            if ch == '\n' {
+            scanner.skip()
+        };
+        if let Some(unit) = adv {
+            if unit.ch == '\n' {
                 self.line += 1;
                 self.column = 1;
             } else {
@@ -689,10 +687,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    // Keep source buffer in sync with scanner
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 _ => {
@@ -720,9 +714,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -740,9 +731,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 _ => {
@@ -770,9 +758,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -786,9 +771,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 c => Err(self.read_and_invalid_char(c)),
@@ -1011,7 +993,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             End => {
-                let c = self.peek_char();
+                let c = self.peek_char(scanner);
                 Err(self.invalid_char(c))
             }
         }
