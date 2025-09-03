@@ -1076,7 +1076,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 }
                                 if is_high {
                                     match self.decode_mode {
-                                        DecodeMode::StrictUnicode => Err(self.syntax_error(err)),
+                                        DecodeMode::StrictUnicode => {
+                                            // Defer error; remember pending high surrogate and await a low.
+                                            self.pending_high_surrogate = Some(code as u16);
+                                            self.lex_state = LexState::String;
+                                            Ok(None)
+                                        }
                                         DecodeMode::ReplaceInvalid => {
                                             scanner.push_transformed_char('\u{FFFD}');
                                             self.lex_state = LexState::String;

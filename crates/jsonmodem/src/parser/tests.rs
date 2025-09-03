@@ -492,7 +492,6 @@ true, false, null]",
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn string_surrogate_pair_single_chunk() {
     // "\uD83D\uDE80" => 🚀
     let mut parser = DefaultStreamingParser::new(ParserOptions {
@@ -526,7 +525,6 @@ fn string_surrogate_pair_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn string_surrogate_pair_cross_batches() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -561,7 +559,6 @@ fn string_surrogate_pair_cross_batches() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn property_name_surrogate_pair_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -587,7 +584,6 @@ fn property_name_surrogate_pair_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn property_name_surrogate_pair_cross_batches() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
