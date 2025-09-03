@@ -219,6 +219,9 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     /// Tracks a pending high surrogate (0xD800..=0xDBFF) seen via \u escapes
     /// awaiting a following low surrogate to form a single code point.
     pending_high_surrogate: Option<u16>,
+    /// Compatibility knob: accept uppercase 'U' for Unicode escapes
+    /// (e.g., "\\UD83D\\UDE00").
+    allow_uppercase_u: bool,
 }
 
 pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
@@ -317,6 +320,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             multiple_values: options.allow_multiple_json_values,
             decode_mode: options.decode_mode,
+            allow_uppercase_u: options.allow_uppercase_u,
             allow_unicode_whitespace: options.allow_unicode_whitespace,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
@@ -926,7 +930,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
-                Empty => Ok(Some(self.produce_string(true, scanner))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) => {
                     // If a previous high surrogate was pending but no low surrogate followed,
                     // finalize it now before consuming the normal character.
@@ -966,7 +970,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             StringEscape => match self.peek_char(scanner) {
-                Empty => Ok(Some(self.produce_string(true, scanner))),
+                Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.consume();
@@ -1034,12 +1038,21 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.lex_state = LexState::StringEscapeUnicode;
                     Ok(None)
                 }
+                Char('U') if self.allow_uppercase_u => {
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
+                    self.unicode_escape_buffer.reset();
+                    self.lex_state = LexState::StringEscapeUnicode;
+                    Ok(None)
+                }
                 c => Err(self.read_and_invalid_char(c)),
             },
 
             StringEscapeUnicode => {
                 match self.peek_char(scanner) {
-                    Empty => Ok(Some(self.produce_string(true, scanner))),
+                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
                     Char(c) if c.is_ascii_hexdigit() => {
                         if let Some(g) = scanner.peek_guard() {
                             let unit = g.skip();
