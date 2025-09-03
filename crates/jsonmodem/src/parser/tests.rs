@@ -171,7 +171,6 @@ fn string_escape_splits_and_forces_buffer() {
 }
 
 #[test]
-#[ignore = "depends on eager borrowed string fragment emission across batches (TBD)"]
 fn string_cross_batch_borrows_fragments() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -360,7 +359,7 @@ fn string_unicode_escape_single_chunk() {
 }
 
 #[test]
-#[ignore = "depends on eager borrowed string fragment emission across batches (TBD)"]
+#[ignore = "depends on partial fragment emission at escape boundary (TBD)"]
 fn string_unicode_escape_cross_batches() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -372,7 +371,7 @@ fn string_unicode_escape_cross_batches() {
         it.next().unwrap().unwrap(),
         ParseEvent::ArrayBegin { .. }
     ));
-    // Now comes a single borrowed fragment with decoded 'A'.
+    // Now comes a single fragment with decoded 'A' (borrowed when possible).
     match it.next().unwrap().unwrap() {
         ParseEvent::String {
             fragment,
@@ -380,10 +379,7 @@ fn string_unicode_escape_cross_batches() {
             is_final,
             ..
         } => {
-            // TODO: scanner should fix
-            // assert!(matches!(fragment, Cow::Borrowed(_)), "Expected borrowed fragment,
-            // got {fragment:?}");
-            assert_eq!(fragment, alloc::borrow::Cow::<str>::Borrowed("A"));
+            assert_eq!(fragment, "A");
             assert!(is_initial);
             assert!(!is_final);
             use alloc::{vec, vec::Vec};

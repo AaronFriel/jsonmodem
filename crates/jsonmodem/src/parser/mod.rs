@@ -892,7 +892,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // maintain parity with the existing implementation _we do not_.
                     //
                     // We pass consume: false to the scanner to skip the escape start symbol.
-                    scanner.switch_to_owned_prefix_if_needed();
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.skip();
                         self.apply_advanced_unit(unit);
@@ -930,7 +929,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // JSON spec allows 0x20 .. 0x10FFFF unescaped.
                     Err(self.read_and_invalid_char(Char(c)))
                 }
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => {
+                    if let Some(s) = scanner.try_borrow_slice() {
+                        if !s.is_empty() {
+                            return Ok(Some(self.produce_string(true, scanner)));
+                        }
+                    }
+                    Ok(Some(self.new_token(Token::Eof, true)))
+                },
                 Char(c) => {
                     // If a previous high surrogate was pending but no low surrogate followed,
                     // finalize it now before consuming the normal character.
@@ -970,7 +976,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             StringEscape => match self.peek_char(scanner) {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                Empty => {
+                    if let Some(s) = scanner.try_borrow_slice() {
+                        if !s.is_empty() {
+                            return Ok(Some(self.produce_string(true, scanner)));
+                        }
+                    }
+                    Ok(Some(self.new_token(Token::Eof, true)))
+                },
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.consume();
@@ -1030,6 +1043,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(None)
                 }
                 Char('u') => {
+                    // If we have a borrowable prefix (e.g., preceding plain text before the
+                    // escape), emit it as a partial fragment before transitioning to
+                    // unicode-escape handling.
+                    if let Some(s) = scanner.try_borrow_slice() {
+                        if !s.is_empty() {
+                            return Ok(Some(self.produce_string(true, scanner)));
+                        }
+                    }
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.skip();
                         self.apply_advanced_unit(unit);
@@ -1052,7 +1073,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             StringEscapeUnicode => {
                 match self.peek_char(scanner) {
-                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
+                    Empty => {
+                        if let Some(s) = scanner.try_borrow_slice() {
+                            if !s.is_empty() {
+                                return Ok(Some(self.produce_string(true, scanner)));
+                            }
+                        }
+                        Ok(Some(self.new_token(Token::Eof, true)))
+                    },
                     Char(c) if c.is_ascii_hexdigit() => {
                         if let Some(g) = scanner.peek_guard() {
                             let unit = g.skip();
