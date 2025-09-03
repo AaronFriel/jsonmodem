@@ -54,7 +54,7 @@
 
 use alloc::{collections::VecDeque, string::String, vec::Vec};
 use core::cmp;
-#[cfg(all(test, feature = "trace_scanner"))]
+#[cfg(all(test, trace_scanner))]
 use std::eprintln;
 
 /// Where the next character comes from.
@@ -361,7 +361,7 @@ impl<'src> Scanner<'src> {
     /// Single‑shot: `finish(self)` consumes the session and should be called at
     /// most once per feed.
     pub fn finish(mut self) -> ScannerState {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!(
             "Scanner::finish(): anchor={:?}, byte_idx={}, batch_len={}, scratch_len={}, pending_before={}",
             self.anchor,
@@ -391,7 +391,7 @@ impl<'src> Scanner<'src> {
                             let slice = &self.batch.as_bytes()[start..end];
                             match &mut self.scratch {
                                 CaptureBuf::Text(s) => {
-                                    s.push_str(unsafe { core::str::from_utf8_unchecked(slice) })
+                                    s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
                                 }
                                 CaptureBuf::Raw(b) => b.extend_from_slice(slice),
                             }
@@ -407,7 +407,7 @@ impl<'src> Scanner<'src> {
         if self.byte_idx < self.batch.len() {
             let bytes = &self.batch.as_bytes()[self.byte_idx..];
             self.pending.extend(bytes.iter().copied());
-            #[cfg(all(test, feature = "trace_scanner"))]
+            #[cfg(all(test, trace_scanner))]
             eprintln!(
                 "Scanner::finish(): pushed unread tail to ring, added {} bytes, pending now {}",
                 bytes.len(),
@@ -447,7 +447,7 @@ impl<'src> Scanner<'src> {
     /// belongs to the token payload. We always capture it; borrowability is
     /// maintained separately (we don’t force a prefix copy here).
     pub fn consume(&mut self) -> Option<CharInfo> {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Scanner::consume, state: {self:?}");
         self.ensure_anchor_started();
         let adv = Self::step_input(self)?;
@@ -464,7 +464,7 @@ impl<'src> Scanner<'src> {
     fn step_input(&mut self) -> Option<CharInfo> {
         if self.pending.is_empty() {
             let (ch, len) = Self::decode_from(self.batch, self.byte_idx)?;
-            self.byte_idx += len as usize;
+            self.byte_idx += len;
             self.bump_pos(ch);
             Some(CharInfo {
                 ch,
@@ -493,7 +493,7 @@ impl<'src> Scanner<'src> {
     /// but avoid copying any already‑captured prefix.
     #[inline]
     pub fn skip(&mut self) -> Option<CharInfo> {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Scanner::skip, state: {self:?}");
 
         if let Some(a) = &mut self.anchor {
@@ -543,7 +543,7 @@ impl<'src> Scanner<'src> {
             return None;
         }
         let (head, _) = r.as_slices();
-        let (ch, len) = bstr::decode_utf8(&head);
+        let (ch, len) = bstr::decode_utf8(head);
         if len == 0 {
             return None;
         }
@@ -593,7 +593,7 @@ impl<'src> Scanner<'src> {
             owned,
             raw: matches!(self.scratch, CaptureBuf::Raw(_)),
         });
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!(
             "Scanner::ensure_anchor_started: source={source:?}, owned={owned}, start_byte_in_batch={start_byte_in_batch:?}"
         );
@@ -668,7 +668,7 @@ impl<'src> Scanner<'src> {
                 let slice = &self.batch.as_bytes()[start..end];
                 match &mut self.scratch {
                     CaptureBuf::Text(s) => {
-                        s.push_str(unsafe { core::str::from_utf8_unchecked(slice) })
+                        s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
                     }
                     CaptureBuf::Raw(b) => b.extend_from_slice(slice),
                 }
@@ -723,7 +723,7 @@ impl<'src> Scanner<'src> {
         self.ensure_anchor_started();
         let mut copied = 0usize;
         let start_source = self.cur_source();
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Scanner::consume_while_char: start_source={start_source:?}");
         loop {
             let Some(u) = self.peek() else { break };
@@ -738,7 +738,7 @@ impl<'src> Scanner<'src> {
             if let Some(a) = &self.anchor {
                 if a.owned {
                     self.scratch.push_char(u.ch);
-                    #[cfg(all(test, feature = "trace_scanner"))]
+                    #[cfg(all(test, trace_scanner))]
                     eprintln!(
                         "  captured {:?} into scratch (len now {})",
                         u.ch,
@@ -797,7 +797,7 @@ impl<'src> Scanner<'src> {
     /// Emits the final fragment for the current token (no delimiter adjustment)
     /// and clears the anchor so `finish()` will not coalesce it again.
     pub fn emit(&mut self) -> Capture<'src> {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Scanner::emit: init state {self:?}");
         // Lazily create an anchor if none exists so empty fragments can borrow
         // correctly from the current batch position.
@@ -805,7 +805,7 @@ impl<'src> Scanner<'src> {
         let buf = self.emit_fragment(true);
         // Token is complete; drop the anchor to avoid finish() copying prefixes.
         self.anchor = None;
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Scanner::emit: output {buf:?}, state {self:?}");
         buf
     }
@@ -837,7 +837,7 @@ impl Peeked<'_, '_> {
     /// that the advanced character matches the guard.
     #[inline]
     pub fn consume(self) -> CharInfo {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Peeked::consume, state: {self:?}");
 
         let adv = self
@@ -853,7 +853,7 @@ impl Peeked<'_, '_> {
     /// current token (if active) without copying any prior prefix.
     #[inline]
     pub fn skip(self) -> CharInfo {
-        #[cfg(all(test, feature = "trace_scanner"))]
+        #[cfg(all(test, trace_scanner))]
         eprintln!("Peeked::skip, state: {self:?}");
         let adv = self
             .scanner

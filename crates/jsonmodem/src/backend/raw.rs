@@ -3,6 +3,7 @@ use alloc::{borrow::Cow, string::String, vec::Vec};
 use crate::{backend::{EventCtx, PathCtx}, PathItem};
 
 #[derive(Debug, Default, PartialEq, Clone)]
+#[doc(hidden)]
 pub struct RawContext;
 
 impl PathCtx for RawContext {

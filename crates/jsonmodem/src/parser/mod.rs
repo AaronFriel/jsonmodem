@@ -12,7 +12,6 @@ mod error;
 mod escape_buffer;
 mod event_builder;
 mod literal_buffer;
-mod numbers;
 mod options;
 mod parse_event;
 mod path;
@@ -558,7 +557,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[inline]
-    fn push_wtf8_for_u32<'src>(&mut self, scanner: &mut Scanner<'src>, code: u32) {
+    fn push_wtf8_for_u32(&mut self, scanner: &mut Scanner<'_>, code: u32) {
         let mut buf = [0u8; 4];
         let slice: &[u8] = if code < 0x80 {
             buf[0] = code as u8;
@@ -589,7 +588,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         lex_state: LexState,
         scanner: &mut Scanner<'src>,
     ) -> Result<Option<Token<'src>>, ParserError<B>> {
-        use LexState::*;
+        use LexState::{Error, Default, Value, ValueLiteral, Sign, Zero, DecimalInteger, DecimalPoint, DecimalExponent, DecimalFraction, DecimalExponentSign, DecimalExponentInteger, StringEscape, StringEscapeUnicode, Start, BeforePropertyName, AfterPropertyName, BeforePropertyValue, AfterPropertyValue, BeforeArrayValue, AfterArrayValue, End};
         match lex_state {
             Error => Ok(None),
             Default => {
@@ -909,14 +908,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         match self.decode_mode {
                             DecodeMode::StrictUnicode => {
                                 return Err(self.syntax_error(
-                                    error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32),
+                                    error::SyntaxError::InvalidUnicodeEscapeSequence(u32::from(high)),
                                 ));
                             }
                             DecodeMode::ReplaceInvalid => {
                                 scanner.push_transformed_char('\u{FFFD}');
                             }
                             DecodeMode::SurrogatePreserving => {
-                                self.push_wtf8_for_u32(scanner, high as u32);
+                                self.push_wtf8_for_u32(scanner, u32::from(high));
                             }
                         }
                     }
@@ -949,14 +948,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         match self.decode_mode {
                             DecodeMode::StrictUnicode => {
                                 return Err(self.syntax_error(
-                                    error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32),
+                                    error::SyntaxError::InvalidUnicodeEscapeSequence(u32::from(high)),
                                 ));
                             }
                             DecodeMode::ReplaceInvalid => {
                                 scanner.push_transformed_char('\u{FFFD}');
                             }
                             DecodeMode::SurrogatePreserving => {
-                                self.push_wtf8_for_u32(scanner, high as u32);
+                                self.push_wtf8_for_u32(scanner, u32::from(high));
                             }
                         }
                     }
@@ -1103,7 +1102,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         DecodeMode::StrictUnicode => {
                                             return Err(self.syntax_error(
                                                 error::SyntaxError::InvalidUnicodeEscapeSequence(
-                                                    high as u32,
+                                                    u32::from(high),
                                                 ),
                                             ));
                                         }
@@ -1111,7 +1110,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                             scanner.push_transformed_char('\u{FFFD}');
                                         }
                                         DecodeMode::SurrogatePreserving => {
-                                            self.push_wtf8_for_u32(scanner, high as u32);
+                                            self.push_wtf8_for_u32(scanner, u32::from(high));
                                         }
                                     }
                                 }
@@ -1151,7 +1150,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 } else {
                                     // low surrogate
                                     if let Some(high) = self.pending_high_surrogate.take() {
-                                        let hi = (high as u32) - 0xD800;
+                                        let hi = u32::from(high) - 0xD800;
                                         let lo = code - 0xDC00;
                                         let cp = 0x1_0000 + ((hi << 10) | lo);
                                         match self.decode_mode {
@@ -1309,7 +1308,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         ctx: &'cx mut B,
         path: &mut B::Thawed,
     ) -> Result<Option<ParseEvent<'src, B>>, ParserError<B>> {
-        use ParseState::*;
+        use ParseState::{Start, BeforePropertyName, AfterPropertyName, BeforePropertyValue, BeforeArrayValue, AfterPropertyValue, AfterArrayValue, End, Error};
 
         match self.parse_state {
             // In single-value mode, EOF at start when end_of_input indicates unexpected end.
@@ -1603,7 +1602,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
 impl StreamingParserImpl<RustContext> {
     /// Creates a new [`StreamingParserImpl<RustContext>`].
-    pub fn new(options: ParserOptions) -> Self {
+    #[must_use] pub fn new(options: ParserOptions) -> Self {
         let mut ctx = RustContext::default();
         Self::new_with_factory(&mut ctx, options)
     }

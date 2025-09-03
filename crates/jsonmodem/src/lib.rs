@@ -22,7 +22,8 @@ mod backend;
 mod jsonmodem_buffers;
 mod parser;
 
-pub use parser::{Path, PathItem, PathItemFrom, StreamingParserImpl, DefaultStreamingParser};
+pub use backend::{RawContext, RustContext};
+pub use parser::{DefaultStreamingParser, Path, PathItem, PathItemFrom, StreamingParserImpl};
 
 #[cfg(feature = "todo")]
 mod jsonmodem;

@@ -1,8 +1,6 @@
 #![expect(clippy::inline_always)]
 
 #[cfg(debug_assertions)]
-use alloc::string::ToString;
-#[cfg(debug_assertions)]
 use alloc::vec::Vec;
 use alloc::{collections::VecDeque, string::String};
 

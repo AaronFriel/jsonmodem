@@ -64,9 +64,11 @@ pub struct ParserOptions {
 
 /// Decode behavior for Unicode escapes and surrogate pairs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum DecodeMode {
     /// RFC‑compliant: join valid surrogate pairs; error on any unpaired
     /// surrogate or invalid escape.
+    #[default]
     StrictUnicode,
     /// Preserve unpaired surrogates (requires non‑UTF8 output representation).
     /// In UTF‑8 builds this mode degrades to `ReplaceInvalid`.
@@ -75,8 +77,3 @@ pub enum DecodeMode {
     ReplaceInvalid,
 }
 
-impl Default for DecodeMode {
-    fn default() -> Self {
-        DecodeMode::StrictUnicode
-    }
-}

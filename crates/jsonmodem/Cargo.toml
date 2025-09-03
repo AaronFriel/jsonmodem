@@ -51,15 +51,13 @@ regex = "1.11.1"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(coverage,coverage_nightly)',
+  'cfg(coverage,coverage_nightly,trace_scanner)',
 ] }
 
 [lints.clippy]
 pedantic = "warn"
 perf = "deny"
 suspicious = "deny"
-
-
 
 # [[bench]]
 # name = "streaming_json_strategies"

@@ -7,8 +7,8 @@ use core::{
     fmt::{Debug, Display},
 };
 
-pub use raw::RawContext;
 pub use rust::RustContext;
+pub use raw::RawContext;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PathKind {
