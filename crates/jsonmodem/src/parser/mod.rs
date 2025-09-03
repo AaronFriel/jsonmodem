@@ -186,7 +186,6 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     lex_state: LexState,
 
     /// Lexer helpers
-    buffer: String, // reused for numbers / literals / strings
     unicode_escape_buffer: UnicodeEscapeBuffer,
     expected_literal: ExpectedLiteralBuffer,
     partial_lex: bool,
@@ -303,7 +302,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             parse_state: ParseState::Start,
             lex_state: LexState::Default,
 
-            buffer: String::new(),
             unicode_escape_buffer: UnicodeEscapeBuffer::new(),
             expected_literal: ExpectedLiteralBuffer::none(),
 
@@ -518,14 +516,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[inline(always)]
     fn produce_string<'src>(&mut self, partial: bool, scanner: &mut Scanner<'src>) -> Token<'src> {
-        use Token::{Eof, PropertyName, StringOwned};
-
-        #[cfg(test)]
-        std::eprintln!(
-            "produce_string: partial = {}, buffer = {:?}",
-            partial,
-            self.buffer
-        );
+        use Token::Eof;
 
         self.partial_lex = partial;
 
@@ -533,38 +524,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             if partial {
                 return Eof;
             }
-
-            let value = core::mem::take(&mut self.buffer);
-            match scanner.emit() {
-                scanner::Capture::Borrowed(v) => {
-                    debug_assert_eq!(
-                        v, value,
-                        "Borrowed value mismatch, scanner state: {scanner:?}"
-                    );
-                    return Token::PropertyName(v.into());
-                }
-                scanner::Capture::Owned(v) => {
-                    debug_assert_eq!(v, value, "Owned value mismatch, scanner state: {scanner:?}");
-                    return Token::PropertyName(v);
-                }
-                scanner::Capture::Raw(v) => return Token::PropertyNameRaw(v),
-            }
+            return match scanner.emit() {
+                scanner::Capture::Borrowed(v) => Token::PropertyName(v.into()),
+                scanner::Capture::Owned(v) => Token::PropertyName(v),
+                scanner::Capture::Raw(v) => Token::PropertyNameRaw(v),
+            };
         }
 
-        let value = core::mem::take(&mut self.buffer);
-
         match scanner.emit() {
-            scanner::Capture::Borrowed(v) => {
-                debug_assert_eq!(
-                    v, value,
-                    "Borrowed value mismatch, scanner state: {scanner:?}"
-                );
-                Token::StringBorrowed(v)
-            }
-            scanner::Capture::Owned(v) => {
-                debug_assert_eq!(v, value, "Owned value mismatch, scanner state: {scanner:?}");
-                Token::StringOwned(v)
-            }
+            scanner::Capture::Borrowed(v) => Token::StringBorrowed(v),
+            scanner::Capture::Owned(v) => Token::StringOwned(v),
             scanner::Capture::Raw(v) => Token::StringRaw(v),
         }
     }
@@ -611,41 +580,32 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
                 }
                 Char(c) if matches!(c, 'n' | 't' | 'f') => {
-                    self.buffer.clear();
                     scanner.emit();
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = ValueLiteral;
                     self.expected_literal = ExpectedLiteralBuffer::new(c);
                     Ok(None)
                 }
                 Char(c @ '-') => {
-                    self.buffer.clear();
                     scanner.emit();
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = Sign;
                     Ok(None)
                 }
                 Char(c @ '0') => {
-                    self.buffer.clear();
                     scanner.emit();
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = Zero;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
-                    self.buffer.clear();
                     scanner.emit();
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalInteger;
                     Ok(None)
                 }
                 Char('"') => {
                     self.advance_char(scanner, false);
-                    self.buffer.clear();
                     scanner.emit();
                     self.lex_state = LexState::String;
                     self.initialized_string = true;
@@ -660,12 +620,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Char(c) => match self.expected_literal.step(c) {
                     literal_buffer::Step::NeedMore => {
                         self.advance_char(scanner, true);
-                        self.buffer.push(c);
                         Ok(None)
                     }
                     literal_buffer::Step::Done(tok) => {
                         self.advance_char(scanner, true);
-                        self.buffer.push(c);
+                        let _ = scanner.emit();
                         Ok(Some(self.new_token(tok, false)))
                     }
                     literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
@@ -678,13 +637,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '0') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = Zero;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalInteger;
                     Ok(None)
                 }
@@ -695,33 +652,18 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalPoint;
                     Ok(None)
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 _ => {
-                    let value_buf = core::mem::take(&mut self.buffer);
                     let tok = match scanner.emit() {
-                        scanner::Capture::Borrowed(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Borrowed value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::NumberBorrowed(v)
-                        }
-                        scanner::Capture::Owned(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Owned value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::Number(v)
-                        }
+                        scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
+                        scanner::Capture::Owned(v) => Token::Number(v),
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
@@ -734,47 +676,29 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c @ '.') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalPoint;
                     Ok(None)
                 }
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    // Keep source buffer in sync with scanner
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
                 _ => {
-                    let value_buf = core::mem::take(&mut self.buffer);
                     let tok = match scanner.emit() {
-                        scanner::Capture::Borrowed(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Borrowed value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::NumberBorrowed(v)
-                        }
-                        scanner::Capture::Owned(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Owned value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::Number(v)
-                        }
+                        scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
+                        scanner::Capture::Owned(v) => Token::Number(v),
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
@@ -787,22 +711,17 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalFraction;
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
@@ -813,41 +732,23 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, 'e' | 'E') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponent;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
                 _ => {
-                    let value_buf = core::mem::take(&mut self.buffer);
                     let tok = match scanner.emit() {
-                        scanner::Capture::Borrowed(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Borrowed value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::NumberBorrowed(v)
-                        }
-                        scanner::Capture::Owned(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Owned value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::Number(v)
-                        }
+                        scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
+                        scanner::Capture::Owned(v) => Token::Number(v),
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
@@ -860,22 +761,17 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if matches!(c, '+' | '-') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponentSign;
                     Ok(None)
                 }
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
@@ -886,16 +782,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
                     self.lex_state = DecimalExponentInteger;
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
@@ -906,35 +798,18 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.new_token(Token::Eof, true))),
                 Char(c) if c.is_ascii_digit() => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
-
-                    scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    let copied = self
-                        .source
-                        .copy_while(&mut self.buffer, |d| d.is_ascii_digit());
-
-                    self.column += copied;
-                    self.pos += copied;
+                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                    self.column += consumed;
+                    self.pos += consumed;
+                    let mut sink = alloc::string::String::new();
+                    let _ = self.source.copy_n(&mut sink, consumed);
 
                     Ok(None)
                 }
                 _ => {
-                    let value_buf = core::mem::take(&mut self.buffer);
                     let tok = match scanner.emit() {
-                        scanner::Capture::Borrowed(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Borrowed value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::NumberBorrowed(v)
-                        }
-                        scanner::Capture::Owned(v) => {
-                            debug_assert_eq!(
-                                v, value_buf,
-                                "Owned value mismatch, scanner state: {scanner:?}"
-                            );
-                            Token::Number(v)
-                        }
+                        scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
+                        scanner::Capture::Owned(v) => Token::Number(v),
                         scanner::Capture::Raw(_) => {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
@@ -977,7 +852,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // chars into our local buffer from the source queue.
 
                     self.advance_char(scanner, true);
-                    self.buffer.push(c);
 
                     // let consumed = scanner
                     //     .consume_while_char(|ch| ch != '\\' && ch != '"' && ch >= '\u{20}');
@@ -995,7 +869,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 Empty => Ok(Some(self.produce_string(true, scanner))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     self.advance_char(scanner, true);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1003,7 +876,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(scanner, false);
                     let ch = '\u{0008}';
                     scanner.push_transformed_char(ch);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1011,7 +883,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(scanner, false);
                     let ch = '\u{000C}';
                     scanner.push_transformed_char(ch);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1019,7 +890,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(scanner, false);
                     let ch = '\n';
                     scanner.push_transformed_char(ch);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1027,7 +897,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(scanner, false);
                     let ch = '\r';
                     scanner.push_transformed_char(ch);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1035,7 +904,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     self.advance_char(scanner, false);
                     let ch = '\t';
                     scanner.push_transformed_char(ch);
-                    self.buffer.push(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1055,7 +923,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.advance_char(scanner, false);
                         match self.unicode_escape_buffer.feed(c) {
                             Ok(Some(char)) => {
-                                self.buffer.push(char);
                                 scanner.push_transformed_char(char);
                                 self.lex_state = LexState::String;
                                 Ok(None)
@@ -1096,7 +963,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
                 Char('"') => {
                     self.advance_char(scanner, false);
-                    self.buffer.clear();
                     scanner.emit();
                     self.lex_state = LexState::String;
                     Ok(None)
