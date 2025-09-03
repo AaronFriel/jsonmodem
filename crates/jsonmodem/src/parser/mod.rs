@@ -27,7 +27,7 @@ use alloc::{
 };
 use core::mem::{ManuallyDrop, MaybeUninit};
 
-use buffer::Buffer;
+// buffer is no longer used directly by the parser core; Scanner owns input state.
 pub use error::{ErrorSource, ParserError, SyntaxError};
 use escape_buffer::UnicodeEscapeBuffer;
 pub use event_builder::EventBuilder;
@@ -171,8 +171,6 @@ type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 /// It implements `Iterator` to yield `ParseEvent`s representing JSON tokens
 /// and structural events.
 pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
-    // Raw source buffer (always grows then gets truncated after each “round”).
-    source: Buffer,
     end_of_input: bool,
 
     /// Current *global* character position.
@@ -200,6 +198,7 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     pending_key: bool,
 
     /// Options
+    allow_unicode_whitespace: bool,
 
     /// Allow multiple JSON values in a single input (support transition from
     /// end state to a new value start state)
@@ -290,7 +289,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     /// options.
     pub fn new_with_factory(f: &mut B, options: ParserOptions) -> StreamingParserImpl<B> {
         Self {
-            source: Buffer::new(),
             end_of_input: false,
             partial_lex: false,
 
@@ -310,15 +308,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             pending_key: false,
 
             multiple_values: options.allow_multiple_json_values,
+            allow_unicode_whitespace: options.allow_unicode_whitespace,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
             lexed_tokens: Vec::new(),
         }
-    }
-
-    pub(crate) fn feed_str(&mut self, text: &str) {
-        self.source.push(text);
     }
 
     #[doc(hidden)]
@@ -327,7 +322,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         mut factory: B,
         text: &'src str,
     ) -> StreamingParserIteratorWith<'p, 'src, B> {
-        self.feed_str(text);
         let path = unsafe { factory.thaw(core::mem::take(self.path.assume_init_mut())) };
         let path = ManuallyDrop::new(path);
         let scanner = Scanner::from_state(core::mem::take(&mut self.scanner_state), text);
@@ -549,15 +543,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             Error => Ok(None),
             Default => {
                 match next_char {
-                    Char(
-                        '\t' | '\u{0B}' | '\u{0C}' | ' ' | '\u{00A0}' | '\u{FEFF}' | '\n' | '\r'
-                        | '\u{2028}' | '\u{2029}',
-                    ) => {
-                        // Skip whitespace
+                    Char(c) if !self.allow_unicode_whitespace && matches!(c, ' ' | '\t' | '\n' | '\r') => {
+                        // Skip JSON's 4 whitespace code points by default
                         self.advance_char(scanner, false);
                         Ok(None)
                     }
-                    Char(c) if c.is_whitespace() => {
+                    Char(c) if self.allow_unicode_whitespace && (c.is_whitespace() || matches!(c, '\u{FEFF}')) => {
+                        // When enabled, accept all Unicode whitespace and BOM
                         self.advance_char(scanner, false);
                         Ok(None)
                     }
@@ -783,9 +775,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
                     self.column += consumed;
                     self.pos += consumed;
-                    let mut sink = alloc::string::String::new();
-                    let _ = self.source.copy_n(&mut sink, consumed);
-
                     Ok(None)
                 }
                 _ => {

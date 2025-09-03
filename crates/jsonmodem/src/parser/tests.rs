@@ -1769,7 +1769,6 @@ fn property_name_multibyte_key_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn unicode_whitespace_rejected_by_default() {
     // By default, only JSON's 4 whitespace code points are allowed.
     // NO-BREAK SPACE (U+00A0) should be rejected.
