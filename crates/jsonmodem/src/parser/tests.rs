@@ -327,7 +327,6 @@ fn string_empty_borrow_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn string_unicode_escape_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
@@ -338,7 +337,7 @@ fn string_unicode_escape_single_chunk() {
         it.next().unwrap().unwrap(),
         ParseEvent::ArrayBegin { .. }
     ));
-    // First fragment before escape will be buffered due to escape handling
+    // Single owned fragment containing both 'A' and decoded 'B'
     match it.next().unwrap().unwrap() {
         ParseEvent::String {
             fragment,
@@ -346,22 +345,8 @@ fn string_unicode_escape_single_chunk() {
             is_final,
             ..
         } => {
-            assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("A".to_string()));
+            assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("AB".to_string()));
             assert!(is_initial);
-            assert!(!is_final);
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
-    // Second fragment contains decoded 'B'
-    match it.next().unwrap().unwrap() {
-        ParseEvent::String {
-            fragment,
-            is_initial,
-            is_final,
-            ..
-        } => {
-            assert_eq!(fragment, alloc::borrow::Cow::<str>::Owned("B".to_string()));
-            assert!(!is_initial);
             assert!(is_final);
         }
         other => panic!("unexpected event: {other:?}"),
@@ -864,7 +849,6 @@ fn raw_backend_borrowed_string_single_chunk() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_string_escape_owned_fragments() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -880,6 +864,7 @@ fn raw_backend_string_escape_owned_fragments() {
         it.next().unwrap().unwrap(),
         ParseEvent::ArrayBegin { .. }
     ));
+    // Single owned raw fragment containing both 'A' and decoded 'B'
     match it.next().unwrap().unwrap() {
         ParseEvent::String {
             fragment,
@@ -887,21 +872,8 @@ fn raw_backend_string_escape_owned_fragments() {
             is_final,
             ..
         } => {
-            assert_eq!(fragment, Cow::<[u8]>::Owned(b"A".to_vec()));
+            assert_eq!(fragment, Cow::<[u8]>::Owned(b"AB".to_vec()));
             assert!(is_initial);
-            assert!(!is_final);
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
-    match it.next().unwrap().unwrap() {
-        ParseEvent::String {
-            fragment,
-            is_initial,
-            is_final,
-            ..
-        } => {
-            assert_eq!(fragment, Cow::<[u8]>::Owned(b"B".to_vec()));
-            assert!(!is_initial);
             assert!(is_final);
         }
         other => panic!("unexpected event: {other:?}"),
@@ -1701,7 +1673,6 @@ fn property_name_multibyte_cross_batches_no_escape() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn string_multibyte_borrow_no_escape_single_chunk() {
     let mut parser = DefaultStreamingParser::new(ParserOptions {
         panic_on_error: true,
