@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 
 use arbitrary::Arbitrary;
-use jsonmodem::{DefaultStreamingParser, ParserOptions};
+use jsonmodem::{DefaultStreamingParser};
 use libfuzzer_sys::{fuzz_mutator, fuzz_target, fuzzer_mutate};
 use rand::rngs::SmallRng; // faster than StdRng
 use rand::{Rng, RngCore, SeedableRng};

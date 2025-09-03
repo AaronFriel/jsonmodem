@@ -1,2 +1,7 @@
 [profile.default]
 slow-timeout = { period = "1s", terminate-after = 5 }
+
+
+[[profile.default.overrides]]
+filter = 'test(prop_*)'
+slow-timeout = { period = "30s", terminate-after = 2 }

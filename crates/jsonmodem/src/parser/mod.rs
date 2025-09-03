@@ -4,7 +4,6 @@
 //! in chunks and emits `ParseEvent`s. The core does not build composite values
 //! or buffer full strings; adapters are responsible for those behaviors.
 
-#![expect(clippy::single_match_else)]
 #![expect(clippy::struct_excessive_bools)]
 #![expect(clippy::inline_always)]
 
@@ -22,18 +21,19 @@ mod scanner;
 use alloc::{
     format,
     string::{String, ToString},
-    sync::Arc,
     vec::Vec,
 };
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::
+    mem::{ManuallyDrop, MaybeUninit}
+;
 
 // buffer is no longer used directly by the parser core; Scanner owns input state.
 pub use error::{ErrorSource, ParserError, SyntaxError};
 use escape_buffer::UnicodeEscapeBuffer;
 pub use event_builder::EventBuilder;
 use literal_buffer::ExpectedLiteralBuffer;
-pub use options::ParserOptions;
 use options::DecodeMode;
+pub use options::ParserOptions;
 pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
@@ -63,6 +63,7 @@ pub(crate) enum Token<'src> {
 }
 
 impl Token<'_> {
+    #[cfg(test)]
     fn to_owned(&self) -> Token<'static> {
         match self {
             Token::Eof => Token::Eof,
@@ -101,7 +102,7 @@ enum PeekedChar {
     EndOfInput,
 }
 
-use PeekedChar::*;
+use PeekedChar::{Char, EndOfInput, Empty};
 
 /// ------------------------------------------------------------------------------------------------
 /// State machines (1‑for‑1 with TS enums)
@@ -165,7 +166,7 @@ impl From<ParseState> for LexState {
 
 /// The streaming JSON parser. Uses the default `Value` type and path
 /// representation.
-type DefaultStreamingParser = StreamingParserImpl<RustContext>;
+pub type DefaultStreamingParser = StreamingParserImpl<RustContext>;
 
 ///
 /// `StreamingParser` can be fed partial or complete JSON input in chunks.
@@ -231,7 +232,7 @@ pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
     scanner: Scanner<'src>,
 }
 
-impl<'p, 'src, B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'p, 'src, B> {
+impl<B: PathCtx + EventCtx> Drop for StreamingParserIteratorWith<'_, '_, B> {
     fn drop(&mut self) {
         // SAFETY: ManuallyDrop::take moves out without running Drop,
         // so the later field-drop won’t double-drop it.
@@ -265,7 +266,7 @@ pub struct ClosedStreamingParser<'src, B: PathCtx + EventCtx> {
     scanner: Scanner<'src>,
 }
 
-impl<'src, B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'src, B> {
+impl<B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'_, B> {
     fn drop(&mut self) {
         // SAFETY: ManuallyDrop::take moves out without running Drop,
         // so the later field-drop won’t double-drop it.
@@ -499,7 +500,11 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     fn advance_char(&mut self, scanner: &mut Scanner<'_>, consume: bool) {
         // Deprecated: prefer using peek_guard(). This remains for transitional
         // calls outside refactored branches.
-        let adv = if consume { scanner.consume() } else { scanner.skip() };
+        let adv = if consume {
+            scanner.consume()
+        } else {
+            scanner.skip()
+        };
         if let Some(unit) = adv {
             if unit.ch == '\n' {
                 self.line += 1;
@@ -596,14 +601,15 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                         return Ok(None);
                     }
-                    if self.allow_unicode_whitespace && (c.is_whitespace() || matches!(c, '\u{FEFF}')) {
+                    if self.allow_unicode_whitespace
+                        && (c.is_whitespace() || matches!(c, '\u{FEFF}'))
+                    {
                         // When enabled, accept all Unicode whitespace and BOM
                         let unit = g.skip();
                         self.apply_advanced_unit(unit);
                         return Ok(None);
                     }
                     // Delegate to parse-state entry without consuming
-                    drop(g);
                     return self.lex_state_step(self.parse_state.into(), scanner);
                 }
                 if self.end_of_input {
@@ -859,7 +865,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     return Err(self.read_and_invalid_char(Char(c)));
                 }
                 Ok(Some(self.new_token(Token::Eof, true)))
-            },
+            }
 
             DecimalExponentInteger => {
                 if let Some(g) = scanner.peek_guard() {
@@ -882,7 +888,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     return Ok(Some(self.new_token(tok, false)));
                 }
                 Ok(Some(self.new_token(Token::Eof, true)))
-            },
+            }
 
             // -------------------------- STRING -----------------------------
             LexState::String => match self.peek_char(scanner) {
@@ -902,7 +908,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     if let Some(high) = self.pending_high_surrogate.take() {
                         match self.decode_mode {
                             DecodeMode::StrictUnicode => {
-                                return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                                return Err(self.syntax_error(
+                                    error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32),
+                                ));
                             }
                             DecodeMode::ReplaceInvalid => {
                                 scanner.push_transformed_char('\u{FFFD}');
@@ -933,14 +941,16 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         }
                     }
                     Ok(Some(self.new_token(Token::Eof, true)))
-                },
+                }
                 Char(c) => {
                     // If a previous high surrogate was pending but no low surrogate followed,
                     // finalize it now before consuming the normal character.
                     if let Some(high) = self.pending_high_surrogate.take() {
                         match self.decode_mode {
                             DecodeMode::StrictUnicode => {
-                                return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                                return Err(self.syntax_error(
+                                    error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32),
+                                ));
                             }
                             DecodeMode::ReplaceInvalid => {
                                 scanner.push_transformed_char('\u{FFFD}');
@@ -980,7 +990,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         }
                     }
                     Ok(Some(self.new_token(Token::Eof, true)))
-                },
+                }
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.consume();
@@ -1077,7 +1087,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             }
                         }
                         Ok(Some(self.new_token(Token::Eof, true)))
-                    },
+                    }
                     Char(c) if c.is_ascii_hexdigit() => {
                         if let Some(g) = scanner.peek_guard() {
                             let unit = g.skip();
@@ -1085,12 +1095,17 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         }
                         match self.unicode_escape_buffer.feed(c) {
                             Ok(Some(ch)) => {
-                                // If a previous high surrogate is pending but we received a non-low scalar,
-                                // finalize the pending one before appending this char.
+                                // If a previous high surrogate is pending but we received a non-low
+                                // scalar, finalize the pending one
+                                // before appending this char.
                                 if let Some(high) = self.pending_high_surrogate.take() {
                                     match self.decode_mode {
                                         DecodeMode::StrictUnicode => {
-                                            return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                                            return Err(self.syntax_error(
+                                                error::SyntaxError::InvalidUnicodeEscapeSequence(
+                                                    high as u32,
+                                                ),
+                                            ));
                                         }
                                         DecodeMode::ReplaceInvalid => {
                                             scanner.push_transformed_char('\u{FFFD}');
@@ -1115,7 +1130,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 if is_high {
                                     match self.decode_mode {
                                         DecodeMode::StrictUnicode => {
-                                            // Defer error; remember pending high surrogate and await a low.
+                                            // Defer error; remember pending high surrogate and
+                                            // await a low.
                                             self.pending_high_surrogate = Some(code as u16);
                                             self.lex_state = LexState::String;
                                             Ok(None)
@@ -1139,7 +1155,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                         let lo = code - 0xDC00;
                                         let cp = 0x1_0000 + ((hi << 10) | lo);
                                         match self.decode_mode {
-                                            DecodeMode::StrictUnicode | DecodeMode::ReplaceInvalid => {
+                                            DecodeMode::StrictUnicode
+                                            | DecodeMode::ReplaceInvalid => {
                                                 if let Some(ch) = core::char::from_u32(cp) {
                                                     scanner.push_transformed_char(ch);
                                                 } else {
@@ -1156,9 +1173,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                     } else {
                                         // Lone low surrogate
                                         match self.decode_mode {
-                                            DecodeMode::StrictUnicode => Err(self.syntax_error(err)),
-                                            DecodeMode::ReplaceInvalid | DecodeMode::SurrogatePreserving => {
-                                                // In UTF-8 backends (including Raw backend tests), SurrogatePreserving
+                                            DecodeMode::StrictUnicode => {
+                                                Err(self.syntax_error(err))
+                                            }
+                                            DecodeMode::ReplaceInvalid
+                                            | DecodeMode::SurrogatePreserving => {
+                                                // In UTF-8 backends (including Raw backend tests),
+                                                // SurrogatePreserving
                                                 // degrades to replacement.
                                                 scanner.push_transformed_char('\u{FFFD}');
                                                 self.lex_state = LexState::String;
@@ -1439,9 +1460,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 })
             }
             Token::NumberBorrowed(n) => {
-                let value = f
-                    .new_number(n)
-                    .map_err(|e| self.event_context_error(e))?;
+                let value = f.new_number(n).map_err(|e| self.event_context_error(e))?;
                 Some(ParseEvent::Number {
                     path: path.clone(),
                     value,
@@ -1583,6 +1602,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 }
 
 impl StreamingParserImpl<RustContext> {
+    /// Creates a new [`StreamingParserImpl<RustContext>`].
     pub fn new(options: ParserOptions) -> Self {
         let mut ctx = RustContext::default();
         Self::new_with_factory(&mut ctx, options)
@@ -1600,6 +1620,7 @@ impl StreamingParserImpl<RustContext> {
         self.feed_with(RustContext::default(), text)
     }
 
+    /// Finishes the parsing process and returns a closed parser.
     #[must_use]
     pub fn finish(self) -> ClosedStreamingParser<'static, RustContext> {
         self.finish_with(RustContext::default())

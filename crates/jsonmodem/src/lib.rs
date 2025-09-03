@@ -22,7 +22,7 @@ mod backend;
 mod jsonmodem_buffers;
 mod parser;
 
-pub use parser::{Path, PathItem, PathItemFrom};
+pub use parser::{Path, PathItem, PathItemFrom, StreamingParserImpl, DefaultStreamingParser};
 
 #[cfg(feature = "todo")]
 mod jsonmodem;
