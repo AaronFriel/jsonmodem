@@ -33,6 +33,7 @@ use escape_buffer::UnicodeEscapeBuffer;
 pub use event_builder::EventBuilder;
 use literal_buffer::ExpectedLiteralBuffer;
 pub use options::ParserOptions;
+use options::DecodeMode;
 pub use parse_event::ParseEvent;
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 
@@ -204,6 +205,9 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     /// end state to a new value start state)
     multiple_values: bool,
 
+    /// Unicode escape decoding behavior
+    decode_mode: DecodeMode,
+
     /// Panic on syntax errors instead of returning them
     #[cfg(test)]
     panic_on_error: bool,
@@ -211,6 +215,10 @@ pub struct StreamingParserImpl<B: PathCtx + EventCtx> {
     /// Sequence of tokens produced by the lexer.
     #[cfg(test)]
     lexed_tokens: Vec<Token<'static>>,
+
+    /// Tracks a pending high surrogate (0xD800..=0xDBFF) seen via \u escapes
+    /// awaiting a following low surrogate to form a single code point.
+    pending_high_surrogate: Option<u16>,
 }
 
 pub struct StreamingParserIteratorWith<'p, 'src, B: PathCtx + EventCtx> {
@@ -308,11 +316,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             pending_key: false,
 
             multiple_values: options.allow_multiple_json_values,
+            decode_mode: options.decode_mode,
             allow_unicode_whitespace: options.allow_unicode_whitespace,
             #[cfg(test)]
             panic_on_error: options.panic_on_error,
             #[cfg(test)]
             lexed_tokens: Vec::new(),
+            pending_high_surrogate: None,
         }
     }
 
@@ -455,8 +465,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
 
         loop {
-            let next_char = self.peek_char(scanner);
-            if let Some(tok) = self.lex_state_step(self.lex_state, next_char, scanner)? {
+            if let Some(tok) = self.lex_state_step(self.lex_state, scanner)? {
                 #[cfg(test)]
                 self.lexed_tokens.push(tok.to_owned());
                 return Ok(tok);
@@ -484,11 +493,9 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
     #[inline(always)]
     fn advance_char(&mut self, scanner: &mut Scanner<'_>, consume: bool) {
-        let adv = if consume {
-            scanner.consume()
-        } else {
-            scanner.skip()
-        };
+        // Deprecated: prefer using peek_guard(). This remains for transitional
+        // calls outside refactored branches.
+        let adv = if consume { scanner.consume() } else { scanner.skip() };
         if let Some(unit) = adv {
             if unit.ch == '\n' {
                 self.line += 1;
@@ -498,6 +505,17 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             }
             self.pos += 1;
         }
+    }
+
+    #[inline(always)]
+    fn apply_advanced_unit(&mut self, unit: scanner::CharInfo) {
+        if unit.ch == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
+        self.pos += 1;
     }
 
     #[inline(always)]
@@ -530,127 +548,176 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         }
     }
 
+    #[inline]
+    fn push_wtf8_for_u32<'src>(&mut self, scanner: &mut Scanner<'src>, code: u32) {
+        let mut buf = [0u8; 4];
+        let slice: &[u8] = if code < 0x80 {
+            buf[0] = code as u8;
+            &buf[..1]
+        } else if code < 0x800 {
+            buf[0] = 0xC0 | ((code >> 6) as u8);
+            buf[1] = 0x80 | ((code & 0x3F) as u8);
+            &buf[..2]
+        } else if code < 0x10000 {
+            buf[0] = 0xE0 | ((code >> 12) as u8);
+            buf[1] = 0x80 | (((code >> 6) & 0x3F) as u8);
+            buf[2] = 0x80 | ((code & 0x3F) as u8);
+            &buf[..3]
+        } else {
+            buf[0] = 0xF0 | ((code >> 18) as u8);
+            buf[1] = 0x80 | (((code >> 12) & 0x3F) as u8);
+            buf[2] = 0x80 | (((code >> 6) & 0x3F) as u8);
+            buf[3] = 0x80 | ((code & 0x3F) as u8);
+            &buf[..4]
+        };
+        scanner.ensure_raw().extend_from_slice(slice);
+    }
+
     #[expect(clippy::too_many_lines)]
     #[inline(always)]
     fn lex_state_step<'src>(
         &mut self,
         lex_state: LexState,
-        next_char: PeekedChar,
         scanner: &mut Scanner<'src>,
     ) -> Result<Option<Token<'src>>, ParserError<B>> {
         use LexState::*;
         match lex_state {
             Error => Ok(None),
             Default => {
-                match next_char {
-                    Char(c) if !self.allow_unicode_whitespace && matches!(c, ' ' | '\t' | '\n' | '\r') => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if !self.allow_unicode_whitespace && matches!(c, ' ' | '\t' | '\n' | '\r') {
                         // Skip JSON's 4 whitespace code points by default
-                        self.advance_char(scanner, false);
-                        Ok(None)
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(None);
                     }
-                    Char(c) if self.allow_unicode_whitespace && (c.is_whitespace() || matches!(c, '\u{FEFF}')) => {
+                    if self.allow_unicode_whitespace && (c.is_whitespace() || matches!(c, '\u{FEFF}')) {
                         // When enabled, accept all Unicode whitespace and BOM
-                        self.advance_char(scanner, false);
-                        Ok(None)
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(None);
                     }
-                    Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                    EndOfInput => {
-                        self.advance_char(scanner, false);
-                        Ok(Some(self.new_token(Token::Eof, false)))
-                    }
-
-                    Char(_) => self.lex_state_step(self.parse_state.into(), next_char, scanner),
+                    // Delegate to parse-state entry without consuming
+                    drop(g);
+                    return self.lex_state_step(self.parse_state.into(), scanner);
                 }
+                if self.end_of_input {
+                    return Ok(Some(self.new_token(Token::Eof, false)));
+                }
+                Ok(Some(self.new_token(Token::Eof, true)))
             }
 
             // -------------------------- VALUE entry --------------------------
-            Value => match next_char {
-                Char(c) if matches!(c, '{' | '[') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+            Value => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, '{' | '[') {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(c as u8), false)));
+                    }
+                    if matches!(c, 'n' | 't' | 'f') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = ValueLiteral;
+                        self.expected_literal = ExpectedLiteralBuffer::new(c);
+                        return Ok(None);
+                    }
+                    if c == '-' {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = Sign;
+                        return Ok(None);
+                    }
+                    if c == '0' {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = Zero;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalInteger;
+                        return Ok(None);
+                    }
+                    if c == '"' {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = LexState::String;
+                        self.initialized_string = true;
+                        return Ok(None);
+                    }
+                    return Err(self.invalid_char(Char(c)));
                 }
-                Char(c) if matches!(c, 'n' | 't' | 'f') => {
-                    scanner.emit();
-                    self.advance_char(scanner, true);
-                    self.lex_state = ValueLiteral;
-                    self.expected_literal = ExpectedLiteralBuffer::new(c);
-                    Ok(None)
+                if self.end_of_input {
+                    return Err(self.invalid_char(EndOfInput));
                 }
-                Char(c @ '-') => {
-                    scanner.emit();
-                    self.advance_char(scanner, true);
-                    self.lex_state = Sign;
-                    Ok(None)
-                }
-                Char(c @ '0') => {
-                    scanner.emit();
-                    self.advance_char(scanner, true);
-                    self.lex_state = Zero;
-                    Ok(None)
-                }
-                Char(c) if c.is_ascii_digit() => {
-                    scanner.emit();
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalInteger;
-                    Ok(None)
-                }
-                Char('"') => {
-                    self.advance_char(scanner, false);
-                    scanner.emit();
-                    self.lex_state = LexState::String;
-                    self.initialized_string = true;
-                    Ok(None)
-                }
-                c => Err(self.invalid_char(c)),
-            },
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
 
             // -------------------------- LITERALS -----------------------------
-            ValueLiteral => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) => match self.expected_literal.step(c) {
-                    literal_buffer::Step::NeedMore => {
-                        self.advance_char(scanner, true);
-                        Ok(None)
+            ValueLiteral => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    match self.expected_literal.step(c) {
+                        literal_buffer::Step::NeedMore => {
+                            let unit = g.consume();
+                            self.apply_advanced_unit(unit);
+                            Ok(None)
+                        }
+                        literal_buffer::Step::Done(tok) => {
+                            let unit = g.consume();
+                            self.apply_advanced_unit(unit);
+                            let _ = scanner.emit();
+                            Ok(Some(self.new_token(tok, false)))
+                        }
+                        literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
                     }
-                    literal_buffer::Step::Done(tok) => {
-                        self.advance_char(scanner, true);
-                        let _ = scanner.emit();
-                        Ok(Some(self.new_token(tok, false)))
-                    }
-                    literal_buffer::Step::Reject => Err(self.read_and_invalid_char(Char(c))),
-                },
-                c @ EndOfInput => Err(self.read_and_invalid_char(c)),
-            },
+                } else if self.end_of_input {
+                    Err(self.read_and_invalid_char(EndOfInput))
+                } else {
+                    Ok(Some(self.new_token(Token::Eof, true)))
+                }
+            }
 
             // -------------------------- NUMBERS -----------------------------
-            Sign => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c @ '0') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = Zero;
-                    Ok(None)
+            Sign => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c == '0' {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = Zero;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalInteger;
+                        return Ok(None);
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalInteger;
-                    Ok(None)
-                }
-                c => Err(self.read_and_invalid_char(c)),
-            },
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
 
-            Zero => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c @ '.') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalPoint;
-                    Ok(None)
-                }
-                Char(c) if matches!(c, 'e' | 'E') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponent;
-                    Ok(None)
-                }
-                _ => {
+            Zero => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c == '.' {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalPoint;
+                        return Ok(None);
+                    }
+                    if matches!(c, 'e' | 'E') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponent;
+                        return Ok(None);
+                    }
                     let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
                         scanner::Capture::Owned(v) => Token::Number(v),
@@ -658,30 +725,34 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
                     };
-                    Ok(Some(self.new_token(tok, false)))
+                    return Ok(Some(self.new_token(tok, false)));
                 }
-            },
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
 
-            DecimalInteger => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c @ '.') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalPoint;
-                    Ok(None)
-                }
-                Char(c) if matches!(c, 'e' | 'E') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponent;
-                    Ok(None)
-                }
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                _ => {
+            DecimalInteger => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c == '.' {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalPoint;
+                        return Ok(None);
+                    }
+                    if matches!(c, 'e' | 'E') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponent;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
                     let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
                         scanner::Capture::Owned(v) => Token::Number(v),
@@ -689,43 +760,51 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
                     };
-                    Ok(Some(self.new_token(tok, false)))
+                    return Ok(Some(self.new_token(tok, false)));
                 }
-            },
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
 
-            DecimalPoint => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) if matches!(c, 'e' | 'E') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponent;
-                    Ok(None)
+            DecimalPoint => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, 'e' | 'E') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponent;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalFraction;
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalFraction;
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                c => Err(self.read_and_invalid_char(c)),
-            },
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
 
-            DecimalFraction => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) if matches!(c, 'e' | 'E') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponent;
-                    Ok(None)
-                }
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                _ => {
+            DecimalFraction => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, 'e' | 'E') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponent;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
                     let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
                         scanner::Capture::Owned(v) => Token::Number(v),
@@ -733,51 +812,62 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
                     };
-                    Ok(Some(self.new_token(tok, false)))
+                    return Ok(Some(self.new_token(tok, false)));
                 }
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
+
+            DecimalExponent => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, '+' | '-') {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponentSign;
+                        return Ok(None);
+                    }
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponentInteger;
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
+                }
+                Ok(Some(self.new_token(Token::Eof, true)))
+            }
+
+            DecimalExponentSign => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        self.lex_state = DecimalExponentInteger;
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
+                }
+                Ok(Some(self.new_token(Token::Eof, true)))
             },
 
-            DecimalExponent => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) if matches!(c, '+' | '-') => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponentSign;
-                    Ok(None)
-                }
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponentInteger;
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                c => Err(self.read_and_invalid_char(c)),
-            },
-
-            DecimalExponentSign => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    self.lex_state = DecimalExponentInteger;
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                c => Err(self.read_and_invalid_char(c)),
-            },
-
-            DecimalExponentInteger => match next_char {
-                Empty => Ok(Some(self.new_token(Token::Eof, true))),
-                Char(c) if c.is_ascii_digit() => {
-                    self.advance_char(scanner, true);
-                    let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                    self.column += consumed;
-                    self.pos += consumed;
-                    Ok(None)
-                }
-                _ => {
+            DecimalExponentInteger => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c.is_ascii_digit() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                        self.column += consumed;
+                        self.pos += consumed;
+                        return Ok(None);
+                    }
                     let tok = match scanner.emit() {
                         scanner::Capture::Borrowed(v) => Token::NumberBorrowed(v),
                         scanner::Capture::Owned(v) => Token::Number(v),
@@ -785,12 +875,13 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                             unreachable!("Cannot be raw, never fed non-ASCII bytes.");
                         }
                     };
-                    Ok(Some(self.new_token(tok, false)))
+                    return Ok(Some(self.new_token(tok, false)));
                 }
+                Ok(Some(self.new_token(Token::Eof, true)))
             },
 
             // -------------------------- STRING -----------------------------
-            LexState::String => match next_char {
+            LexState::String => match self.peek_char(scanner) {
                 // escape sequence
                 Char('\\') => {
                     // TODO: eventually we will want to emit a partial fragment here, but to
@@ -798,17 +889,37 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     //
                     // We pass consume: false to the scanner to skip the escape start symbol.
                     scanner.switch_to_owned_prefix_if_needed();
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     self.lex_state = LexState::StringEscape;
                     Ok(None)
                 }
                 // closing quote -> complete string
                 Char('"') => {
+                    // Finalize pending high surrogate if any
+                    if let Some(high) = self.pending_high_surrogate.take() {
+                        match self.decode_mode {
+                            DecodeMode::StrictUnicode => {
+                                return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                            }
+                            DecodeMode::ReplaceInvalid => {
+                                scanner.push_transformed_char('\u{FFFD}');
+                            }
+                            DecodeMode::SurrogatePreserving => {
+                                self.push_wtf8_for_u32(scanner, high as u32);
+                            }
+                        }
+                    }
                     // Important: emit before consuming the closing quote so the
                     // scanner's anchor remains borrow-eligible and the end
                     // index excludes the delimiter. Then advance past '"'.
                     let tok = self.produce_string(false, scanner);
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     Ok(Some(tok))
                 }
                 Char(c @ '\0'..='\x1F') => {
@@ -817,12 +928,30 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
                 Empty => Ok(Some(self.produce_string(true, scanner))),
                 Char(c) => {
+                    // If a previous high surrogate was pending but no low surrogate followed,
+                    // finalize it now before consuming the normal character.
+                    if let Some(high) = self.pending_high_surrogate.take() {
+                        match self.decode_mode {
+                            DecodeMode::StrictUnicode => {
+                                return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                            }
+                            DecodeMode::ReplaceInvalid => {
+                                scanner.push_transformed_char('\u{FFFD}');
+                            }
+                            DecodeMode::SurrogatePreserving => {
+                                self.push_wtf8_for_u32(scanner, high as u32);
+                            }
+                        }
+                    }
                     // Fast-path: keep scanner and source in lockstep. First let the
                     // scanner consume from the current source (ring or batch) until
                     // a boundary or special char, then mirror exactly that many
                     // chars into our local buffer from the source queue.
 
-                    self.advance_char(scanner, true);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                    }
 
                     // let consumed = scanner
                     //     .consume_while_char(|ch| ch != '\\' && ch != '"' && ch >= '\u{20}');
@@ -836,50 +965,71 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
             },
 
-            StringEscape => match next_char {
+            StringEscape => match self.peek_char(scanner) {
                 Empty => Ok(Some(self.produce_string(true, scanner))),
                 Char(ch) if matches!(ch, '"' | '\\' | '/') => {
-                    self.advance_char(scanner, true);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.consume();
+                        self.apply_advanced_unit(unit);
+                    }
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('b') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     let ch = '\u{0008}';
                     scanner.push_transformed_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('f') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     let ch = '\u{000C}';
                     scanner.push_transformed_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('n') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     let ch = '\n';
                     scanner.push_transformed_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('r') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     let ch = '\r';
                     scanner.push_transformed_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('t') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     let ch = '\t';
                     scanner.push_transformed_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
                 Char('u') => {
-                    self.advance_char(scanner, false);
+                    if let Some(g) = scanner.peek_guard() {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                    }
                     self.unicode_escape_buffer.reset();
                     self.lex_state = LexState::StringEscapeUnicode;
                     Ok(None)
@@ -888,26 +1038,103 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             },
 
             StringEscapeUnicode => {
-                match next_char {
+                match self.peek_char(scanner) {
                     Empty => Ok(Some(self.produce_string(true, scanner))),
                     Char(c) if c.is_ascii_hexdigit() => {
-                        self.advance_char(scanner, false);
+                        if let Some(g) = scanner.peek_guard() {
+                            let unit = g.skip();
+                            self.apply_advanced_unit(unit);
+                        }
                         match self.unicode_escape_buffer.feed(c) {
-                            Ok(Some(char)) => {
-                                scanner.push_transformed_char(char);
+                            Ok(Some(ch)) => {
+                                // If a previous high surrogate is pending but we received a non-low scalar,
+                                // finalize the pending one before appending this char.
+                                if let Some(high) = self.pending_high_surrogate.take() {
+                                    match self.decode_mode {
+                                        DecodeMode::StrictUnicode => {
+                                            return Err(self.syntax_error(error::SyntaxError::InvalidUnicodeEscapeSequence(high as u32)));
+                                        }
+                                        DecodeMode::ReplaceInvalid => {
+                                            scanner.push_transformed_char('\u{FFFD}');
+                                        }
+                                        DecodeMode::SurrogatePreserving => {
+                                            self.push_wtf8_for_u32(scanner, high as u32);
+                                        }
+                                    }
+                                }
+                                scanner.push_transformed_char(ch);
                                 self.lex_state = LexState::String;
                                 Ok(None)
                             }
-                            Ok(None) => {
-                                // Still waiting for more hex digits
-                                Ok(None)
+                            Ok(None) => Ok(None),
+                            Err(err @ error::SyntaxError::InvalidUnicodeEscapeSequence(code)) => {
+                                // Handle surrogate halves per decode_mode
+                                let is_high = (0xD800..=0xDBFF).contains(&code);
+                                let is_low = (0xDC00..=0xDFFF).contains(&code);
+                                if !is_high && !is_low {
+                                    return Err(self.syntax_error(err));
+                                }
+                                if is_high {
+                                    match self.decode_mode {
+                                        DecodeMode::StrictUnicode => Err(self.syntax_error(err)),
+                                        DecodeMode::ReplaceInvalid => {
+                                            scanner.push_transformed_char('\u{FFFD}');
+                                            self.lex_state = LexState::String;
+                                            Ok(None)
+                                        }
+                                        DecodeMode::SurrogatePreserving => {
+                                            // Hold high surrogate to combine if a low follows next.
+                                            self.pending_high_surrogate = Some(code as u16);
+                                            self.lex_state = LexState::String;
+                                            Ok(None)
+                                        }
+                                    }
+                                } else {
+                                    // low surrogate
+                                    if let Some(high) = self.pending_high_surrogate.take() {
+                                        let hi = (high as u32) - 0xD800;
+                                        let lo = code - 0xDC00;
+                                        let cp = 0x1_0000 + ((hi << 10) | lo);
+                                        match self.decode_mode {
+                                            DecodeMode::StrictUnicode | DecodeMode::ReplaceInvalid => {
+                                                if let Some(ch) = core::char::from_u32(cp) {
+                                                    scanner.push_transformed_char(ch);
+                                                } else {
+                                                    // Shouldn't happen; cp is valid by construction
+                                                    scanner.push_transformed_char('\u{FFFD}');
+                                                }
+                                            }
+                                            DecodeMode::SurrogatePreserving => {
+                                                self.push_wtf8_for_u32(scanner, cp);
+                                            }
+                                        }
+                                        self.lex_state = LexState::String;
+                                        Ok(None)
+                                    } else {
+                                        // Lone low surrogate
+                                        match self.decode_mode {
+                                            DecodeMode::StrictUnicode => Err(self.syntax_error(err)),
+                                            DecodeMode::ReplaceInvalid => {
+                                                scanner.push_transformed_char('\u{FFFD}');
+                                                self.lex_state = LexState::String;
+                                                Ok(None)
+                                            }
+                                            DecodeMode::SurrogatePreserving => {
+                                                self.push_wtf8_for_u32(scanner, code);
+                                                self.lex_state = LexState::String;
+                                                Ok(None)
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             Err(err) => Err(self.syntax_error(err)),
                         }
                     }
                     EndOfInput => {
                         // consume EOF sentinel and advance column to match TS behavior
-                        self.advance_char(scanner, false);
+                        // No guard available; mirror previous behavior: bump column
+                        // to stay in sync with tests.
                         self.column += 1;
                         Err(self.invalid_eof())
                     }
@@ -915,71 +1142,94 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                 }
             }
 
-            Start => match next_char {
-                Char(c) if matches!(c, '{' | '[') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+            Start => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, '{' | '[') {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(c as u8), false)));
+                    }
                 }
-                _ => {
-                    self.lex_state = LexState::Value;
-                    Ok(None)
-                }
-            },
+                self.lex_state = LexState::Value;
+                Ok(None)
+            }
 
-            BeforePropertyName => match next_char {
-                Char('}') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(b'}'), false)))
+            BeforePropertyName => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c == '}' {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(b'}'), false)));
+                    }
+                    if c == '"' {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        scanner.emit();
+                        self.lex_state = LexState::String;
+                        return Ok(None);
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
+                Err(self.read_and_invalid_char(Empty))
+            }
 
-                Char('"') => {
-                    self.advance_char(scanner, false);
-                    scanner.emit();
-                    self.lex_state = LexState::String;
-                    Ok(None)
+            AfterPropertyName => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if c == ':' {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(c as u8), false)));
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
-                c => Err(self.read_and_invalid_char(c)),
-            },
-
-            AfterPropertyName => match next_char {
-                Char(c @ ':') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
-                }
-                c => Err(self.read_and_invalid_char(c)),
-            },
+                Err(self.read_and_invalid_char(Empty))
+            }
 
             BeforePropertyValue => {
                 self.lex_state = LexState::Value;
                 Ok(None)
             }
 
-            AfterPropertyValue => match next_char {
-                Char(c) if matches!(c, ',' | '}') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+            AfterPropertyValue => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, ',' | '}') {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(c as u8), false)));
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
-                c => Err(self.read_and_invalid_char(c)),
-            },
+                Err(self.read_and_invalid_char(Empty))
+            }
 
-            BeforeArrayValue => match next_char {
-                Char(']') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(b']'), false)))
+            BeforeArrayValue => {
+                if let Some(g) = scanner.peek_guard() {
+                    if g.ch() == ']' {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(b']'), false)));
+                    }
                 }
-                _ => {
-                    self.lex_state = LexState::Value;
-                    Ok(None)
-                }
-            },
+                self.lex_state = LexState::Value;
+                Ok(None)
+            }
 
-            AfterArrayValue => match next_char {
-                Char(c) if matches!(c, ',' | ']') => {
-                    self.advance_char(scanner, false);
-                    Ok(Some(self.new_token(Token::Punctuator(c as u8), false)))
+            AfterArrayValue => {
+                if let Some(g) = scanner.peek_guard() {
+                    let c = g.ch();
+                    if matches!(c, ',' | ']') {
+                        let unit = g.skip();
+                        self.apply_advanced_unit(unit);
+                        return Ok(Some(self.new_token(Token::Punctuator(c as u8), false)));
+                    }
+                    return Err(self.read_and_invalid_char(Char(c)));
                 }
-                c => Err(self.read_and_invalid_char(c)),
-            },
+                Err(self.read_and_invalid_char(Empty))
+            }
 
             End => {
                 let c = self.peek_char(scanner);

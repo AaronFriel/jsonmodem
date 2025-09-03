@@ -886,7 +886,6 @@ fn raw_backend_string_escape_owned_fragments() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_surrogate_lone_high() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -923,7 +922,6 @@ fn raw_backend_surrogate_lone_high() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_surrogate_lone_low() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -960,7 +958,6 @@ fn raw_backend_surrogate_lone_low() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_surrogate_reversed_pair() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1000,7 +997,6 @@ fn raw_backend_surrogate_reversed_pair() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_high_then_letter() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1037,7 +1033,6 @@ fn raw_backend_high_then_letter() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_letter_then_low() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1074,7 +1069,6 @@ fn raw_backend_letter_then_low() {
 }
 
 #[test]
-#[ignore = "refactoring"]
 fn raw_backend_pair_split_across_chunks() {
     use alloc::borrow::Cow;
     let mut ctx = RawContext;
@@ -1113,7 +1107,7 @@ fn raw_backend_pair_split_across_chunks() {
 }
 
 #[test]
-#[ignore = "refactoring"]
+#[ignore = "behavior TBD: SurrogatePreserving vs ReplaceInvalid for lone low-surrogate in raw backend"]
 fn raw_backend_replace_invalid_lone_low_surrogate() {
     use alloc::borrow::Cow;
     // SurrogatePreserving currently degrades to ReplaceInvalid in UTF-8 backend

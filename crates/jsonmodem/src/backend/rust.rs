@@ -1,7 +1,10 @@
 use alloc::{borrow::Cow, string::String, vec::Vec};
 use core::num::ParseFloatError;
 
-use crate::{backend::{EventCtx, PathCtx}, PathItem};
+use crate::{
+    PathItem,
+    backend::{EventCtx, PathCtx},
+};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct RustContext {
@@ -16,7 +19,9 @@ pub enum RustDecodeMode {
 
 impl Default for RustContext {
     fn default() -> Self {
-        Self { decode_mode: RustDecodeMode::ReplaceInvalid }
+        Self {
+            decode_mode: RustDecodeMode::ReplaceInvalid,
+        }
     }
 }
 
@@ -108,7 +113,8 @@ impl EventCtx for RustContext {
                 // In strict mode, reject non-UTF8 raw input.
                 // Parser should avoid calling this in strict mode; if it does,
                 // we still avoid panicking by producing an error-like lossy string.
-                let owned = String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                let owned = String::from_utf8(bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
                 Ok(Cow::Owned(owned))
             }
             RustDecodeMode::ReplaceInvalid => {
