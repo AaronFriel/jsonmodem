@@ -6,14 +6,22 @@ use crate::{
     backend::{EventCtx, PathCtx},
 };
 
+/// Context type for the Rust backend used by the JSON streaming parser.
+///
+/// It defines how strings are decoded from raw bytes and provides
+/// concrete types for path and event data emitted during parsing.
 #[derive(Debug, PartialEq, Clone)]
 pub struct RustContext {
+    /// Controls how raw byte sequences are converted into Rust strings.
     pub decode_mode: RustDecodeMode,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+/// Modes for decoding raw bytes into strings.
 pub enum RustDecodeMode {
+    /// Strict UTF-8: invalid sequences are preserved only if already valid; otherwise rejected.
     StrictUnicode,
+    /// Lossy decoding: invalid sequences are replaced (e.g., with the replacement character).
     ReplaceInvalid,
 }
 

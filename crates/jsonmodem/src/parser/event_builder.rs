@@ -3,6 +3,7 @@ use core::fmt::Debug;
 
 use crate::parser::{Path, PathLike};
 
+#[allow(dead_code)]
 pub trait EventBuilder: Clone + Debug {
     // Scalar atoms carried by events
     type Str: Clone + Debug;
@@ -46,6 +47,7 @@ pub trait EventBuilder: Clone + Debug {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct StdFactory;
 

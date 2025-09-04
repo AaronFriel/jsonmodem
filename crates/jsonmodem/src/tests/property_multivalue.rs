@@ -1,6 +1,5 @@
 use alloc::{collections::BTreeMap, string::String, string::ToString, sync::Arc, vec, vec::Vec};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
-use core::fmt::Write as _;
 
 use crate::parser::{ParserOptions, StreamingParserImpl, ParseEvent};
 type DefaultStreamingParser = StreamingParserImpl<crate::backend::RustContext>;
@@ -140,7 +139,7 @@ fn append_string_at_path(target: &mut Value, path: &[crate::PathItem], fragment:
     }
 }
 
-fn reconstruct_values<'a>(events: Vec<ParseEvent<'a, crate::backend::RustContext>>) -> Vec<Value> {
+fn reconstruct_values(events: Vec<ParseEvent<'_, crate::backend::RustContext>>) -> Vec<Value> {
     let mut out = Vec::new();
     let mut cur = Value::Null;
     let mut building = false;

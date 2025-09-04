@@ -136,13 +136,6 @@ fn append_string_at_path(target: &mut Value, path: &[crate::PathItem], fragment:
     }
 }
 
-// Not used now (we apply incrementally), but keep if needed by other tests.
-fn reconstruct_values(events: Vec<ParseEvent<'_, crate::backend::RustContext>>) -> Vec<Value> {
-    let mut reb = Rebuilder::new();
-    for e in events { reb.apply(e); }
-    reb.finish()
-}
-
 struct Rebuilder {
     out: Vec<Value>, cur: Value, building: bool
 }

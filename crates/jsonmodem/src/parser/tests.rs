@@ -1304,6 +1304,7 @@ fn design_sp_pair_split_across_stream_chunks_joins() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn design_sp_uppercase_U_escape_when_allowed() {
     let opts = ParserOptions {
         allow_uppercase_u: true,
@@ -1367,6 +1368,7 @@ fn design_invalid_escape_hex() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn design_uppercase_U_escape() {
     // Default (disallowed): error
     let opts = ParserOptions {

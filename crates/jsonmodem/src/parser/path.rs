@@ -14,6 +14,7 @@ pub enum PathItem<K = Arc<str>, I = usize> {
 }
 
 /// Read-only path API used by adapters. No mutation here.
+#[allow(dead_code)]
 pub trait PathLike<K, I> {
     /// Push a key component onto the path.
     fn push_key(&mut self, k: K);

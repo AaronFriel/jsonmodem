@@ -18,6 +18,7 @@ mod path;
 mod scanner;
 
 use alloc::{
+    borrow::ToOwned,
     format,
     string::{String, ToString},
     vec::Vec,
@@ -280,6 +281,7 @@ impl<B: PathCtx + EventCtx> Drop for ClosedStreamingParser<'_, B> {
 
 impl<B: PathCtx + EventCtx> ClosedStreamingParser<'_, B> {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token<'static>] {
         self.parser.get_lexed_tokens()
     }
@@ -495,6 +497,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         self.invalid_char(c)
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn advance_char(&mut self, scanner: &mut Scanner<'_>, consume: bool) {
         // Deprecated: prefer using peek_guard(). This remains for transitional
@@ -554,6 +557,22 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             scanner::Capture::Owned(v) => Token::StringOwned(v),
             scanner::Capture::Raw(v) => Token::StringRaw(v),
         }
+    }
+
+    #[inline(always)]
+    fn produce_borrowed_fragment<'src>(&mut self, partial: bool, fragment: &'src str) -> Token<'src> {
+        use Token::Eof;
+
+        self.partial_lex = partial;
+
+        if self.parse_state == ParseState::BeforePropertyName {
+            if partial {
+                return Eof;
+            }
+            return Token::PropertyName(fragment.to_owned());
+        }
+
+        Token::StringBorrowed(fragment)
     }
 
     #[inline]
@@ -912,7 +931,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 ));
                             }
                             DecodeMode::ReplaceInvalid => {
-                                scanner.push_transformed_char('\u{FFFD}');
+                                scanner.push_char('\u{FFFD}');
                             }
                             DecodeMode::SurrogatePreserving => {
                                 self.push_wtf8_for_u32(scanner, u32::from(high));
@@ -934,14 +953,12 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     Err(self.read_and_invalid_char(Char(c)))
                 }
                 Empty => {
-                    if let Some(s) = scanner.try_borrow_slice() {
-                        if !s.is_empty() {
-                            return Ok(Some(self.produce_string(true, scanner)));
-                        }
+                    if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+                        return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                     }
                     Ok(Some(self.new_token(Token::Eof, true)))
                 }
-                Char(c) => {
+                Char(_c) => {
                     // If a previous high surrogate was pending but no low surrogate followed,
                     // finalize it now before consuming the normal character.
                     if let Some(high) = self.pending_high_surrogate.take() {
@@ -952,7 +969,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                 ));
                             }
                             DecodeMode::ReplaceInvalid => {
-                                scanner.push_transformed_char('\u{FFFD}');
+                                scanner.push_char('\u{FFFD}');
                             }
                             DecodeMode::SurrogatePreserving => {
                                 self.push_wtf8_for_u32(scanner, u32::from(high));
@@ -969,13 +986,6 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
 
-                    // let consumed = scanner
-                    //     .consume_while_char(|ch| ch != '\\' && ch != '"' && ch >= '\u{20}');
-                    // if consumed > 0 {
-                    //     let copied = self.source.copy_n(&mut self.buffer, consumed);
-                    //     self.column += copied;
-                    //     self.pos += copied;
-                    // }
                     Ok(None)
                 }
                 EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
@@ -983,10 +993,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
 
             StringEscape => match self.peek_char(scanner) {
                 Empty => {
-                    if let Some(s) = scanner.try_borrow_slice() {
-                        if !s.is_empty() {
-                            return Ok(Some(self.produce_string(true, scanner)));
-                        }
+                    if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+                        return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                     }
                     Ok(Some(self.new_token(Token::Eof, true)))
                 }
@@ -1004,7 +1012,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
                     let ch = '\u{0008}';
-                    scanner.push_transformed_char(ch);
+                    scanner.push_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1014,7 +1022,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
                     let ch = '\u{000C}';
-                    scanner.push_transformed_char(ch);
+                    scanner.push_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1024,7 +1032,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
                     let ch = '\n';
-                    scanner.push_transformed_char(ch);
+                    scanner.push_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1034,7 +1042,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
                     let ch = '\r';
-                    scanner.push_transformed_char(ch);
+                    scanner.push_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1044,7 +1052,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                         self.apply_advanced_unit(unit);
                     }
                     let ch = '\t';
-                    scanner.push_transformed_char(ch);
+                    scanner.push_char(ch);
                     self.lex_state = LexState::String;
                     Ok(None)
                 }
@@ -1052,10 +1060,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                     // If we have a borrowable prefix (e.g., preceding plain text before the
                     // escape), emit it as a partial fragment before transitioning to
                     // unicode-escape handling.
-                    if let Some(s) = scanner.try_borrow_slice() {
-                        if !s.is_empty() {
-                            return Ok(Some(self.produce_string(true, scanner)));
-                        }
+                    if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+                        return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                     }
                     if let Some(g) = scanner.peek_guard() {
                         let unit = g.skip();
@@ -1080,10 +1086,8 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
             StringEscapeUnicode => {
                 match self.peek_char(scanner) {
                     Empty => {
-                        if let Some(s) = scanner.try_borrow_slice() {
-                            if !s.is_empty() {
-                                return Ok(Some(self.produce_string(true, scanner)));
-                            }
+                        if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+                            return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                         }
                         Ok(Some(self.new_token(Token::Eof, true)))
                     }
@@ -1107,14 +1111,14 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                             ));
                                         }
                                         DecodeMode::ReplaceInvalid => {
-                                            scanner.push_transformed_char('\u{FFFD}');
+                                            scanner.push_char('\u{FFFD}');
                                         }
                                         DecodeMode::SurrogatePreserving => {
                                             self.push_wtf8_for_u32(scanner, u32::from(high));
                                         }
                                     }
                                 }
-                                scanner.push_transformed_char(ch);
+                                scanner.push_char(ch);
                                 self.lex_state = LexState::String;
                                 Ok(None)
                             }
@@ -1136,7 +1140,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                             Ok(None)
                                         }
                                         DecodeMode::ReplaceInvalid => {
-                                            scanner.push_transformed_char('\u{FFFD}');
+                                            scanner.push_char('\u{FFFD}');
                                             self.lex_state = LexState::String;
                                             Ok(None)
                                         }
@@ -1157,10 +1161,10 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                             DecodeMode::StrictUnicode
                                             | DecodeMode::ReplaceInvalid => {
                                                 if let Some(ch) = core::char::from_u32(cp) {
-                                                    scanner.push_transformed_char(ch);
+                                                    scanner.push_char(ch);
                                                 } else {
                                                     // Shouldn't happen; cp is valid by construction
-                                                    scanner.push_transformed_char('\u{FFFD}');
+                                                    scanner.push_char('\u{FFFD}');
                                                 }
                                             }
                                             DecodeMode::SurrogatePreserving => {
@@ -1180,7 +1184,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
                                                 // In UTF-8 backends (including Raw backend tests),
                                                 // SurrogatePreserving
                                                 // degrades to replacement.
-                                                scanner.push_transformed_char('\u{FFFD}');
+                                                scanner.push_char('\u{FFFD}');
                                                 self.lex_state = LexState::String;
                                                 Ok(None)
                                             }
@@ -1570,6 +1574,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
         err
     }
 
+    #[allow(dead_code)]
     fn format_char(c: char) -> String {
         match c {
             '"' => "\\\"".into(),
@@ -1595,6 +1600,7 @@ impl<B: PathCtx + EventCtx> StreamingParserImpl<B> {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn get_lexed_tokens(&self) -> &[Token<'static>] {
         &self.lexed_tokens
     }

@@ -4,11 +4,13 @@
 use alloc::vec::Vec;
 use alloc::{collections::VecDeque, string::String};
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct Buffer {
     data: VecDeque<char>,
 }
 
+#[allow(dead_code)]
 impl Buffer {
     pub(crate) fn new() -> Self {
         Self {
@@ -96,6 +98,7 @@ impl Iterator for Buffer {
 
 impl Buffer {
     #[cfg(debug_assertions)]
+    #[allow(dead_code)]
     pub(crate) fn debug_bytes(&self) -> Vec<u8> {
         // Collect chars into a String, then return its UTF-8 bytes.
         self.data.iter().collect::<String>().into_bytes()

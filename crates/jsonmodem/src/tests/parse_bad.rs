@@ -415,7 +415,7 @@ fn error_incorrectly_completed_partial_string_with_suffixes() {
         let events: Vec<_> = parser.feed("\"abc").map(Result::unwrap).collect();
         let vals = reconstruct_values(events);
         assert_eq!(vals, vec![Value::String("abc".into())]);
-        let error_char = if suffix == "\"" {
+        let _error_char = if suffix == "\"" {
             "\\\""
         } else {
             &suffix[0..1]

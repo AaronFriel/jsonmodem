@@ -24,9 +24,11 @@ fn number_borrowed_when_fully_in_batch() {
 
 #[test]
 fn number_owned_when_split_ring_then_batch() {
-    let mut s = Scanner::from_state(carry("12"), "345,");
+    let mut s = Scanner::from_state(carry("12"), "");
     // anchor starts in ring, so owned
-    let copied_ring = s.consume_while_char(|c| c.is_ascii_digit());
+    let copied_ring = s.consume_while_ascii(|b| b.is_ascii_digit());
+    let carry = s.finish();
+    let mut s = Scanner::from_state(carry, "345");
     assert_eq!(copied_ring, 2);
     let copied_batch = s.consume_while_ascii(|b| (b as char).is_ascii_digit());
     assert_eq!(copied_batch, 3);
@@ -179,11 +181,10 @@ fn repro_cross_feed_borrow_then_owned_duplication() {
 /// Expectation: after emitting a borrowed prefix across feeds, the tail should
 /// still be borrowable and must not include the already-emitted prefix.
 ///
-/// This mirrors the parser flow for string_cross_batch_borrows_fragments:
-/// - feed1: emit() once at string start (empty borrowed), then consume "abc"
-///   and emit() a partial fragment (borrowed "abc").
-/// - feed2: consume "def" and emit() final; expected Borrowed("def").
-/// Current buggy behavior returns Owned("abcdef") due to scratch carryover.
+/// This mirrors the parser flow for `string_cross_batch_borrows_fragments`:
+/// - feed1: `emit()` once at string start (empty borrowed), then consume "abc"
+///   and `emit()` a partial fragment (borrowed "abc").
+/// - feed2: consume "def" and `emit()` final; expected Borrowed("def").
 #[test]
 fn value_string_cross_feed_should_not_duplicate_prefix() {
     // Feed 1: prefix segment
@@ -214,9 +215,9 @@ fn value_string_cross_feed_should_not_duplicate_prefix() {
 /// End-to-end repro mirroring the parser log sequence the user observed.
 /// Steps:
 /// 1) feed "[\"" and skip '[' then finish (leaves '"' in ring)
-/// 2) next feed "abc": skip the leading '"', emit() => Borrowed("") at entry,
-///    then consume 'a','b','c' and emit() => Borrowed("abc")
-/// 3) next feed "def\"]": consume 'd','e','f' and emit() => Owned("abcdef")
+/// 2) next feed "abc": skip the leading '"', `emit()` => Borrowed("") at entry,
+///    then consume 'a','b','c' and `emit()` => Borrowed("abc")
+/// 3) next feed "def\"]": consume 'd','e','f' and `emit()` => Owned("abcdef")
 #[test]
 fn repro_from_logs_owned_concat_after_partial_borrow() {
     // Step 1
@@ -505,19 +506,19 @@ fn try_borrow_fails_after_escape_or_raw_or_owned() {
     s.consume_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.switch_to_owned_prefix_if_needed();
     // consume quote
-    assert!(s.try_borrow_slice().is_none());
+    assert!(s.try_emit_borrowed_fragment().is_none());
 
     // is_raw
     let mut s = Scanner::from_state(carry(""), batch);
     s.consume_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.ensure_raw();
-    assert!(s.try_borrow_slice().is_none());
+    assert!(s.try_emit_borrowed_fragment().is_none());
 
     // owned=true
     let mut s = Scanner::from_state(carry(""), batch);
     s.consume_while_ascii(|b| (b as char).is_ascii_alphabetic());
     s.switch_to_owned_prefix_if_needed();
-    assert!(s.try_borrow_slice().is_none());
+    assert!(s.try_emit_borrowed_fragment().is_none());
 }
 
 #[test]

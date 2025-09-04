@@ -50,7 +50,6 @@
 //! }
 //! assert_eq!(s.peek().unwrap().ch, ',');
 //! ```
-#![allow(dead_code)]
 
 use alloc::{collections::VecDeque, string::String, vec::Vec};
 use core::cmp;
@@ -110,6 +109,7 @@ impl CaptureBuf {
         }
     }
 
+    #[cfg(test)]
     fn as_text_mut(&mut self) -> &mut String {
         match self {
             CaptureBuf::Text(s) => s,
@@ -138,7 +138,6 @@ impl CaptureBuf {
 #[derive(Debug, Clone)]
 pub struct CaptureState {
     pub source: Source,
-    pub start_char: usize,
     pub start_byte_in_batch: Option<usize>,
     pub owned: bool,
     pub raw: bool,
@@ -174,41 +173,6 @@ impl Default for ScannerState {
     }
 }
 
-impl ScannerState {
-    /// Appends bytes to the unread ring.
-    pub(crate) fn push_ring_bytes(&mut self, bytes: &[u8]) {
-        self.pending.extend(bytes.iter().copied());
-    }
-
-    /// Appends UTF-8 text to the token scratch (text or raw bytes).
-    pub(crate) fn append_scratch_text(&mut self, s: &str) {
-        match &mut self.scratch {
-            CaptureBuf::Text(buf) => buf.push_str(s),
-            CaptureBuf::Raw(b) => b.extend_from_slice(s.as_bytes()),
-        }
-    }
-
-    /// Updates position counters.
-    pub(crate) fn set_positions(&mut self, pos_char: usize, line: usize, col: usize) {
-        self.char_idx = pos_char;
-        self.line = line;
-        self.col = col;
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn debug_ring_bytes(&self) -> alloc::vec::Vec<u8> {
-        self.pending.iter().copied().collect()
-    }
-
-    #[cfg(debug_assertions)]
-    pub(crate) fn debug_scratch_bytes(&self) -> alloc::vec::Vec<u8> {
-        match &self.scratch {
-            CaptureBuf::Text(s) => s.as_bytes().to_vec(),
-            CaptureBuf::Raw(b) => b.clone(),
-        }
-    }
-}
-
 // Test-only inspection helpers to validate session behavior without exposing
 // internals in production.
 #[cfg(test)]
@@ -222,15 +186,6 @@ impl ScannerState {
             CaptureBuf::Text(s) => Some(s.as_str()),
             CaptureBuf::Raw(_) => None,
         }
-    }
-    pub fn test_scratch_raw(&self) -> Option<&[u8]> {
-        match &self.scratch {
-            CaptureBuf::Raw(b) => Some(b.as_slice()),
-            CaptureBuf::Text(_) => None,
-        }
-    }
-    pub fn test_positions(&self) -> (usize, usize, usize) {
-        (self.char_idx, self.line, self.col)
     }
 }
 
@@ -297,57 +252,18 @@ impl<'src> Scanner<'src> {
         }
     }
 
-    /// Acknowledges that a partial borrowed fragment has been emitted up to the
-    /// current position by advancing the anchor start. Used to avoid
-    /// duplicating already-emitted prefixes across feeds.
-    pub fn acknowledge_partial_borrow(&mut self) {
-        if let Some(a) = &mut self.anchor {
-            if a.source == Source::Batch && !a.owned {
-                a.start_char = self.char_idx;
-                a.start_byte_in_batch = Some(self.byte_idx);
-            }
-        }
-    }
-
-    /// Append UTF-8 text to the current token scratch, ensuring owned mode if
-    /// needed.
-    pub fn push_text(&mut self, s: &str) {
-        self.switch_to_owned_prefix_if_needed();
-        match &mut self.scratch {
-            CaptureBuf::Text(buf) => buf.push_str(s),
-            CaptureBuf::Raw(b) => b.extend_from_slice(s.as_bytes()),
-        }
-    }
-
-    /// Append a single char to the current token scratch.
-    pub fn push_char(&mut self, ch: char) {
-        self.switch_to_owned_prefix_if_needed();
-        self.scratch.push_char(ch);
-    }
-
     /// Append a transformed char to the token scratch without copying any
     /// already-read batch prefix. Use for escape-decoded units so escape
     /// marker bytes (e.g., "\\u") aren’t duplicated.
-    pub fn push_transformed_char(&mut self, ch: char) {
+    pub fn push_char(&mut self, ch: char) {
         self.ensure_owned_without_prefix_copy();
         self.scratch.push_char(ch);
     }
 
-    /// Append raw bytes to the current token scratch in raw mode.
-    pub fn push_raw_bytes(&mut self, bytes: &[u8]) {
-        self.ensure_raw().extend_from_slice(bytes);
-    }
-
-    #[cfg(debug_assertions)]
+    #[cfg(all(test, debug_assertions))]
     #[inline]
     pub fn debug_positions(&self) -> (usize, usize, usize) {
         (self.char_idx, self.line, self.col)
-    }
-
-    #[cfg(debug_assertions)]
-    #[inline]
-    pub fn debug_cur_source(&self) -> Source {
-        self.cur_source()
     }
 
     /// Finalizes the session and returns carryover state for the next feed.
@@ -468,6 +384,7 @@ impl<'src> Scanner<'src> {
             self.bump_pos(ch);
             Some(CharInfo {
                 ch,
+                #[allow(clippy::cast_possible_truncation)]
                 ch_len: len as u8,
                 source: Source::Batch,
             })
@@ -480,6 +397,7 @@ impl<'src> Scanner<'src> {
             self.bump_pos(ch);
             Some(CharInfo {
                 ch,
+                #[allow(clippy::cast_possible_truncation)]
                 ch_len: len as u8,
                 source: Source::Ring,
             })
@@ -523,6 +441,7 @@ impl<'src> Scanner<'src> {
         let (ch, len) = Self::decode_from_ring(&self.pending)?;
         Some(CharInfo {
             ch,
+            #[allow(clippy::cast_possible_truncation)]
             ch_len: len as u8,
             source: Source::Ring,
         })
@@ -532,6 +451,7 @@ impl<'src> Scanner<'src> {
         let (ch, len) = Self::decode_from(self.batch, self.byte_idx)?;
         Some(CharInfo {
             ch,
+            #[allow(clippy::cast_possible_truncation)]
             ch_len: len as u8,
             source: Source::Batch,
         })
@@ -572,7 +492,6 @@ impl<'src> Scanner<'src> {
             return;
         }
         let source = self.cur_source();
-        let start_char = self.char_idx;
         let start_byte_in_batch = match source {
             Source::Batch => Some(self.byte_idx),
             Source::Ring => None,
@@ -588,7 +507,6 @@ impl<'src> Scanner<'src> {
         let owned = matches!(source, Source::Ring) || has_carry;
         self.anchor = Some(CaptureState {
             source,
-            start_char,
             start_byte_in_batch,
             owned,
             raw: matches!(self.scratch, CaptureBuf::Raw(_)),
@@ -615,27 +533,6 @@ impl<'src> Scanner<'src> {
             a.raw = true;
         }
         self.scratch.as_raw_mut()
-    }
-
-    /// Appends UTF-8 text to the current token, switching to owned mode if
-    /// needed.
-    pub fn append_text(&mut self, s: &str) {
-        self.switch_to_owned_prefix_if_needed();
-        match &mut self.scratch {
-            CaptureBuf::Text(buf) => buf.push_str(s),
-            CaptureBuf::Raw(b) => b.extend_from_slice(s.as_bytes()),
-        }
-        if let Some(a) = &mut self.anchor {
-            a.owned = true;
-        }
-    }
-
-    /// Appends raw bytes to the current token, switching to raw/owned mode.
-    pub fn append_raw_bytes(&mut self, bytes: &[u8]) {
-        self.ensure_raw().extend_from_slice(bytes);
-        if let Some(a) = &mut self.anchor {
-            a.owned = true;
-        }
     }
 
     /// Copy the already‑consumed batch prefix into scratch if not already
@@ -717,47 +614,10 @@ impl<'src> Scanner<'src> {
         copied
     }
 
-    /// Source‑stable char loop: copies while `pred` holds and the source
-    /// (ring/batch) doesn’t change. Appends only in owned mode.
-    pub fn consume_while_char(&mut self, pred: impl Fn(char) -> bool) -> usize {
-        self.ensure_anchor_started();
-        let mut copied = 0usize;
-        let start_source = self.cur_source();
-        #[cfg(all(test, trace_scanner))]
-        eprintln!("Scanner::consume_while_char: start_source={start_source:?}");
-        loop {
-            let Some(u) = self.peek() else { break };
-            if u.source != start_source {
-                break;
-            }
-            if !pred(u.ch) {
-                break;
-            }
-            // advance
-            let _ = self.step_input();
-            if let Some(a) = &self.anchor {
-                if a.owned {
-                    self.scratch.push_char(u.ch);
-                    #[cfg(all(test, trace_scanner))]
-                    eprintln!(
-                        "  captured {:?} into scratch (len now {})",
-                        u.ch,
-                        match &self.scratch {
-                            CaptureBuf::Text(s) => s.len(),
-                            CaptureBuf::Raw(b) => b.len(),
-                        }
-                    );
-                }
-            }
-            copied += 1;
-        }
-        copied
-    }
-
     /// Returns a borrowed batch slice if the token started in `Batch`, is still
     /// borrow‑eligible (not raw, not owned), and the byte range is
     /// valid.
-    pub fn try_borrow_slice(&self) -> Option<&'src str> {
+    fn try_borrow_slice(&self) -> Option<&'src str> {
         let a = self.anchor.as_ref()?;
         if a.source != Source::Batch || a.owned || a.raw {
             return None;
@@ -768,6 +628,30 @@ impl<'src> Scanner<'src> {
             return None;
         }
         Some(&self.batch[start..end])
+    }
+
+    /// Emits a non-empty borrowed fragment if possible without switching the
+    /// capture into owned/raw mode. Returns `None` when the current capture is
+    /// not borrowable or empty.
+    pub fn try_emit_borrowed_fragment(&mut self) -> Option<&'src str> {
+        self.ensure_anchor_started();
+        {
+            let anchor = self.anchor.as_ref()?;
+            if anchor.source != Source::Batch || anchor.owned || anchor.raw {
+                return None;
+            }
+            if anchor.start_byte_in_batch? >= self.byte_idx {
+                return None;
+            }
+        }
+
+        match self.emit_fragment(true) {
+            Capture::Borrowed(fragment) if !fragment.is_empty() => {
+                self.anchor = None;
+                Some(fragment)
+            }
+            _ => None,
+        }
     }
 
     /// Emits a token fragment.
@@ -827,11 +711,6 @@ impl Peeked<'_, '_> {
         self.unit.ch
     }
 
-    #[inline]
-    pub fn unit(&self) -> CharInfo {
-        self.unit
-    }
-
     /// Consume the guarded character: advances the scanner and records it into
     /// the token scratch (if a token is active). In debug builds, asserts
     /// that the advanced character matches the guard.
@@ -860,36 +739,6 @@ impl Peeked<'_, '_> {
             .skip()
             .expect("scanner.skip(): no char after peek");
         debug_assert_eq!(adv.ch, self.unit.ch, "peek/skip mismatch");
-        adv
-    }
-
-    /// Capture this character as UTF-8 text into the token scratch, switching
-    /// to owned if needed, then advance.
-    #[inline]
-    pub fn capture_text(self) -> CharInfo {
-        self.scanner.ensure_owned_without_prefix_copy();
-        self.scanner.scratch.push_char(self.unit.ch);
-        let adv =
-            Scanner::step_input(self.scanner).expect("scanner.step_input(): no char after peek");
-        debug_assert_eq!(adv.ch, self.unit.ch, "peek/capture_text mismatch");
-        adv
-    }
-
-    /// Capture this character as raw bytes (WTF-8) into the token scratch,
-    /// switching to raw/owned if needed, then advance.
-    #[inline]
-    pub fn capture_raw(self) -> CharInfo {
-        self.scanner.ensure_raw();
-        // Append UTF-8 bytes for this scalar into raw buffer
-        let mut tmp = [0u8; 4];
-        let s = self.unit.ch.encode_utf8(&mut tmp);
-        match &mut self.scanner.scratch {
-            CaptureBuf::Raw(b) => b.extend_from_slice(s.as_bytes()),
-            CaptureBuf::Text(t) => t.push_str(s),
-        }
-        let adv =
-            Scanner::step_input(self.scanner).expect("scanner.step_input(): no char after peek");
-        debug_assert_eq!(adv.ch, self.unit.ch, "peek/capture_raw mismatch");
         adv
     }
 }
