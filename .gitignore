@@ -10,12 +10,17 @@ actionlint
 /crates/jsonmodem-py/python/jsonmodem/_jsonmodem*.pyd
 /crates/jsonmodem-py/python/jsonmodem/__pycache__/
 
-# General Python caches anywhere in the repo
+# General Python data anywhere in the repo
 __pycache__/
+dist/
 *.py[cod]
 .venv
+
+# AGENTS metadata
 .agent/.setup_py_done
 .agent/.setup_done
+
+# Perf metadata
 /flamegraph.svg
 /perf.data
 /perf.data.old
