@@ -49,7 +49,8 @@ pub enum ValuesError<Ctx: EventCtx> {
 /// High-level adapter that maps streaming events to root values.
 pub struct JsonModemValues<Ctx = StdBackend, A = StdValueAssembler>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx + Default,
+    Ctx: BuilderCtx + EventCtx + Default,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -83,7 +84,8 @@ where
 
 impl<Ctx, A> JsonModemValues<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx + Default,
+    Ctx: BuilderCtx + EventCtx + Default,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -125,7 +127,8 @@ where
 /// Lending iterator yielding streaming value references.
 pub struct JsonModemValuesIter<'a, Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -136,7 +139,8 @@ where
 
 impl<Ctx, A> JsonModemValuesIter<'_, Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -147,18 +151,19 @@ where
     #[allow(clippy::wrong_self_convention)]
     pub fn to_iter(
         mut self,
-    ) -> impl Iterator<Item = Result<StreamingValue<Value>, ValuesError<Ctx>>> {
+    ) -> impl Iterator<Item = Result<StreamingValue<Ctx::Value>, ValuesError<Ctx>>> {
         core::iter::from_fn(move || Iterator::next(&mut self))
     }
 }
 
 impl<Ctx, A> Iterator for JsonModemValuesIter<'_, Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
-    type Item = Result<StreamingValue<Value>, ValuesError<Ctx>>;
+    type Item = Result<StreamingValue<Ctx::Value>, ValuesError<Ctx>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_value_ref().map(clone_streaming_value)
@@ -167,7 +172,8 @@ where
 
 impl<Ctx, A> LendingIterator for JsonModemValuesIter<'_, Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -184,7 +190,8 @@ where
 /// Iterator draining remaining values after finishing the stream.
 pub struct JsonModemValuesClosed<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -195,7 +202,8 @@ where
 
 impl<Ctx, A> JsonModemValuesClosed<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -206,18 +214,19 @@ where
     #[allow(clippy::wrong_self_convention)]
     pub fn to_iter(
         mut self,
-    ) -> impl Iterator<Item = Result<StreamingValue<Value>, ValuesError<Ctx>>> {
+    ) -> impl Iterator<Item = Result<StreamingValue<Ctx::Value>, ValuesError<Ctx>>> {
         core::iter::from_fn(move || Iterator::next(&mut self))
     }
 }
 
 impl<Ctx, A> Iterator for JsonModemValuesClosed<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
-    type Item = Result<StreamingValue<Value>, ValuesError<Ctx>>;
+    type Item = Result<StreamingValue<Ctx::Value>, ValuesError<Ctx>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_value_ref().map(clone_streaming_value)
@@ -226,7 +235,8 @@ where
 
 impl<Ctx, A> LendingIterator for JsonModemValuesClosed<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -253,9 +263,10 @@ fn convert_error<Ctx: EventCtx>(err: BufferError<Ctx>) -> ValuesError<Ctx> {
 
 fn clone_streaming_value<Ctx>(
     result: Result<StreamingValue<&Ctx::Value>, ValuesError<Ctx>>,
-) -> Result<StreamingValue<Value>, ValuesError<Ctx>>
+) -> Result<StreamingValue<Ctx::Value>, ValuesError<Ctx>>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
+    Ctx::Value: Clone,
 {
     result.map(|borrowed| StreamingValue {
         index: borrowed.index,
@@ -266,7 +277,7 @@ where
 
 trait ValueSource<Ctx>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
 {
     fn next_event(&mut self) -> Option<Result<BorrowedBufferedEvent<'_, Ctx>, BufferError<Ctx>>>;
@@ -275,7 +286,7 @@ where
 
 impl<Ctx, A> ValueSource<Ctx> for JsonModemBuffersIter<'_, Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -290,7 +301,7 @@ where
 
 impl<Ctx, A> ValueSource<Ctx> for JsonModemBuffersClosed<Ctx, A>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
     A: RootedBufferAssembler<Ctx>,
 {
@@ -309,7 +320,7 @@ fn next_value_for_source<'a, Ctx, S>(
     next_index: &'a mut usize,
 ) -> Option<Result<StreamingValue<&'a Ctx::Value>, ValuesError<Ctx>>>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
     S: ValueSource<Ctx>,
 {
@@ -382,7 +393,7 @@ fn next_emit_kind<Ctx, S>(
     saw_partial: &mut bool,
 ) -> Option<Result<EmitKind, ValuesError<Ctx>>>
 where
-    Ctx: BuilderCtx<Value = Value> + EventCtx,
+    Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
     S: ValueSource<Ctx>,
 {

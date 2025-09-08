@@ -14,45 +14,50 @@ impl TransitionAsserter {
         Self::default()
     }
 
-    pub(crate) fn observe<K: Debug, Backend: ValueCtx>(
-        &mut self,
-        event: &ParseEvent<'_, &'_ Vec<PathItem<K, usize>>, Backend>,
-    ) {
-        let (path, kind) = match event {
+    pub(crate) fn observe<K, Backend, P>(&mut self, event: &ParseEvent<'_, &'_ P, Backend>)
+    where
+        K: Debug,
+        Backend: ValueCtx,
+        for<'a> &'a P: IntoIterator<Item = &'a PathItem<K, usize>>,
+        P: Debug,
+    {
+        let (slots, kind) = match event {
             ParseEvent::Null { path }
             | ParseEvent::Boolean { path, .. }
-            | ParseEvent::Number { path, .. } => (path.as_slice(), EventKind::Scalar),
+            | ParseEvent::Number { path, .. } => (Self::slots_from_path(path), EventKind::Scalar),
             ParseEvent::String {
                 path,
                 is_initial,
                 is_final,
                 ..
             } => (
-                path.as_slice(),
+                Self::slots_from_path(path),
                 EventKind::String {
                     is_initial: *is_initial,
                     is_final: *is_final,
                 },
             ),
-            ParseEvent::ArrayBegin { path } => (path.as_slice(), EventKind::ArrayBegin),
-            ParseEvent::ArrayEnd { path } => (path.as_slice(), EventKind::ArrayEnd),
-            ParseEvent::ObjectBegin { path } => (path.as_slice(), EventKind::ObjectBegin),
-            ParseEvent::ObjectEnd { path } => (path.as_slice(), EventKind::ObjectEnd),
+            ParseEvent::ArrayBegin { path } => (Self::slots_from_path(path), EventKind::ArrayBegin),
+            ParseEvent::ArrayEnd { path } => (Self::slots_from_path(path), EventKind::ArrayEnd),
+            ParseEvent::ObjectBegin { path } => {
+                (Self::slots_from_path(path), EventKind::ObjectBegin)
+            }
+            ParseEvent::ObjectEnd { path } => (Self::slots_from_path(path), EventKind::ObjectEnd),
         };
 
-        self.observe_path(path, kind);
+        self.observe_slots(slots, kind);
     }
 
-    fn observe_path<K>(&mut self, path: &[PathItem<K, usize>], kind: EventKind) {
-        let slots = path
-            .iter()
+    fn slots_from_path<K, P>(path: &P) -> Vec<PathSlot>
+    where
+        for<'a> &'a P: IntoIterator<Item = &'a PathItem<K, usize>>,
+    {
+        path.into_iter()
             .map(|component| match component {
                 PathItem::Key(_) => PathSlot::Key,
                 PathItem::Index(index) => PathSlot::Index(*index),
             })
-            .collect::<Vec<_>>();
-
-        self.observe_slots(slots, kind);
+            .collect()
     }
 
     fn observe_slots(&mut self, path: Vec<PathSlot>, kind: EventKind) {

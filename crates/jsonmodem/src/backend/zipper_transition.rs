@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use core::fmt::Debug;
 
+use rpds::Vector;
+
 use crate::{context::ValueCtx, event::ParseEvent, path::PathItem};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,21 +29,74 @@ pub struct ParserCursor {
     previous_depth: usize,
 }
 
+pub trait ParserPath<K> {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+    fn last(&self) -> Option<&PathItem<K, usize>>;
+}
+
+impl<K> ParserPath<K> for Vec<PathItem<K, usize>> {
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+
+    fn is_empty(&self) -> bool {
+        Vec::is_empty(self)
+    }
+
+    fn last(&self) -> Option<&PathItem<K, usize>> {
+        self.as_slice().last()
+    }
+}
+
+impl<K> ParserPath<K> for Vector<PathItem<K, usize>> {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
+    }
+
+    fn last(&self) -> Option<&PathItem<K, usize>> {
+        self.last()
+    }
+}
+
+impl<K, T> ParserPath<K> for &T
+where
+    T: ParserPath<K> + ?Sized,
+{
+    fn len(&self) -> usize {
+        (**self).len()
+    }
+
+    fn is_empty(&self) -> bool {
+        (**self).is_empty()
+    }
+
+    fn last(&self) -> Option<&PathItem<K, usize>> {
+        (**self).last()
+    }
+}
+
 impl ParserCursor {
     pub fn new() -> Self {
         Self::default()
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn classify_transition<'path, K, Backend>(
+    pub fn classify_transition<'src, 'path, K, Backend, P>(
         &mut self,
-        event: &ParseEvent<'_, &'path Vec<PathItem<K, usize>>, Backend>,
+        event: &'path ParseEvent<'src, &'path P, Backend>,
     ) -> TransitionOutcome<'path, K>
     where
+        'src: 'path,
         K: 'path + Debug,
         Backend: ValueCtx,
+        P: ParserPath<K> + Debug,
     {
-        let path = event.path().as_slice();
+        let path = event.path();
         let depth = path.len();
         #[cfg(any(debug_assertions, fuzzing))]
         {
@@ -68,9 +123,8 @@ impl ParserCursor {
                 is_final,
                 ..
             } => {
-                let path_slice = path.as_slice();
                 if *is_initial {
-                    let outcome = self.scalar_transition(path_slice);
+                    let outcome = self.scalar_transition(path);
                     self.string_in_progress = !*is_final;
                     TransitionOutcome {
                         completes_array_slot: outcome.completes_array_slot && *is_final,
@@ -87,7 +141,7 @@ impl ParserCursor {
                         transition: RootTransition::AppendString {
                             is_final: *is_final,
                         },
-                        completes_array_slot: path_slice
+                        completes_array_slot: path
                             .last()
                             .is_some_and(|item| matches!(item, PathItem::Index(_)))
                             && *is_final,
@@ -97,11 +151,10 @@ impl ParserCursor {
             ParseEvent::ArrayBegin { path } => {
                 self.string_in_progress = false;
                 let completes_array_slot = false;
-                let path_slice = path.as_slice();
-                let transition = if path_slice.is_empty() {
+                let transition = if path.is_empty() {
                     RootTransition::PushArray
                 } else {
-                    match path_slice
+                    match path
                         .last()
                         .expect("non-empty path must have a final component")
                     {
@@ -112,7 +165,7 @@ impl ParserCursor {
 
                 self.frames.push(FrameContext {
                     kind: ContainerKind::Array,
-                    parent_is_array: path_slice
+                    parent_is_array: path
                         .last()
                         .is_some_and(|item| matches!(item, PathItem::Index(_))),
                 });
@@ -125,11 +178,10 @@ impl ParserCursor {
             ParseEvent::ObjectBegin { path } => {
                 self.string_in_progress = false;
                 let completes_array_slot = false;
-                let path_slice = path.as_slice();
-                let transition = if path_slice.is_empty() {
+                let transition = if path.is_empty() {
                     RootTransition::PushObject
                 } else {
-                    match path_slice
+                    match path
                         .last()
                         .expect("non-empty path must have a final component")
                     {
@@ -140,7 +192,7 @@ impl ParserCursor {
 
                 self.frames.push(FrameContext {
                     kind: ContainerKind::Object,
-                    parent_is_array: path_slice
+                    parent_is_array: path
                         .last()
                         .is_some_and(|item| matches!(item, PathItem::Index(_))),
                 });
@@ -155,10 +207,10 @@ impl ParserCursor {
         }
     }
 
-    fn scalar_transition<'path, K>(
-        &mut self,
-        path: &'path [PathItem<K, usize>],
-    ) -> TransitionOutcome<'path, K> {
+    fn scalar_transition<'path, K, P>(&mut self, path: &'path P) -> TransitionOutcome<'path, K>
+    where
+        P: ParserPath<K>,
+    {
         self.string_in_progress = false;
         if path.is_empty() {
             TransitionOutcome {

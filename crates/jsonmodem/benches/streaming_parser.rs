@@ -7,7 +7,8 @@ mod streaming_json_common;
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use streaming_json_common::{
-    produce_chunks, run_jsonmodem_buffers, run_jsonmodem_events, run_jsonmodem_values,
+    produce_chunks, run_jsonmodem_buffers, run_jsonmodem_buffers_im, run_jsonmodem_events,
+    run_jsonmodem_events_im, run_jsonmodem_values, run_jsonmodem_values_im,
 };
 
 /// Produce a *deterministic* JSON document whose textual representation is at
@@ -50,6 +51,14 @@ fn bench_streaming_parser(c: &mut Criterion) {
         );
 
         group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_events_im"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_events_im(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
             BenchmarkId::new(parts.to_string(), "jsonmodem_buffers"),
             &parts,
             |b, &_p| {
@@ -58,10 +67,26 @@ fn bench_streaming_parser(c: &mut Criterion) {
         );
 
         group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_buffers_im"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_buffers_im(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
             BenchmarkId::new(parts.to_string(), "jsonmodem_values"),
             &parts,
             |b, &_p| {
                 b.iter(|| run_jsonmodem_values(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new(parts.to_string(), "jsonmodem_values_im"),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_values_im(black_box(&chunks)));
             },
         );
     }

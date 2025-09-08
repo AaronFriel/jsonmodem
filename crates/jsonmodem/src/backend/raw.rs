@@ -266,7 +266,7 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
             }
             ParseEvent::String {
                 path,
-                fragment,
+                ref fragment,
                 is_initial,
                 is_final,
             } => {
@@ -281,7 +281,7 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 let fragment_text = String::from_utf8_lossy(fragment.as_ref()).into_owned();
                 self.values.append_string(&canonical, &fragment_text);
                 let buffered = self.update_string_value(&canonical, &fragment_text, is_final);
-                let fragment_owned = Cow::Owned(fragment.into_owned());
+                let fragment_owned = Cow::Owned(fragment.clone().into_owned());
                 let value = Some(Cow::Owned(buffered.into_bytes()));
                 Ok(BufferedEvent::String {
                     path,

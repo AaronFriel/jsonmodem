@@ -10,6 +10,7 @@ use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 
 use crate::parser::{JsonModem, ParseEvent, ParserOptions};
 type DefaultStreamingParser = JsonModem<crate::backend::StdBackend>;
+type ImmutableStreamingParser = JsonModem<crate::backend::ImBackend>;
 
 // Minimal JSON Value for property tests
 #[derive(Clone, Debug, PartialEq)]
@@ -255,6 +256,13 @@ fn append_string_at_path(target: &mut Value, path: &[crate::PathItem], fragment:
     }
 }
 
+fn clone_path_to_vec<P>(path: &P) -> crate::Path
+where
+    for<'a> &'a P: IntoIterator<Item = &'a crate::PathItem>,
+{
+    path.into_iter().cloned().collect()
+}
+
 struct Assembler {
     out: Vec<Value>,
     cur: Value,
@@ -269,40 +277,54 @@ impl Assembler {
             building: false,
         }
     }
-    fn apply(&mut self, evt: ParseEvent<'_, crate::Path, crate::backend::StdBackend>) {
+    fn apply<Ctx>(&mut self, evt: ParseEvent<'_, Ctx::Path, Ctx>)
+    where
+        Ctx: crate::context::EventCtx,
+        for<'a> &'a Ctx::Path: IntoIterator<Item = &'a crate::PathItem>,
+        for<'a> Ctx::Str<'a>: AsRef<str>,
+        Ctx::Bool: Copy + Into<bool>,
+        for<'a> Ctx::Num<'a>: Copy + Into<f64>,
+    {
         match evt {
             ParseEvent::ArrayBegin { path } => {
-                insert_at_path(&mut self.cur, &path, Value::Array(Vec::new()));
-                if path.is_empty() {
+                let path_vec = clone_path_to_vec(&path);
+                insert_at_path(&mut self.cur, &path_vec, Value::Array(Vec::new()));
+                if path_vec.is_empty() {
                     self.building = true;
                 }
             }
             ParseEvent::ObjectBegin { path } => {
-                insert_at_path(&mut self.cur, &path, Value::Object(BTreeMap::new()));
-                if path.is_empty() {
+                let path_vec = clone_path_to_vec(&path);
+                insert_at_path(&mut self.cur, &path_vec, Value::Object(BTreeMap::new()));
+                if path_vec.is_empty() {
                     self.building = true;
                 }
             }
             ParseEvent::Null { path } => {
-                insert_at_path(&mut self.cur, &path, Value::Null);
-                if path.is_empty() {
+                let path_vec = clone_path_to_vec(&path);
+                insert_at_path(&mut self.cur, &path_vec, Value::Null);
+                if path_vec.is_empty() {
                     self.out.push(Value::Null);
                     self.cur = Value::Null;
                     self.building = false;
                 }
             }
             ParseEvent::Boolean { path, value } => {
-                insert_at_path(&mut self.cur, &path, Value::Boolean(value));
-                if path.is_empty() {
-                    self.out.push(Value::Boolean(value));
+                let path_vec = clone_path_to_vec(&path);
+                let bool_value: bool = value.into();
+                insert_at_path(&mut self.cur, &path_vec, Value::Boolean(bool_value));
+                if path_vec.is_empty() {
+                    self.out.push(Value::Boolean(bool_value));
                     self.cur = Value::Null;
                     self.building = false;
                 }
             }
             ParseEvent::Number { path, value } => {
-                insert_at_path(&mut self.cur, &path, Value::Number(value));
-                if path.is_empty() {
-                    self.out.push(Value::Number(value));
+                let path_vec = clone_path_to_vec(&path);
+                let num_value: f64 = value.into();
+                insert_at_path(&mut self.cur, &path_vec, Value::Number(num_value));
+                if path_vec.is_empty() {
+                    self.out.push(Value::Number(num_value));
                     self.cur = Value::Null;
                     self.building = false;
                 }
@@ -313,17 +335,19 @@ impl Assembler {
                 is_final,
                 ..
             } => {
-                append_string_at_path(&mut self.cur, &path, &fragment);
-                if is_final && path.is_empty() {
+                let path_vec = clone_path_to_vec(&path);
+                append_string_at_path(&mut self.cur, &path_vec, fragment.as_ref());
+                if is_final && path_vec.is_empty() {
                     self.out.push(self.cur.clone());
                     self.cur = Value::Null;
                     self.building = false;
-                } else if path.is_empty() {
+                } else if path_vec.is_empty() {
                     self.building = true;
                 }
             }
             ParseEvent::ArrayEnd { path } | ParseEvent::ObjectEnd { path } => {
-                if path.is_empty() && self.building {
+                let path_vec = clone_path_to_vec(&path);
+                if path_vec.is_empty() && self.building {
                     self.out.push(self.cur.clone());
                     self.cur = Value::Null;
                     self.building = false;
@@ -355,78 +379,97 @@ fn repro_multi_value_string_root() {
     assert_eq!(reconstructed, vec![Value::String("x".into())]);
 }
 
-/// Property: A stream consisting of multiple JSON roots must round-trip through
-/// the incremental parser regardless of input partitioning.
 #[test]
-fn prop_multi_value_roundtrip() {
-    #[expect(clippy::needless_pass_by_value)]
-    fn prop(values: Vec<Value>, splits: Vec<usize>) -> TestResult {
-        if values.is_empty() {
-            return TestResult::discard();
+fn repro_multi_value_string_root_im() {
+    let payload = "\"x\"";
+    let mut parser = ImmutableStreamingParser::new(
+        ParserOptions::default().with_allow_multiple_json_values(true),
+    );
+    let mut r = Assembler::new();
+    for e in parser.feed(payload).to_iter() {
+        r.apply(e.unwrap());
+    }
+    let reconstructed = r.finish();
+    assert_eq!(reconstructed, vec![Value::String("x".into())]);
+}
+
+fn prop_multi_value_roundtrip_backend<Ctx>(values: Vec<Value>, splits: &[usize]) -> TestResult
+where
+    Ctx: crate::context::EventCtx + crate::context::PathCtx + crate::context::BuilderCtx + Default,
+    for<'a> &'a Ctx::Path: IntoIterator<Item = &'a crate::PathItem>,
+    for<'a> Ctx::Str<'a>: AsRef<str>,
+    Ctx::Bool: Copy + Into<bool>,
+    for<'a> Ctx::Num<'a>: Copy + Into<f64>,
+{
+    if values.is_empty() {
+        return TestResult::discard();
+    }
+
+    let mut payload: String = values
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ");
+    payload.push(' ');
+
+    let mut parser =
+        JsonModem::<Ctx>::new(ParserOptions::default().with_allow_multiple_json_values(true));
+    let mut reb = Assembler::new();
+
+    let chars: Vec<char> = payload.chars().collect();
+    let mut idx = 0;
+    let mut remaining = chars.len();
+
+    for &s in splits {
+        if remaining == 0 {
+            break;
         }
-
-        // Join all roots separated by a single space (valid JSON whitespace).
-        let mut payload: String = values
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(" ");
-        payload.push(' '); // ensure delimiter to finalize last primitive
-
-        let mut parser = DefaultStreamingParser::new(
-            ParserOptions::default().with_allow_multiple_json_values(true),
-        );
-        let mut reb = Assembler::new();
-
-        // For debugging purposes:
-        let mut chunks = vec![];
-
-        // Feed payload in arbitrary partitions
-        let chars: Vec<char> = payload.chars().collect();
-        let mut idx = 0;
-        let mut remaining = chars.len();
-
-        for s in &splits {
-            if remaining == 0 {
-                break;
-            }
-            let size = 1 + (s % remaining);
-            let end = idx + size;
-            let chunk: String = chars[idx..end].iter().collect();
-            chunks.push(chunk.clone());
-            for ev in parser.feed(&chunk).to_iter() {
-                match ev {
-                    Ok(e) => reb.apply(e),
-                    Err(_) => return TestResult::failed(),
-                }
-            }
-            idx = end;
-            remaining -= size;
-        }
-        if remaining > 0 {
-            let chunk: String = chars[idx..].iter().collect();
-
-            chunks.push(chunk.clone());
-            for ev in parser.feed(&chunk).to_iter() {
-                match ev {
-                    Ok(e) => reb.apply(e),
-                    Err(_) => return TestResult::failed(),
-                }
-            }
-        }
-        for ev in parser.finish().to_iter() {
+        let size = 1 + (s % remaining);
+        let end = idx + size;
+        let chunk: String = chars[idx..end].iter().collect();
+        for ev in parser.feed(&chunk).to_iter() {
             match ev {
                 Ok(e) => reb.apply(e),
                 Err(_) => return TestResult::failed(),
             }
         }
+        idx = end;
+        remaining -= size;
+    }
+    if remaining > 0 {
+        let chunk: String = chars[idx..].iter().collect();
+        for ev in parser.feed(&chunk).to_iter() {
+            match ev {
+                Ok(e) => reb.apply(e),
+                Err(_) => return TestResult::failed(),
+            }
+        }
+    }
+    for ev in parser.finish().to_iter() {
+        match ev {
+            Ok(e) => reb.apply(e),
+            Err(_) => return TestResult::failed(),
+        }
+    }
 
-        let reconstructed = reb.finish();
-        let original: Vec<Value> = values.into_iter().collect();
+    let reconstructed = reb.finish();
+    let original: Vec<Value> = values.into_iter().collect();
 
-        let result = reconstructed == original;
+    TestResult::from_bool(reconstructed == original)
+}
 
-        TestResult::from_bool(result)
+/// Property: A stream consisting of multiple JSON roots must round-trip through
+/// the incremental parser regardless of input partitioning.
+#[test]
+fn prop_multi_value_roundtrip() {
+    #[expect(clippy::needless_pass_by_value)]
+    fn prop_std(values: Vec<Value>, splits: Vec<usize>) -> TestResult {
+        prop_multi_value_roundtrip_backend::<crate::backend::StdBackend>(values, &splits)
+    }
+
+    #[expect(clippy::needless_pass_by_value)]
+    fn prop_im(values: Vec<Value>, splits: Vec<usize>) -> TestResult {
+        prop_multi_value_roundtrip_backend::<crate::backend::ImBackend>(values, &splits)
     }
 
     let tests = if cfg!(miri) || std::env::var_os("JSONMODEM_TEST_FAST").is_some() {
@@ -439,7 +482,11 @@ fn prop_multi_value_roundtrip() {
 
     QuickCheck::new()
         .tests(tests)
-        .quickcheck(prop as fn(Vec<Value>, Vec<usize>) -> TestResult);
+        .quickcheck(prop_std as fn(Vec<Value>, Vec<usize>) -> TestResult);
+
+    QuickCheck::new()
+        .tests(tests)
+        .quickcheck(prop_im as fn(Vec<Value>, Vec<usize>) -> TestResult);
 }
 
 #[test]
@@ -447,6 +494,29 @@ fn multi_value_roundtrip_repro() {
     let chunks = ["{\"/ꑆ\u{fff2}\u{4a9d3}‼\"", ":\"\u{e1cac}\",\">]\":false}"];
 
     let mut parser = DefaultStreamingParser::new(
+        ParserOptions::default()
+            .with_allow_multiple_json_values(true)
+            .with_panic_on_error(true),
+    );
+    for chunk in &chunks {
+        for ev in parser.feed(chunk).to_iter() {
+            if let Err(err) = ev {
+                panic!("Error while parsing: {err}");
+            }
+        }
+    }
+    for ev in parser.finish().to_iter() {
+        if let Err(err) = ev {
+            panic!("Error while parsing: {err}");
+        }
+    }
+}
+
+#[test]
+fn multi_value_roundtrip_repro_im() {
+    let chunks = ["{\"/ꑆ\u{fff2}\u{4a9d3}‼\"", ":\"\u{e1cac}\",\">]\":false}"];
+
+    let mut parser = ImmutableStreamingParser::new(
         ParserOptions::default()
             .with_allow_multiple_json_values(true)
             .with_panic_on_error(true),
