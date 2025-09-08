@@ -22,6 +22,7 @@ mod buffer_options;
 mod context;
 mod event;
 mod jsonmodem_buffers;
+mod jsonmodem_facet;
 mod jsonmodem_values;
 pub mod lending_iterator;
 mod parser;
@@ -31,7 +32,10 @@ mod value_tree;
 
 #[doc(hidden)]
 pub use backend::raw::RawBufferAssembler;
-pub use backend::{RawContext, StdBackend};
+pub use backend::{
+    RawContext, StdBackend,
+    facet::{FacetApplyError, FacetEvent, FacetEventKind, FacetOptions},
+};
 pub use buffer_options::BufferOptions;
 // Expose core parser types publicly for users building custom adapters, while
 // keeping the low-level `JsonModem` constructor out of the docs surface.
@@ -40,6 +44,7 @@ pub use event::ParseEvent;
 #[allow(unused_imports)]
 pub use event::test_util;
 pub use jsonmodem_buffers::{BufferedEvent, JsonModemBuffers};
+pub use jsonmodem_facet::{FacetError, JsonModemFacet};
 pub use jsonmodem_values::{JsonModemValues, StreamingValue, ValuesOptions};
 #[doc(hidden)]
 pub use parser::JsonModem;
