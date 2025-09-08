@@ -30,8 +30,9 @@ jobs:
           path: |
             fuzz/corpus
             fuzz/artifacts
-          key: ${{ runner.os }}-cargo-fuzz-${{ github.sha }}
+          key: ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-
             ${{ runner.os }}-cargo-fuzz-
 
       - name: Install cargo-fuzz
@@ -54,5 +55,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
-          path: fuzz/artifacts
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 7
