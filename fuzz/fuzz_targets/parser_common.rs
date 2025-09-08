@@ -75,6 +75,16 @@ pub fn parser_options(flags: u8) -> ParserOptions {
         .with_panic_on_error(false)
 }
 
+#[allow(dead_code)]
+pub fn buffer_options(_flags: u8) -> BufferOptions {
+    BufferOptions::default()
+}
+
+#[allow(dead_code)]
+pub fn values_options(flags: u8) -> ValuesOptions {
+    ValuesOptions::default().with_partial(flags & 0x10 != 0)
+}
+
 pub fn consume_results<I, T, E>(iter: I)
 where
     I: IntoIterator<Item = Result<T, E>>,
