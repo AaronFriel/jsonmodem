@@ -23,17 +23,17 @@ jobs:
           toolchain: nightly
           components: llvm-tools
 
-      - name: Restore fuzz corpora and artifacts
+      - name: Restore fuzz caches (per-target)
         id: cache-fuzz-restore
         uses: actions/cache/restore@v4
         with:
           path: |
-            fuzz/corpus
-            fuzz/artifacts
-          key: ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-${{ github.sha }}
+            fuzz/corpus/${{ matrix.target }}
+            fuzz/artifacts/${{ matrix.target }}
+          # Unique per job/run; avoids save conflicts across matrix jobs
+          key: ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-${{ github.job }}-${{ github.run_id }}
           restore-keys: |
             ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-
-            ${{ runner.os }}-cargo-fuzz-
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
@@ -41,14 +41,14 @@ jobs:
       - name: Fuzz (5 000 runs per target)
         run: cargo fuzz run ${{ matrix.target }} -- -runs=5000
 
-      - name: Save updated corpora and artifacts
+      - name: Save fuzz caches (per-target)
         id: cache-fuzz-save
         if: always() && steps.cache-fuzz-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
-            fuzz/corpus
-            fuzz/artifacts
+            fuzz/corpus/${{ matrix.target }}
+            fuzz/artifacts/${{ matrix.target }}
           key: ${{ steps.cache-fuzz-restore.outputs.cache-primary-key }}
 
       - name: Upload fuzz artifacts
