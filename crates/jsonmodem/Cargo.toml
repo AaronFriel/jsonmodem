@@ -42,6 +42,10 @@ path = "tests/jsonmodem_buffers/mod.rs"
 name = "jsonmodem_values"
 path = "tests/jsonmodem_values/mod.rs"
 
+[[test]]
+name = "fuzz_regressions"
+path = "tests/fuzz_regressions.rs"
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"

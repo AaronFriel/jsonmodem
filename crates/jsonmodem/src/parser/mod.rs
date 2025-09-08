@@ -1469,7 +1469,14 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
                     );
-                    self.pop(ctx, path);
+                    // Closing an object before any property: do not pop the
+                    // path (no key was pushed yet). Update parse state based on
+                    // the parent context.
+                    self.parse_state = match ctx.last_kind(path) {
+                        Some(PathKind::Index) => ParseState::AfterArrayValue,
+                        Some(PathKind::Key) => ParseState::AfterPropertyValue,
+                        None => ParseState::End,
+                    };
                     Ok(Some(ParseEvent::ObjectEnd { path: () }))
                 }
                 _ => Ok(None),
