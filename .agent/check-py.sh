@@ -32,5 +32,14 @@ if [[ -d "$SITE_DIR/jsonmodem_py" && ! -e "$SITE_DIR/jsonmodem" ]]; then
 fi
 run_step "python tests" python -m pytest -q crates/jsonmodem-py/tests
 
+DOC_ROOT="$REPO_ROOT/tmp/plans/python"
+PYDOC_DIR="$DOC_ROOT/pydoc"
+PDOC_DIR="$DOC_ROOT/pdoc"
+mkdir -p "$PYDOC_DIR" "$PDOC_DIR"
+
+run_step "pydoc html" bash -lc "cd \"$PYDOC_DIR\" && python -m pydoc -w jsonmodem >/dev/null"
+run_step "pdoc deps" uv pip install --quiet pdoc
+run_step "pdoc html" pdoc -o "$PDOC_DIR" jsonmodem
+
 echo -e "\nTiming summary (seconds, highest first):"
 sort -nr "$TIMING_LOG"

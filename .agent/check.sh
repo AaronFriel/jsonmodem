@@ -34,7 +34,7 @@ run_step "rustfmt (check)"  cargo +nightly fmt --all -- --check
 ###############################################################################
 # 2. Build, test, lint (skip fuzz crate)
 ###############################################################################
-EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-py)
+EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-fuzz --exclude jsonmodem-py)
 # Speed up local iteration by enabling lighter-weight test and benchmark
 # configurations. CI runs without these features for full coverage.
 FAST_ENV=(JSONMODEM_TEST_FAST=1 JSONMODEM_BENCH_FAST=1)

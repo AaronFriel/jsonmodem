@@ -30,7 +30,5 @@ Repository = "https://github.com/aaronfriel/jsonmodem"
 Issues = "https://github.com/aaronfriel/jsonmodem/issues"
 
 [tool.maturin]
-bindings = "pyo3"
-python-source = "python"
-# Build the extension as a submodule of the package: jsonmodem._jsonmodem
 module-name = "jsonmodem._jsonmodem"
+python-source = "python"

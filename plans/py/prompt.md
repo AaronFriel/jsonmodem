@@ -1,0 +1,7 @@
+write an execplan that delivers the streaming jsonmodem parser to python. the plan must embed the full contract (class list, event tuple shape, error semantics) so future contributors can rely solely on the execplan when implementing work. reiterate the raw event tuple surface (`(kind, path, payload)`) and call out that only the low-level event api ships—no buffer or values adapters get exposed from rust.
+
+anchor the plan in the current repository layout: reuse `crate/jsonmodem-py` with pyo3/maturin, wire up `JsonModem`, `ParserOptions`, `DecodeMode`, and the two custom exceptions, and make it clear that `feed`/`finish` yield iterators over owned events built under `py.allow_threads`. highlight the need to track string fragments across chunks so the `is_initial`/`is_final` flags match rust semantics.
+
+require the plan to enumerate the rust work (`crates/jsonmodem-py/src/lib.rs` scaffolding, owned event conversion, path tagging), the python tests under `crates/jsonmodem-py/tests`, documentation updates (`README.md` and `crates/jsonmodem-py/README.md`), and tooling tweaks (`.agent/check.sh`, `.gitignore`). keep `.agent/check.sh` + `scripts/check-py.sh` as mandatory validation steps after each milestone.
+
+ask for open questions around number precision and future adapters to land in the decision log, and insist that the plan records why we collect events into a `Vec` before yielding them to python.	call out that the plan itself must stay current with whatever spikes or benchmarks we run.

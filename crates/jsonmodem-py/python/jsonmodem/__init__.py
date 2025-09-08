@@ -1,9 +1,19 @@
-"""jsonmodem: high-performance streaming JSON parser (Rust bindings).
+"""jsonmodem: streaming JSON parser bindings for Python."""
 
-This package exposes a native extension module built with pyo3/maturin.
-"""
+from . import _jsonmodem as _native
 
-# Re-export everything from the native extension and surface __version__
-from ._jsonmodem import *  # noqa: F401,F403
-from ._jsonmodem import __version__ as __version__  # noqa: F401
+JsonModem = _native.JsonModem
+ParserOptions = _native.ParserOptions
+DecodeMode = _native.DecodeMode
+JsonModemSyntaxError = _native.JsonModemSyntaxError
+JsonModemStateError = _native.JsonModemStateError
 
+__all__ = [
+    "JsonModem",
+    "ParserOptions",
+    "DecodeMode",
+    "JsonModemSyntaxError",
+    "JsonModemStateError",
+]
+
+__version__ = getattr(_native, "__version__", "0.0.0")
