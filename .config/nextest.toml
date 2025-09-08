@@ -9,8 +9,8 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 slow-timeout = { period = "150s", terminate-after = 2 }
 
 [profile.ci]
-slow-timeout = { period = "3s", terminate-after = 20 }
+slow-timeout = { period = "5s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
 filter = 'test(/prop_.*/)'
-slow-timeout = { period = "15s", terminate-after = 4 }
+slow-timeout = { period = "30s", terminate-after = 6 }

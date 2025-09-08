@@ -2,7 +2,7 @@
 
 mod parser_common;
 
-use jsonmodem::{JsonModemBuffers, StdBackend};
+use jsonmodem::JsonModemBuffers;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

@@ -75,14 +75,6 @@ pub fn parser_options(flags: u8) -> ParserOptions {
         .with_panic_on_error(false)
 }
 
-pub fn buffer_options(_flags: u8) -> BufferOptions {
-    BufferOptions::default()
-}
-
-pub fn values_options(flags: u8) -> ValuesOptions {
-    ValuesOptions::default().with_partial(flags & 0x10 != 0)
-}
-
 pub fn consume_results<I, T, E>(iter: I)
 where
     I: IntoIterator<Item = Result<T, E>>,
@@ -200,7 +192,7 @@ fn append_value(data: &mut [u8], size: usize, limit: usize) -> usize {
     len
 }
 
-pub fn split_into_safe_chunks<'a>(serialized: &'a str, split_seed: u64) -> Vec<&'a str> {
+pub fn split_into_safe_chunks(serialized: &str, split_seed: u64) -> Vec<&str> {
     let mut chunks = Vec::new();
     let mut start = 0;
     let len = serialized.len();
