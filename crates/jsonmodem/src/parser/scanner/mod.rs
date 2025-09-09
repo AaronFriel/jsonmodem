@@ -763,7 +763,8 @@ impl Peeked<'_, '_> {
             .scanner
             .consume()
             .expect("scanner.consume(): no char after peek");
-        debug_assert_eq!(adv.ch, self.unit.ch, "peek/consume mismatch");
+        #[cfg(any(fuzzing, debug_assertions))]
+        assert_eq!(adv.ch, self.unit.ch, "peek/consume mismatch");
         adv
     }
 
@@ -778,7 +779,8 @@ impl Peeked<'_, '_> {
             .scanner
             .skip()
             .expect("scanner.skip(): no char after peek");
-        debug_assert_eq!(adv.ch, self.unit.ch, "peek/skip mismatch");
+        #[cfg(any(fuzzing, debug_assertions))]
+        assert_eq!(adv.ch, self.unit.ch, "peek/skip mismatch");
         adv
     }
 }

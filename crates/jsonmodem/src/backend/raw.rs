@@ -7,11 +7,13 @@ use alloc::{
 };
 use core::num::ParseFloatError;
 
-#[cfg(debug_assertions)]
+#[cfg(any(fuzzing, debug_assertions))]
+use crate::backend::RootTransition;
+#[cfg(any(fuzzing, debug_assertions))]
 use crate::backend::TransitionAsserter;
 use crate::{
     Path, PathItem,
-    backend::{ParserCursor, RootTransition},
+    backend::ParserCursor,
     buffer_options::BufferOptions,
     context::{BuilderCtx, EventCtx, PathCtx, PathError, PathKind, ValueCtx},
     event::ParseEvent,
@@ -148,7 +150,7 @@ pub struct RawBufferAssembler {
     array_scratch: Option<Vec<Value>>,
     object_scratch: Option<BTreeMap<Vec<u8>, Value>>,
     cursor: ParserCursor,
-    #[cfg(debug_assertions)]
+    #[cfg(any(fuzzing, debug_assertions))]
     transitions: TransitionAsserter,
 }
 
@@ -161,7 +163,7 @@ impl RawBufferAssembler {
             array_scratch: None,
             object_scratch: None,
             cursor: ParserCursor::new(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(fuzzing, debug_assertions))]
             transitions: TransitionAsserter::new(),
         }
     }
@@ -220,14 +222,15 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
     where
         'src: 'a,
     {
-        #[cfg(debug_assertions)]
+        #[cfg(any(fuzzing, debug_assertions))]
         self.transitions.observe(&event);
 
         let outcome = self.cursor.classify_transition(&event);
 
         let result = match event {
             ParseEvent::Null { path } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::StartRootScalar
                         | RootTransition::StayArray { .. }
@@ -238,7 +241,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 Ok(BufferedEvent::Null { path })
             }
             ParseEvent::Boolean { path, value } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::StartRootScalar
                         | RootTransition::StayArray { .. }
@@ -249,7 +253,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 Ok(BufferedEvent::Boolean { path, value })
             }
             ParseEvent::Number { path, value } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::StartRootScalar
                         | RootTransition::StayArray { .. }
@@ -266,7 +271,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 is_final,
             } => {
                 if !is_initial {
-                    debug_assert!(matches!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert!(matches!(
                         outcome.transition,
                         RootTransition::AppendString { .. }
                     ));
@@ -286,7 +292,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 })
             }
             ParseEvent::ArrayBegin { path } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::PushArray
                         | RootTransition::StayArray { .. }
@@ -298,7 +305,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 Ok(BufferedEvent::ArrayBegin { path })
             }
             ParseEvent::ArrayEnd { path } => {
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(outcome.transition, RootTransition::PopContainer));
                 let canonical = Self::convert_path(&path);
                 let value = match self.container_value(&canonical) {
                     Some(Value::Array(array)) => {
@@ -313,7 +321,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 Ok(BufferedEvent::ArrayEnd { path, value })
             }
             ParseEvent::ObjectBegin { path } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::PushObject
                         | RootTransition::StayObject { .. }
@@ -325,7 +334,8 @@ impl BufferAssembler<RawContext> for RawBufferAssembler {
                 Ok(BufferedEvent::ObjectBegin { path })
             }
             ParseEvent::ObjectEnd { path } => {
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(outcome.transition, RootTransition::PopContainer));
                 let canonical = Self::convert_path(&path);
                 let value = match self.container_value(&canonical) {
                     Some(Value::Object(map)) => {

@@ -1,7 +1,7 @@
 use std::{cell::RefCell, hint::black_box};
 
 use arbitrary::Arbitrary;
-use jsonmodem::{BufferOptions, ParserOptions, ValuesOptions};
+use jsonmodem::{BufferOptions, ParserOptions, ValuesOptions, lending_iterator::LendingIterator};
 use libfuzzer_sys::{fuzz_mutator, fuzzer_mutate};
 use rand::{Rng, RngCore, SeedableRng, rngs::SmallRng};
 use serde_json::{Map, Value};
@@ -36,68 +36,44 @@ static WS_TABLE: &[&[u8]] = &[
     "\u{3000}".as_bytes(),
 ];
 
+#[derive(Clone, Copy, Debug, Arbitrary)]
+pub struct FuzzFlags {
+    pub allow_multiple_json_values: bool,
+    pub allow_uppercase_u: bool,
+    pub allow_unicode_whitespace: bool,
+    pub partial_values: bool,
+}
+
+#[derive(Debug)]
 pub struct PreparedInput {
-    pub flags: u8,
+    pub flags: FuzzFlags,
     pub chunks: Vec<String>,
 }
 
-pub fn prepare_input(data: &[u8]) -> Option<PreparedInput> {
-    if data.len() < HEADER {
-        return None;
-    }
-
-    let flags = data[0];
-    let split_seed = u32::from_le_bytes(data[1..HEADER].try_into().unwrap()) as u64;
-    let payload = &data[HEADER..];
-
-    if payload.is_empty() {
-        return None;
-    }
-
-    let source = String::from_utf8_lossy(payload).into_owned();
-    let chunks = split_into_safe_chunks(&source, split_seed)
-        .into_iter()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-
-    if chunks.is_empty() {
-        return None;
-    }
-
-    Some(PreparedInput { flags, chunks })
-}
-
-pub fn parser_options(flags: u8) -> ParserOptions {
+pub fn parser_options(flags: FuzzFlags) -> ParserOptions {
     ParserOptions::default()
-        .with_allow_multiple_json_values(flags & 1 != 0)
-        .with_allow_uppercase_u(flags & 2 != 0)
-        .with_allow_unicode_whitespace(flags & 4 != 0)
+        .with_allow_multiple_json_values(flags.allow_multiple_json_values)
+        .with_allow_uppercase_u(flags.allow_uppercase_u)
+        .with_allow_unicode_whitespace(flags.allow_unicode_whitespace)
         .with_panic_on_error(false)
 }
 
 #[allow(dead_code)]
-pub fn buffer_options(_flags: u8) -> BufferOptions {
+pub fn buffer_options(_flags: FuzzFlags) -> BufferOptions {
     BufferOptions::default()
 }
 
 #[allow(dead_code)]
-pub fn values_options(flags: u8) -> ValuesOptions {
-    ValuesOptions::default().with_partial(flags & 0x10 != 0)
+pub fn values_options(flags: FuzzFlags) -> ValuesOptions {
+    ValuesOptions::default().with_partial(flags.partial_values)
 }
 
-pub fn consume_results<I, T, E>(iter: I)
+pub fn consume_results<I>(iter: &mut I)
 where
-    I: IntoIterator<Item = Result<T, E>>,
+    I: LendingIterator,
 {
-    for item in iter {
-        match item {
-            Ok(value) => {
-                black_box(value);
-            }
-            Err(err) => {
-                black_box(err);
-            }
-        }
+    while let Some(item) = iter.next() {
+        black_box(item);
     }
 }
 
@@ -137,26 +113,30 @@ struct ArbitraryValue(Value);
 
 impl<'a> Arbitrary<'a> for ArbitraryValue {
     fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
-        let node_type = u.choose_index(21)?;
+        let node_type = u.choose_index(6)?;
         let value = match node_type {
             0 => Value::Null,
             1 => Value::Bool(u.arbitrary()?),
             2 => {
-                let n: f64 = u.arbitrary()?;
-                Value::Number(
-                    serde_json::Number::from_f64(n).ok_or(arbitrary::Error::IncorrectFormat)?,
-                )
+                let r = match u.choose_index(3)? {
+                    0 => serde_json::Number::from_f64(u.arbitrary()?)
+                        .ok_or(arbitrary::Error::IncorrectFormat)?,
+                    1 => serde_json::Number::from(u.arbitrary::<i64>()?),
+                    2 => serde_json::Number::from(u.arbitrary::<u64>()?),
+                    _ => unreachable!(),
+                };
+                Value::Number(r)
             }
-            3..=10 => Value::String(u.arbitrary()?),
-            11..=15 => {
+            3 => Value::String(u.arbitrary()?),
+            4 => {
                 let elems: Vec<ArbitraryValue> = u.arbitrary()?;
                 Value::Array(elems.into_iter().map(|v| v.0).collect())
             }
-            16..=20 => {
+            5 => {
                 let m: Vec<(String, ArbitraryValue)> = u.arbitrary()?;
                 Value::Object(Map::from_iter(m.into_iter().map(|(k, v)| (k, v.0))))
             }
-            _ => Err(arbitrary::Error::IncorrectFormat)?,
+            _ => unreachable!(),
         };
         Ok(ArbitraryValue(value))
     }
@@ -220,4 +200,73 @@ pub fn split_into_safe_chunks(serialized: &str, split_seed: u64) -> Vec<&str> {
     }
 
     chunks
+}
+
+// New: Structured input for the fuzz target with Arbitrary decoding
+impl<'a> Arbitrary<'a> for PreparedInput {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        // Choose flags first so that option behavior is driven by bytes
+        let flags: FuzzFlags = u.arbitrary()?;
+
+        // Decide how many JSON roots to emit (exercise multi-root option)
+        let n_roots = 1 + u.choose_index(4)?; // 1..=4
+
+        // Build one or more arbitrary JSON Values and serialize them with random
+        // whitespace
+        let mut out = String::new();
+        for i in 0..n_roots {
+            // Optional leading/trailing unicode whitespace depending on flags / bytes
+            if u.arbitrary::<bool>()? {
+                append_ws_str(&mut out, u, flags.allow_unicode_whitespace)?;
+            }
+
+            let v: ArbitraryValue = u.arbitrary()?;
+            let s = serde_json::to_string(&v.0).map_err(|_| arbitrary::Error::IncorrectFormat)?;
+            out.push_str(&s);
+
+            if i + 1 != n_roots || u.arbitrary::<bool>()? {
+                append_ws_str(&mut out, u, flags.allow_unicode_whitespace)?;
+            }
+        }
+
+        // If multiple roots are not allowed, bias towards single-root by occasionally
+        // trimming
+        if !flags.allow_multiple_json_values
+            && let Some(idx) = out.find('}')
+        {
+            out.truncate(idx + 1);
+        }
+
+        // Choose a split seed and split along char boundaries
+        let split_seed: u64 = u.arbitrary()?;
+        let chunks = split_into_safe_chunks(&out, split_seed)
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        Ok(PreparedInput { flags, chunks })
+    }
+}
+
+fn append_ws_str(
+    target: &mut String,
+    u: &mut arbitrary::Unstructured<'_>,
+    unicode: bool,
+) -> arbitrary::Result<()> {
+    // Up to 8 codepoints of whitespace
+    let n = 1 + u.choose_index(8)?;
+    for _ in 0..n {
+        if unicode {
+            let idx = u.choose_index(WS_TABLE.len())?;
+            target.push_str(std::str::from_utf8(WS_TABLE[idx]).unwrap());
+        } else {
+            target.push(match u.choose_index(4)? {
+                0 => ' ',
+                1 => '\t',
+                2 => '\n',
+                _ => '\r',
+            });
+        }
+    }
+    Ok(())
 }

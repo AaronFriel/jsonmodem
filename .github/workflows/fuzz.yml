@@ -39,7 +39,7 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: Fuzz (5 000 runs per target)
-        run: cargo fuzz run ${{ matrix.target }} -- -runs=5000
+        run: cargo fuzz run ${{ matrix.target }} -- -runs=5000 -max_total_time=300
 
       - name: Save fuzz caches (per-target)
         id: cache-fuzz-save

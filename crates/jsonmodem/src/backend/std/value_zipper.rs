@@ -78,7 +78,8 @@ impl ValueZipper {
 
         match target_depth.cmp(&current_depth) {
             Ordering::Greater => {
-                debug_assert_eq!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(
                     target_depth,
                     current_depth + 1,
                     "parser path depth increased by more than one"
@@ -93,7 +94,8 @@ impl ValueZipper {
                 self.path_components.push(component.clone());
             }
             Ordering::Less => {
-                debug_assert_eq!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(
                     current_depth,
                     target_depth + 1,
                     "parser path depth decreased by more than one"

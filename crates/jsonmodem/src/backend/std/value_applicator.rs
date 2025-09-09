@@ -12,7 +12,7 @@ use alloc::{
 };
 
 use super::{StdBackend, StdPath, value::Value, value_zipper::ValueZipper};
-#[cfg(debug_assertions)]
+#[cfg(any(fuzzing, debug_assertions))]
 use crate::backend::TransitionAsserter;
 use crate::{
     backend::{ParserCursor, RootTransition},
@@ -59,7 +59,7 @@ pub struct ValueApplicator {
     zipper: ValueZipper,
     options: BufferOptions,
     cursor: ParserCursor,
-    #[cfg(debug_assertions)]
+    #[cfg(any(fuzzing, debug_assertions))]
     transitions: TransitionAsserter,
 }
 
@@ -70,7 +70,7 @@ impl ValueApplicator {
             zipper: ValueZipper::new(),
             options,
             cursor: ParserCursor::new(),
-            #[cfg(debug_assertions)]
+            #[cfg(any(fuzzing, debug_assertions))]
             transitions: TransitionAsserter::new(),
         }
     }
@@ -83,7 +83,7 @@ impl ValueApplicator {
     where
         'src: 'a,
     {
-        #[cfg(debug_assertions)]
+        #[cfg(any(fuzzing, debug_assertions))]
         self.transitions.observe(&event);
 
         let outcome = self.cursor.classify_transition(&event);
@@ -110,13 +110,15 @@ impl ValueApplicator {
                     RootTransition::PushArray
                     | RootTransition::PushObject
                     | RootTransition::PopContainer => {
-                        debug_assert!(false, "unexpected transition for string event");
+                        #[cfg(any(fuzzing, debug_assertions))]
+                        unreachable!("unexpected transition for string event");
                     }
                 }
                 self.apply_string(path, fragment, is_initial, is_final)
             }
             ParseEvent::ArrayBegin { path } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::PushArray
                         | RootTransition::StayArray { .. }
@@ -125,11 +127,13 @@ impl ValueApplicator {
                 self.apply_container_begin(path, ContainerKind::Array)
             }
             ParseEvent::ArrayEnd { path } => {
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(outcome.transition, RootTransition::PopContainer));
                 self.apply_container_end(path, ContainerKind::Array)
             }
             ParseEvent::ObjectBegin { path } => {
-                debug_assert!(matches!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(
                     outcome.transition,
                     RootTransition::PushObject
                         | RootTransition::StayObject { .. }
@@ -138,7 +142,8 @@ impl ValueApplicator {
                 self.apply_container_begin(path, ContainerKind::Object)
             }
             ParseEvent::ObjectEnd { path } => {
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(matches!(outcome.transition, RootTransition::PopContainer));
                 self.apply_container_end(path, ContainerKind::Object)
             }
         };

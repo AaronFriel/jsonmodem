@@ -33,7 +33,8 @@ pub fn make_json_payload(target_len: usize) -> String {
     s.push_str("{\"data\":\"");
     s.extend(std::iter::repeat_n('a', target_len - overhead));
     s.push_str("\"}");
-    debug_assert_eq!(s.len(), target_len);
+    #[cfg(any(fuzzing, debug_assertions))]
+    assert_eq!(s.len(), target_len);
     s
 }
 

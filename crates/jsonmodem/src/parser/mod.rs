@@ -1442,7 +1442,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             BeforePropertyName => match token {
                 Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::PropertyNameRaw(value) => {
-                    debug_assert_eq!(self.pending_path_op, None, "Expected no pending path op");
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(self.pending_path_op, None, "Expected no pending path op");
                     let first_key = self.pending_key;
                     self.pending_key = false;
                     if !first_key {
@@ -1453,7 +1454,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     Ok(None)
                 }
                 Token::PropertyName(value) => {
-                    debug_assert_eq!(self.pending_path_op, None, "Expected no pending path op");
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(self.pending_path_op, None, "Expected no pending path op");
                     let first_key = self.pending_key;
                     self.pending_key = false;
                     if !first_key {
@@ -1464,7 +1466,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     Ok(None)
                 }
                 Token::Punctuator(b'}') => {
-                    debug_assert_eq!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(
                         self.pending_path_op, None,
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
@@ -1500,7 +1503,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             BeforeArrayValue => match token {
                 Token::Eof => Ok(None),
                 Token::Punctuator(b']') => {
-                    debug_assert_eq!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(
                         self.pending_path_op, None,
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
@@ -1518,7 +1522,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     Ok(None)
                 }
                 Token::Punctuator(b'}') => {
-                    debug_assert_eq!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(
                         self.pending_path_op, None,
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
@@ -1534,7 +1539,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                 Token::Punctuator(b',') => {
                     #[cfg(test)]
                     eprintln!("in afterarrayvalue");
-                    debug_assert_eq!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(
                         self.pending_path_op, None,
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
@@ -1544,7 +1550,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     Ok(None)
                 }
                 Token::Punctuator(b']') => {
-                    debug_assert_eq!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert_eq!(
                         self.pending_path_op, None,
                         "Expected no pending path op, found {:?}",
                         self.pending_path_op
@@ -1575,7 +1582,8 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                 return Ok(Some(ParseEvent::ObjectBegin { path: () }));
             }
             Token::Punctuator(b'[') => {
-                debug_assert_eq!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(
                     self.pending_path_op, None,
                     "Expected no pending path op, found {:?}",
                     self.pending_path_op

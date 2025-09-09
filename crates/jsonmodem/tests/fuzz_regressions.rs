@@ -1,5 +1,3 @@
-#![cfg(debug_assertions)]
-
 //! Regression tests that pin down fuzz-discovered panics caught by the
 //! jsonmodem fuzz targets. Each case stores the reconstructed JSON payload plus
 //! the fuzz mutator's flag byte and splitting seed so future runs reproduce the
@@ -196,6 +194,60 @@ fn debug_events_for_buffers_case_two() {
         }
     }
     println!("{out}");
+}
+
+// CI regression: fuzz_jsonmodem_buffers crash-ec7fe34d57815d37
+#[test]
+fn fuzz_ci_buffers_ec7fe34d57815d37() {
+    let bytes: &[u8] = &[
+        44, 34, 107, 34, 58, 123, 34, 34, 58, 123, 34, 34, 58, 34, 34, 125, 44, 34, 92, 102, 34,
+        58, 123, 125, 44, 34, 90, 34, 58, 34, 92, 117, 48, 48, 49, 57, 34, 125, 125, 44, 34, 37,
+        56, 58, 123, 125, 44, 34, 39, 33, 83, 34, 58, 123, 34, 34, 58, 110, 117, 108, 108, 44, 34,
+        92, 110, 94, 34, 58, 102, 97, 108, 115, 101, 125, 44, 34, 91, 34, 58, 91, 93, 44, 34, 110,
+        68, 34, 58, 34, 34, 44, 34, 118, 38, 125, 34, 58, 34, 92, 117, 48, 48, 49, 102, 126, 236,
+        170, 183, 218, 218, 218, 218, 218, 218, 48, 49, 99, 99, 197, 139, 34, 125, 44, 34, 111, 92,
+        117, 48, 48, 49, 98, 34, 58, 34, 126, 34, 125, 44, 34, 34, 93, 32, 226, 128, 134, 226, 128,
+        134,
+    ];
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let options = ParserOptions::default()
+        .with_allow_multiple_json_values(true)
+        .with_allow_unicode_whitespace(true)
+        .with_panic_on_error(false);
+    let mut parser = JsonModemBuffers::new(options, BufferOptions::default());
+    consume_results(parser.feed(&text).to_iter());
+    consume_results(parser.finish().to_iter());
+}
+
+// CI regression: fuzz_jsonmodem_values crash-ba00f820dde9c446
+#[test]
+fn fuzz_ci_values_ba00f820dde9c446() {
+    let bytes: &[u8] = &[
+        6, 249, 7, 84, 43, 226, 128, 134, 116, 114, 117, 101, 226, 128, 131, 226, 128, 132, 226,
+        128, 133, 226, 128, 168, 34, 52, 34, 226, 128, 168, 9, 226, 128, 130, 226, 128, 136, 226,
+        128, 168, 226, 128, 132, 226, 128, 169, 226, 128, 128, 225, 154, 128, 225, 154, 128, 226,
+        128, 137, 123, 125, 226, 128, 138, 226, 128, 134, 10, 32, 226, 128, 137, 226, 128, 129, 34,
+        83, 34, 226, 128, 169, 226, 128, 130, 226, 128, 129, 226, 128, 130, 226, 128, 168, 9, 226,
+        128, 136, 226, 128, 168, 123, 34, 34, 58, 123, 34, 34, 58, 52, 46, 55, 57, 56, 48, 54, 52,
+        56, 49, 56, 57, 55, 57, 52, 51, 52, 101, 50, 50, 51, 44, 34, 36, 106, 46, 51, 34, 58, 91,
+        34, 34, 44, 91, 34, 92, 117, 48, 48, 48, 48, 34, 44, 91, 123, 34, 34, 58, 123, 34, 34, 58,
+        91, 34, 34, 44, 91, 34, 84, 34, 44, 123, 34, 34, 58, 91, 123, 125, 93, 44, 34, 86, 36, 36,
+        36, 36, 36, 36, 36, 36, 36, 36, 36, 34, 58, 123, 34, 34, 58, 123, 34, 47, 34, 58, 91, 91,
+        93, 44, 123, 125, 44, 34, 112, 34, 93, 44, 34, 49, 43, 34, 58, 34, 34, 125, 125, 44, 34,
+        42, 90, 92, 117, 48, 48, 48, 101, 90, 69, 34, 58, 34, 34, 44, 34, 44, 101, 34, 58, 123, 34,
+        59, 77, 92, 117, 48, 48, 48, 98, 34, 58, 50, 46, 51, 57, 56, 54, 53, 53, 52, 52, 53, 52,
+        53, 48, 52, 50, 56, 51, 101, 49, 49, 55, 125, 125, 125, 44, 34, 73, 44, 34, 44, 91, 93, 93,
+        44, 34, 71, 34, 44, 123, 125, 93, 125, 125, 93, 93, 93, 44, 34, 60, 116, 34, 58, 34, 34,
+        125, 125, 226, 128, 133, 226, 128, 129,
+    ];
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let options = ParserOptions::default()
+        .with_allow_multiple_json_values(true)
+        .with_allow_unicode_whitespace(true)
+        .with_panic_on_error(false);
+    let mut parser = JsonModemValues::with_options(options, ValuesOptions::default());
+    consume_results(parser.feed(&text));
+    consume_results(parser.finish());
 }
 
 #[test]

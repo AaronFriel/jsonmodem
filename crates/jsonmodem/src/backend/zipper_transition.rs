@@ -43,16 +43,19 @@ impl ParserCursor {
     {
         let path = event.path().as_slice();
         let depth = path.len();
-        let delta = if depth >= self.previous_depth {
-            isize::try_from(depth - self.previous_depth).unwrap_or(isize::MAX)
-        } else {
-            -isize::try_from(self.previous_depth - depth).unwrap_or(isize::MAX)
-        };
-        debug_assert!(
-            (-1..=1).contains(&delta),
-            "parser path depth changed by {delta}; previous depth={}, current depth={depth}",
-            self.previous_depth
-        );
+        #[cfg(any(debug_assertions, fuzzing))]
+        {
+            let delta = if depth >= self.previous_depth {
+                isize::try_from(depth - self.previous_depth).unwrap_or(isize::MAX)
+            } else {
+                -isize::try_from(self.previous_depth - depth).unwrap_or(isize::MAX)
+            };
+            assert!(
+                (-1..=1).contains(&delta),
+                "parser path depth changed by {delta}; previous depth={}, current depth={depth}",
+                self.previous_depth
+            );
+        }
         self.previous_depth = depth;
 
         match event {
@@ -74,7 +77,8 @@ impl ParserCursor {
                         ..outcome
                     }
                 } else {
-                    debug_assert!(
+                    #[cfg(any(debug_assertions, fuzzing))]
+                    assert!(
                         self.string_in_progress,
                         "received continued string fragment without initial transition"
                     );
@@ -179,20 +183,24 @@ impl ParserCursor {
         }
     }
 
+    #[cfg_attr(not(any(debug_assertions, fuzzing)), expect(unused_variables))]
     fn finish_container<'path, K>(
         &mut self,
         expected: ContainerKind,
     ) -> TransitionOutcome<'path, K> {
         self.string_in_progress = false;
         let Some(frame) = self.frames.pop() else {
-            debug_assert!(false, "parser emitted container end without matching begin");
+            #[cfg(any(debug_assertions, fuzzing))]
+            unreachable!("parser emitted container end without matching begin");
+            #[cfg(not(any(debug_assertions, fuzzing)))]
             return TransitionOutcome {
                 transition: RootTransition::PopContainer,
                 completes_array_slot: false,
             };
         };
 
-        debug_assert_eq!(
+        #[cfg(any(debug_assertions, fuzzing))]
+        assert_eq!(
             frame.kind, expected,
             "expected container {:?} but observed {:?}",
             expected, frame.kind

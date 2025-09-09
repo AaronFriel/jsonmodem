@@ -1,12 +1,12 @@
 pub mod raw;
 mod std;
 
-#[cfg(debug_assertions)]
+#[cfg(any(fuzzing, debug_assertions))]
 mod transition_debug;
-#[cfg(debug_assertions)]
+#[cfg(any(fuzzing, debug_assertions))]
 pub(crate) use transition_debug::TransitionAsserter;
 
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(fuzzing, debug_assertions)))]
 mod transition_debug {
     use alloc::vec::Vec;
     use core::fmt::Debug;

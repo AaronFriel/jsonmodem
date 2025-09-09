@@ -59,20 +59,20 @@ impl TransitionAsserter {
         if let Some(active) = &self.string_in_progress {
             match kind {
                 EventKind::String { is_initial, .. } => {
-                    debug_assert!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert!(
                         active == &path,
                         "string fragment path changed while buffering: {active:?} -> {path:?}"
                     );
-                    debug_assert!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert!(
                         !is_initial,
                         "continued string fragment unexpectedly marked as initial",
                     );
                 }
                 _ => {
-                    debug_assert!(
-                        false,
-                        "non-string event {kind:?} while buffering string at {active:?}"
-                    );
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    unreachable!("non-string event {kind:?} while buffering string at {active:?}");
                 }
             }
         }
@@ -96,7 +96,8 @@ impl TransitionAsserter {
             -isize::try_from(prev_depth - depth).unwrap_or(isize::MAX)
         };
 
-        debug_assert!(
+        #[cfg(any(fuzzing, debug_assertions))]
+        assert!(
             (-1..=1).contains(&delta),
             "parser path depth changed by {delta}; previous={:?}, next={:?}",
             previous.path,
@@ -105,7 +106,8 @@ impl TransitionAsserter {
 
         match delta.cmp(&0) {
             Ordering::Greater => {
-                debug_assert_eq!(delta, 1, "parser depth advanced by more than one: {delta}");
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(delta, 1, "parser depth advanced by more than one: {delta}");
                 let is_new_root = prev_depth == 0;
                 let follows_container_boundary = matches!(
                     previous.kind,
@@ -114,13 +116,15 @@ impl TransitionAsserter {
                         | EventKind::ArrayEnd
                         | EventKind::ObjectEnd
                 );
-                debug_assert!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(
                     follows_container_boundary || is_new_root,
                     "depth +1 transition must follow a container boundary: prev={:?}, next_kind={:?}",
                     previous.kind,
                     kind
                 );
-                debug_assert!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(
                     prefix_matches(&previous.path, path),
                     "depth +1 transition must extend previous path: prev={:?}, next={:?}",
                     previous.path,
@@ -128,17 +132,20 @@ impl TransitionAsserter {
                 );
             }
             Ordering::Less => {
-                debug_assert_eq!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(
                     delta, -1,
                     "parser depth decreased by more than one: {delta}"
                 );
-                debug_assert!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(
                     matches!(kind, EventKind::ArrayEnd | EventKind::ObjectEnd),
                     "depth -1 transition must be a container end: prev={:?}, next_kind={:?}",
                     previous.kind,
                     kind
                 );
-                debug_assert!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(
                     prefix_matches(path, &previous.path),
                     "depth -1 transition must trim the previous path: prev={:?}, next={:?}",
                     previous.path,
@@ -181,14 +188,16 @@ impl TransitionAsserter {
                                 EventKind::String { .. }
                             )
                     );
-                    debug_assert!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert!(
                         allowed,
                         "array slot reused without an in-progress string: prev_kind={:?}, next_kind={:?}",
                         previous.kind, kind
                     );
                 }
             } else {
-                debug_assert_eq!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert_eq!(
                     next_index,
                     prev_index + 1,
                     "array indices must advance monotonically: {prev_index} -> {next_index}"
@@ -204,7 +213,8 @@ impl TransitionAsserter {
                 is_final,
             } => {
                 if self.string_in_progress.is_none() {
-                    debug_assert!(
+                    #[cfg(any(fuzzing, debug_assertions))]
+                    assert!(
                         is_initial,
                         "string fragment missing initial flag at path {path:?}"
                     );
@@ -217,7 +227,8 @@ impl TransitionAsserter {
                 }
             }
             _ => {
-                debug_assert!(
+                #[cfg(any(fuzzing, debug_assertions))]
+                assert!(
                     self.string_in_progress.is_none(),
                     "non-string event {:?} while buffering string at {:?}",
                     kind,

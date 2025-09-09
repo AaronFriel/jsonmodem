@@ -50,7 +50,7 @@ path = "tests/fuzz_regressions.rs"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(coverage,coverage_nightly,trace_scanner)',
+  'cfg(coverage,coverage_nightly,fuzzing,trace_scanner)',
 ] }
 
 [lints.clippy]
