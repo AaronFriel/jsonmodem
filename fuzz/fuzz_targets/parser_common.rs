@@ -6,7 +6,7 @@ use libfuzzer_sys::{fuzz_mutator, fuzzer_mutate};
 use rand::{Rng, RngCore, SeedableRng, rngs::SmallRng};
 use serde_json::{Map, Value};
 
-pub const HEADER: usize = 5;
+pub const HEADER: usize = 5; // mode u8 + split-seed u32
 
 thread_local! {
     static RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_os_rng());
@@ -84,24 +84,160 @@ where
     RNG.with(|cell| f(&mut cell.borrow_mut()))
 }
 
-fn mutator(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
-    if size < HEADER || seed.is_multiple_of(10) {
-        data[0] = with_rng(|rng| rng.next_u32() as u8 & 0x1F);
-        data[1..HEADER].copy_from_slice(&with_rng(|rng| rng.next_u32().to_le_bytes()));
+// Map arbitrary bytes to mostly-printable ASCII to keep UTF‑8 intact.
+fn map_to_ascii(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .iter()
+        .map(|b| if b.is_ascii() { *b } else { (b % 0x5e) + 0x20 })
+        .collect()
+}
 
-        let mut prefix = HEADER;
-
-        while prefix < size {
-            let limit = max_size - prefix;
-            prefix += append_whitespace(&mut data[prefix..], limit);
-            prefix += append_value(&mut data[prefix..], size, limit);
-            prefix += append_whitespace(&mut data[prefix..], limit);
+fn to_utf8_prefix(bytes: &[u8]) -> Option<&str> {
+    match core::str::from_utf8(bytes) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            let n = e.valid_up_to();
+            if n > 0 {
+                core::str::from_utf8(&bytes[..n]).ok()
+            } else {
+                None
+            }
         }
-
-        prefix
-    } else {
-        fuzzer_mutate(data, size, max_size)
     }
+}
+
+fn corrupt_json(mut s: String, seed: u64) -> String {
+    with_rng(|rng| {
+        // Mix in the libfuzzer seed to get deterministic-but-varied ops
+        let mut prng = SmallRng::seed_from_u64(seed ^ rng.next_u64());
+        if s.is_empty() {
+            s.push_str("\"\"");
+        }
+        let ops = prng.random_range(1..=4);
+        for _ in 0..ops {
+            match prng.random_range(0..8) {
+                0 => {
+                    let idxs: Vec<_> = s.char_indices().map(|(i, _)| i).collect();
+                    if idxs.len() > 1 {
+                        let i = idxs[prng.random_range(0..idxs.len())];
+                        s.remove(i);
+                    }
+                }
+                1 => {
+                    let delims = ["{", "}", "[", "]", ",", ":"];
+                    let pos = prng.random_range(0..=s.len());
+                    s.insert_str(pos, delims[prng.random_range(0..delims.len())]);
+                }
+                2 => {
+                    let pos = prng.random_range(0..=s.len());
+                    s.insert_str(pos, if prng.random::<bool>() { "\n" } else { "\"" });
+                }
+                3 => {
+                    let pos = prng.random_range(0..=s.len());
+                    let c = ["u", "x", "U", "\\", "\"", "/"][prng.random_range(0..6)];
+                    s.insert_str(pos, "\\");
+                    s.insert_str(pos + 1, c);
+                }
+                4 => {
+                    let add = if prng.random::<bool>() { "[," } else { "{" };
+                    let close = if add == "[," { "]" } else { "}" };
+                    s = format!("{}{}{}", add, s, close);
+                }
+                5 => {
+                    let pos = prng.random_range(0..=s.len());
+                    let frag = ["01", "-", "+1", "1.", "1e", "--1"][prng.random_range(0..6)];
+                    s.insert_str(pos, frag);
+                }
+                6 => {
+                    let pos = prng.random_range(0..=s.len());
+                    let ch = ["\u{0000}", "\u{0001}", "\u{001F}"][prng.random_range(0..3)];
+                    s.insert_str(pos, ch);
+                }
+                7 => {
+                    let add = ["{", "[", "]", "}", "\""][prng.random_range(0..5)];
+                    let pos = prng.random_range(0..=s.len());
+                    s.insert_str(pos, add);
+                }
+                _ => {}
+            }
+        }
+        s
+    })
+}
+
+fn mutator(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
+    if max_size < HEADER {
+        return fuzzer_mutate(data, size, max_size);
+    }
+
+    // With probability ~1/8, let the default mutator explore unstructured space.
+    if seed.count_ones() % 8 == 0 {
+        return fuzzer_mutate(data, size, max_size);
+    }
+
+    // Header
+    // Heavily favor corrupt inputs: ~10% structured, ~80% corrupt, ~10% raw ASCII
+    let draw = with_rng(|rng| rng.random_range(0..10));
+    let mode: u8 = if draw == 0 {
+        0
+    } else if draw <= 8 {
+        1
+    } else {
+        2
+    }; // 0=structured,1=corrupt,2=raw-ascii
+    let flags = with_rng(|rng| rng.next_u32() as u8 & 0xF0); // carry option bits in high nybble
+    let byte0 = mode | flags;
+    let split_seed = with_rng(|rng| rng.next_u32());
+    data[0] = byte0;
+    data[1..HEADER].copy_from_slice(&split_seed.to_le_bytes());
+
+    // Payload buffer after header
+    let buf = &mut data[HEADER..max_size];
+
+    // Decide target payload length based on incoming size to help shrinking
+    let want = size.saturating_sub(HEADER).max(16).min(buf.len());
+
+    let written = match mode {
+        // Structured: generate valid JSON + whitespace like before
+        0 => {
+            let mut prefix = 0usize;
+            while prefix < want {
+                let limit = want - prefix;
+                prefix += append_whitespace(&mut buf[prefix..], limit);
+                prefix += append_value(&mut buf[prefix..], want, limit);
+                prefix += append_whitespace(&mut buf[prefix..], limit);
+            }
+            prefix
+        }
+        // Corrupt-from-valid: build simple valid JSON and then break it
+        1 => {
+            // Produce a base value
+            let base_len = want.min(buf.len());
+            let mut tmp = Vec::with_capacity(base_len);
+            // reuse append_value into a scratch vec
+            // synthesise by writing into a temp slice backed by vec
+            tmp.resize(base_len, 0);
+            let n = append_value(&mut tmp[..], want, base_len);
+            let s = core::str::from_utf8(&tmp[..n])
+                .unwrap_or("{}" /* fallback */)
+                .to_string();
+            let broken = corrupt_json(s, split_seed as u64);
+            let bytes = broken.as_bytes();
+            let n = bytes.len().min(buf.len());
+            buf[..n].copy_from_slice(&bytes[..n]);
+            n
+        }
+        // Raw ASCII
+        _ => {
+            let ascii = b"{}[],:\"-+eE truefalsnul 0123456789 \n\r\t xyz";
+            for i in 0..want {
+                buf[i] = ascii[with_rng(|rng| rng.random_range(0..ascii.len()))];
+            }
+            want
+        }
+    };
+
+    HEADER + written
 }
 
 fuzz_mutator!(|data: &mut [u8], size: usize, max_size: usize, seed: u32| {
@@ -205,43 +341,78 @@ pub fn split_into_safe_chunks(serialized: &str, split_seed: u64) -> Vec<&str> {
 // New: Structured input for the fuzz target with Arbitrary decoding
 impl<'a> Arbitrary<'a> for PreparedInput {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Choose flags first so that option behavior is driven by bytes
-        let flags: FuzzFlags = u.arbitrary()?;
+        // Read header compatible with our mutator: mode + split seed
+        let mode_and_flags: u8 = u.arbitrary()?;
+        let split_seed: u32 = u.arbitrary()?;
 
-        // Decide how many JSON roots to emit (exercise multi-root option)
-        let n_roots = 1 + u.choose_index(4)?; // 1..=4
+        let flags = FuzzFlags {
+            allow_multiple_json_values: mode_and_flags & 0x10 != 0,
+            allow_uppercase_u: mode_and_flags & 0x20 != 0,
+            allow_unicode_whitespace: mode_and_flags & 0x40 != 0,
+            partial_values: mode_and_flags & 0x80 != 0,
+        };
 
-        // Build one or more arbitrary JSON Values and serialize them with random
-        // whitespace
-        let mut out = String::new();
-        for i in 0..n_roots {
-            // Optional leading/trailing unicode whitespace depending on flags / bytes
-            if u.arbitrary::<bool>()? {
-                append_ws_str(&mut out, u, flags.allow_unicode_whitespace)?;
-            }
+        let mut mode = mode_and_flags & 0x03; // 0=structured,1=corrupt,2=raw/ascii,3=as-is
 
-            let v: ArbitraryValue = u.arbitrary()?;
-            let s = serde_json::to_string(&v.0).map_err(|_| arbitrary::Error::IncorrectFormat)?;
-            out.push_str(&s);
-
-            if i + 1 != n_roots || u.arbitrary::<bool>()? {
-                append_ws_str(&mut out, u, flags.allow_unicode_whitespace)?;
+        // Bias generation: only 1/10 times allow mode 0 (structured).
+        if mode == 0 {
+            let allow_structured = u.ratio(1u32, 10u32)?;
+            if !allow_structured {
+                mode = 1; // prefer corrupt path
             }
         }
 
-        // If multiple roots are not allowed, bias towards single-root by occasionally
-        // trimming
-        if !flags.allow_multiple_json_values
-            && let Some(idx) = out.find('}')
-        {
-            out.truncate(idx + 1);
-        }
+        let out = match mode {
+            0 => {
+                // Structured: build N valid JSON roots and whitespace
+                let n_roots = 1 + u.choose_index(4)?; // 1..=4
+                let mut s = String::new();
+                for i in 0..n_roots {
+                    if u.arbitrary::<bool>()? {
+                        append_ws_str(&mut s, u, flags.allow_unicode_whitespace)?;
+                    }
+                    let v: ArbitraryValue = u.arbitrary()?;
+                    let json = serde_json::to_string(&v.0)
+                        .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+                    s.push_str(&json);
+                    if i + 1 != n_roots || u.arbitrary::<bool>()? {
+                        append_ws_str(&mut s, u, flags.allow_unicode_whitespace)?;
+                    }
+                }
+                if !flags.allow_multiple_json_values
+                    && let Some(idx) = s.find('}')
+                {
+                    s.truncate(idx + 1);
+                }
+                s
+            }
+            1 => {
+                // Corrupt-from-valid: produce a valid value, then perturb it
+                let v: ArbitraryValue = u.arbitrary()?;
+                let base =
+                    serde_json::to_string(&v.0).map_err(|_| arbitrary::Error::IncorrectFormat)?;
+                corrupt_json(base, split_seed as u64)
+            }
+            2 => {
+                // Raw ASCII from remaining bytes
+                let rest = u.bytes(u.len())?;
+                let mapped = map_to_ascii(rest);
+                core::str::from_utf8(&mapped)
+                    .map(|s| s.to_owned())
+                    .map_err(|_| arbitrary::Error::IncorrectFormat)?
+            }
+            _ => {
+                // As-is: take UTF‑8 prefix from remaining bytes
+                let rest = u.bytes(u.len())?;
+                to_utf8_prefix(rest)
+                    .map(|s| s.to_owned())
+                    .ok_or(arbitrary::Error::NotEnoughData)?
+            }
+        };
 
-        // Choose a split seed and split along char boundaries
-        let split_seed: u64 = u.arbitrary()?;
-        let chunks = split_into_safe_chunks(&out, split_seed)
+        let chunks = split_into_safe_chunks(&out, split_seed as u64)
             .into_iter()
-            .map(ToOwned::to_owned)
+            .map(|s| s.to_owned())
             .collect::<Vec<_>>();
 
         Ok(PreparedInput { flags, chunks })
