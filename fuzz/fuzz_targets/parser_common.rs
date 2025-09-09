@@ -1,12 +1,12 @@
 use std::{cell::RefCell, hint::black_box};
 
 use arbitrary::Arbitrary;
-use jsonmodem::{BufferOptions, ParserOptions, ValuesOptions, lending_iterator::LendingIterator};
+use jsonmodem::{BufferOptions, ParserOptions, ValuesOptions};
 use libfuzzer_sys::{fuzz_mutator, fuzzer_mutate};
-use rand::{Rng, RngCore, SeedableRng, rngs::SmallRng};
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use serde_json::{Map, Value};
 
-pub const HEADER: usize = 5; // mode u8 + split-seed u32
+pub const HEADER: usize = 5;
 
 thread_local! {
     static RNG: RefCell<SmallRng> = RefCell::new(SmallRng::from_os_rng());
@@ -36,44 +36,60 @@ static WS_TABLE: &[&[u8]] = &[
     "\u{3000}".as_bytes(),
 ];
 
-#[derive(Clone, Copy, Debug, Arbitrary)]
-pub struct FuzzFlags {
-    pub allow_multiple_json_values: bool,
-    pub allow_uppercase_u: bool,
-    pub allow_unicode_whitespace: bool,
-    pub partial_values: bool,
-}
-
-#[derive(Debug)]
-pub struct PreparedInput {
-    pub flags: FuzzFlags,
+#[derive(Clone)]
+pub struct FuzzerInput {
+    pub flags: u8,
     pub chunks: Vec<String>,
 }
 
-pub fn parser_options(flags: FuzzFlags) -> ParserOptions {
+impl core::fmt::Debug for FuzzerInput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let allow_multiple = (self.flags & 1) != 0;
+        let uppercase_u = (self.flags & 2) != 0;
+        let unicode_ws = (self.flags & 4) != 0;
+        let partial = (self.flags & 0x10) != 0;
+        writeln!(f, "flags: allow_multiple={}, uppercase_u={}, unicode_ws={}, partial_values={}", allow_multiple, uppercase_u, unicode_ws, partial)?;
+        let joined = self.chunks.join("");
+        writeln!(f, "text:\n{}", joined)?;
+        writeln!(f, "chunks:{}", self.chunks.len())?;
+        for (i, c) in self.chunks.iter().enumerate() {
+            writeln!(f, "  [{}] {:?}", i, c)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn parser_options(flags: u8) -> ParserOptions {
     ParserOptions::default()
-        .with_allow_multiple_json_values(flags.allow_multiple_json_values)
-        .with_allow_uppercase_u(flags.allow_uppercase_u)
-        .with_allow_unicode_whitespace(flags.allow_unicode_whitespace)
+        .with_allow_multiple_json_values(flags & 1 != 0)
+        .with_allow_uppercase_u(flags & 2 != 0)
+        .with_allow_unicode_whitespace(flags & 4 != 0)
         .with_panic_on_error(false)
 }
 
 #[allow(dead_code)]
-pub fn buffer_options(_flags: FuzzFlags) -> BufferOptions {
+pub fn buffer_options(_flags: u8) -> BufferOptions {
     BufferOptions::default()
 }
 
 #[allow(dead_code)]
-pub fn values_options(flags: FuzzFlags) -> ValuesOptions {
-    ValuesOptions::default().with_partial(flags.partial_values)
+pub fn values_options(flags: u8) -> ValuesOptions {
+    ValuesOptions::default().with_partial(flags & 0x10 != 0)
 }
 
-pub fn consume_results<I>(iter: &mut I)
+pub fn consume_results<I, T, E>(iter: I)
 where
-    I: LendingIterator,
+    I: IntoIterator<Item = Result<T, E>>,
 {
-    while let Some(item) = iter.next() {
-        black_box(item);
+    for item in iter {
+        match item {
+            Ok(value) => {
+                black_box(value);
+            }
+            Err(err) => {
+                black_box(err);
+            }
+        }
     }
 }
 
@@ -84,160 +100,51 @@ where
     RNG.with(|cell| f(&mut cell.borrow_mut()))
 }
 
-// Map arbitrary bytes to mostly-printable ASCII to keep UTF‑8 intact.
-fn map_to_ascii(bytes: &[u8]) -> Vec<u8> {
-    bytes
-        .iter()
-        .map(|b| if b.is_ascii() { *b } else { (b % 0x5e) + 0x20 })
-        .collect()
-}
-
-fn to_utf8_prefix(bytes: &[u8]) -> Option<&str> {
-    match core::str::from_utf8(bytes) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            let n = e.valid_up_to();
-            if n > 0 {
-                core::str::from_utf8(&bytes[..n]).ok()
-            } else {
-                None
-            }
-        }
-    }
-}
-
-fn corrupt_json(mut s: String, seed: u64) -> String {
-    with_rng(|rng| {
-        // Mix in the libfuzzer seed to get deterministic-but-varied ops
-        let mut prng = SmallRng::seed_from_u64(seed ^ rng.next_u64());
-        if s.is_empty() {
-            s.push_str("\"\"");
-        }
-        let ops = prng.random_range(1..=4);
-        for _ in 0..ops {
-            match prng.random_range(0..8) {
-                0 => {
-                    let idxs: Vec<_> = s.char_indices().map(|(i, _)| i).collect();
-                    if idxs.len() > 1 {
-                        let i = idxs[prng.random_range(0..idxs.len())];
-                        s.remove(i);
-                    }
-                }
-                1 => {
-                    let delims = ["{", "}", "[", "]", ",", ":"];
-                    let pos = prng.random_range(0..=s.len());
-                    s.insert_str(pos, delims[prng.random_range(0..delims.len())]);
-                }
-                2 => {
-                    let pos = prng.random_range(0..=s.len());
-                    s.insert_str(pos, if prng.random::<bool>() { "\n" } else { "\"" });
-                }
-                3 => {
-                    let pos = prng.random_range(0..=s.len());
-                    let c = ["u", "x", "U", "\\", "\"", "/"][prng.random_range(0..6)];
-                    s.insert_str(pos, "\\");
-                    s.insert_str(pos + 1, c);
-                }
-                4 => {
-                    let add = if prng.random::<bool>() { "[," } else { "{" };
-                    let close = if add == "[," { "]" } else { "}" };
-                    s = format!("{}{}{}", add, s, close);
-                }
-                5 => {
-                    let pos = prng.random_range(0..=s.len());
-                    let frag = ["01", "-", "+1", "1.", "1e", "--1"][prng.random_range(0..6)];
-                    s.insert_str(pos, frag);
-                }
-                6 => {
-                    let pos = prng.random_range(0..=s.len());
-                    let ch = ["\u{0000}", "\u{0001}", "\u{001F}"][prng.random_range(0..3)];
-                    s.insert_str(pos, ch);
-                }
-                7 => {
-                    let add = ["{", "[", "]", "}", "\""][prng.random_range(0..5)];
-                    let pos = prng.random_range(0..=s.len());
-                    s.insert_str(pos, add);
-                }
-                _ => {}
-            }
-        }
-        s
-    })
-}
-
 fn mutator(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
-    if max_size < HEADER {
-        return fuzzer_mutate(data, size, max_size);
-    }
+    // Cooperative: always (re)write a valid header (if room), then either synthesize
+    // structured JSON payload (with optional corruption) or fall back to default
+    // mutation for exploration.
+    let mut rng = SmallRng::seed_from_u64(seed as u64);
+    let cap = core::cmp::min(max_size, data.len());
+    if cap < HEADER { return fuzzer_mutate(data, size, max_size); }
 
-    // With probability ~1/8, let the default mutator explore unstructured space.
-    if seed.count_ones() % 8 == 0 {
-        return fuzzer_mutate(data, size, max_size);
-    }
-
-    // Header
-    // Heavily favor corrupt inputs: ~10% structured, ~80% corrupt, ~10% raw ASCII
-    let draw = with_rng(|rng| rng.random_range(0..10));
-    let mode: u8 = if draw == 0 {
-        0
-    } else if draw <= 8 {
-        1
-    } else {
-        2
-    }; // 0=structured,1=corrupt,2=raw-ascii
-    let flags = with_rng(|rng| rng.next_u32() as u8 & 0xF0); // carry option bits in high nybble
-    let byte0 = mode | flags;
-    let split_seed = with_rng(|rng| rng.next_u32());
-    data[0] = byte0;
+    // Flags: randomize parser behaviors; bit 0x08 toggles corruption mode the target applies
+    let mut flags: u8 = 0;
+    if rng.random::<bool>() { flags |= 0x01; }
+    if rng.random::<bool>() { flags |= 0x02; }
+    if rng.random::<bool>() { flags |= 0x04; }
+    if rng.random::<bool>() { flags |= 0x08; }
+    if rng.random::<bool>() { flags |= 0x10; }
+    data[0] = flags;
+    let split_seed = rng.random::<u32>();
     data[1..HEADER].copy_from_slice(&split_seed.to_le_bytes());
 
-    // Payload buffer after header
-    let buf = &mut data[HEADER..max_size];
+    // With ~1/6 probability, delegate to the default mutator for diversity
+    if seed.is_multiple_of(6) {
+        return fuzzer_mutate(data, size, max_size);
+    }
 
-    // Decide target payload length based on incoming size to help shrinking
-    let want = size.saturating_sub(HEADER).max(16).min(buf.len());
-
-    let written = match mode {
-        // Structured: generate valid JSON + whitespace like before
-        0 => {
-            let mut prefix = 0usize;
-            while prefix < want {
-                let limit = want - prefix;
-                prefix += append_whitespace(&mut buf[prefix..], limit);
-                prefix += append_value(&mut buf[prefix..], want, limit);
-                prefix += append_whitespace(&mut buf[prefix..], limit);
-            }
-            prefix
+    let mut prefix = HEADER;
+    // Decide how many roots to emit: 1..=3
+    let roots = 1 + (seed as usize % 3);
+    for r in 0..roots {
+        // Leading whitespace before a value
+        if prefix >= cap { break; }
+        prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
+        // Generate a JSON Value and serialize into-place
+        if prefix >= cap { break; }
+        prefix += append_value(&mut data[prefix..cap], size.max(32), cap - prefix);
+        // Trailing whitespace after the value
+        if prefix >= cap { break; }
+        prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
+        if prefix >= cap { break; }
+        // Between roots, add a bit more whitespace
+        if r + 1 != roots {
+            prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
         }
-        // Corrupt-from-valid: build simple valid JSON and then break it
-        1 => {
-            // Produce a base value
-            let base_len = want.min(buf.len());
-            let mut tmp = Vec::with_capacity(base_len);
-            // reuse append_value into a scratch vec
-            // synthesise by writing into a temp slice backed by vec
-            tmp.resize(base_len, 0);
-            let n = append_value(&mut tmp[..], want, base_len);
-            let s = core::str::from_utf8(&tmp[..n])
-                .unwrap_or("{}" /* fallback */)
-                .to_string();
-            let broken = corrupt_json(s, split_seed as u64);
-            let bytes = broken.as_bytes();
-            let n = bytes.len().min(buf.len());
-            buf[..n].copy_from_slice(&bytes[..n]);
-            n
-        }
-        // Raw ASCII
-        _ => {
-            let ascii = b"{}[],:\"-+eE truefalsnul 0123456789 \n\r\t xyz";
-            for i in 0..want {
-                buf[i] = ascii[with_rng(|rng| rng.random_range(0..ascii.len()))];
-            }
-            want
-        }
-    };
-
-    HEADER + written
+        if prefix >= cap { break; }
+    }
+    core::cmp::min(prefix, cap)
 }
 
 fuzz_mutator!(|data: &mut [u8], size: usize, max_size: usize, seed: u32| {
@@ -249,30 +156,26 @@ struct ArbitraryValue(Value);
 
 impl<'a> Arbitrary<'a> for ArbitraryValue {
     fn arbitrary(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<Self> {
-        let node_type = u.choose_index(6)?;
+        let node_type = u.choose_index(21)?;
         let value = match node_type {
             0 => Value::Null,
             1 => Value::Bool(u.arbitrary()?),
             2 => {
-                let r = match u.choose_index(3)? {
-                    0 => serde_json::Number::from_f64(u.arbitrary()?)
-                        .ok_or(arbitrary::Error::IncorrectFormat)?,
-                    1 => serde_json::Number::from(u.arbitrary::<i64>()?),
-                    2 => serde_json::Number::from(u.arbitrary::<u64>()?),
-                    _ => unreachable!(),
-                };
-                Value::Number(r)
+                let n: f64 = u.arbitrary()?;
+                Value::Number(
+                    serde_json::Number::from_f64(n).ok_or(arbitrary::Error::IncorrectFormat)?,
+                )
             }
-            3 => Value::String(u.arbitrary()?),
-            4 => {
+            3..=10 => Value::String(u.arbitrary()?),
+            11..=15 => {
                 let elems: Vec<ArbitraryValue> = u.arbitrary()?;
                 Value::Array(elems.into_iter().map(|v| v.0).collect())
             }
-            5 => {
+            16..=20 => {
                 let m: Vec<(String, ArbitraryValue)> = u.arbitrary()?;
                 Value::Object(Map::from_iter(m.into_iter().map(|(k, v)| (k, v.0))))
             }
-            _ => unreachable!(),
+            _ => Err(arbitrary::Error::IncorrectFormat)?,
         };
         Ok(ArbitraryValue(value))
     }
@@ -280,17 +183,18 @@ impl<'a> Arbitrary<'a> for ArbitraryValue {
 
 fn append_whitespace(buf: &mut [u8], limit: usize) -> usize {
     with_rng(|rng| {
-        if limit == 0 {
+        if limit == 0 || buf.is_empty() {
             return 0;
         }
 
-        let n_codepoints = rng.random_range(1..=limit.min(8));
+        let cap = limit.min(buf.len());
+        let n_codepoints = rng.random_range(1..=cap.min(8));
         let mut written = 0;
 
         for _ in 0..n_codepoints {
             let w = WS_TABLE[rng.random_range(0..WS_TABLE.len())];
 
-            if written + w.len() > limit {
+            if written + w.len() > cap {
                 break;
             }
 
@@ -338,106 +242,85 @@ pub fn split_into_safe_chunks(serialized: &str, split_seed: u64) -> Vec<&str> {
     chunks
 }
 
-// New: Structured input for the fuzz target with Arbitrary decoding
-impl<'a> Arbitrary<'a> for PreparedInput {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // Read header compatible with our mutator: mode + split seed
-        let mode_and_flags: u8 = u.arbitrary()?;
-        let split_seed: u32 = u.arbitrary()?;
-
-        let flags = FuzzFlags {
-            allow_multiple_json_values: mode_and_flags & 0x10 != 0,
-            allow_uppercase_u: mode_and_flags & 0x20 != 0,
-            allow_unicode_whitespace: mode_and_flags & 0x40 != 0,
-            partial_values: mode_and_flags & 0x80 != 0,
-        };
-
-        let mut mode = mode_and_flags & 0x03; // 0=structured,1=corrupt,2=raw/ascii,3=as-is
-
-        // Bias generation: only 1/10 times allow mode 0 (structured).
-        if mode == 0 {
-            let allow_structured = u.ratio(1u32, 10u32)?;
-            if !allow_structured {
-                mode = 1; // prefer corrupt path
-            }
+fn corrupt_utf8_text(mut s: String, seed: u64) -> String {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    // 1..=4 operations
+    let ops = rng.random_range(1..=4);
+    for _ in 0..ops {
+        let bounds: Vec<usize> = s
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(core::iter::once(s.len()))
+            .collect();
+        if bounds.is_empty() {
+            break;
         }
-
-        let out = match mode {
+        match rng.random_range(0..8) {
             0 => {
-                // Structured: build N valid JSON roots and whitespace
-                let n_roots = 1 + u.choose_index(4)?; // 1..=4
-                let mut s = String::new();
-                for i in 0..n_roots {
-                    if u.arbitrary::<bool>()? {
-                        append_ws_str(&mut s, u, flags.allow_unicode_whitespace)?;
-                    }
-                    let v: ArbitraryValue = u.arbitrary()?;
-                    let json = serde_json::to_string(&v.0)
-                        .map_err(|_| arbitrary::Error::IncorrectFormat)?;
-                    s.push_str(&json);
-                    if i + 1 != n_roots || u.arbitrary::<bool>()? {
-                        append_ws_str(&mut s, u, flags.allow_unicode_whitespace)?;
-                    }
+                // delete a character
+                if bounds.len() > 1 {
+                    let i = bounds[rng.random_range(0..bounds.len() - 1)];
+                    s.remove(i);
                 }
-                if !flags.allow_multiple_json_values
-                    && let Some(idx) = s.find('}')
-                {
-                    s.truncate(idx + 1);
-                }
-                s
             }
             1 => {
-                // Corrupt-from-valid: produce a valid value, then perturb it
-                let v: ArbitraryValue = u.arbitrary()?;
-                let base =
-                    serde_json::to_string(&v.0).map_err(|_| arbitrary::Error::IncorrectFormat)?;
-                corrupt_json(base, split_seed as u64)
+                // insert delimiter
+                let delims = ["{", "}", "[", "]", ",", ":"];
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                s.insert_str(pos, delims[rng.random_range(0..delims.len())]);
             }
             2 => {
-                // Raw ASCII from remaining bytes
-                let rest = u.bytes(u.len())?;
-                let mapped = map_to_ascii(rest);
-                core::str::from_utf8(&mapped)
-                    .map(|s| s.to_owned())
-                    .map_err(|_| arbitrary::Error::IncorrectFormat)?
+                // break string
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                s.insert_str(pos, if rng.random::<bool>() { "\n" } else { "\"" });
+            }
+            3 => {
+                // break escape
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                let c = ["u", "x", "U", "\\", "\"", "/"][rng.random_range(0..6)];
+                s.insert(pos, '\\');
+                s.insert_str(pos + 1, c);
+            }
+            4 => {
+                // wrap with unbalancing brackets
+                let add = if rng.random::<bool>() { "[," } else { "{" };
+                let close = if add == "[," { "]" } else { "}" };
+                s = format!("{}{}{}", add, s, close);
+            }
+            5 => {
+                // invalid number fragment
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                let frag = ["01", "-", "+1", "1.", "1e", "--1"][rng.random_range(0..6)];
+                s.insert_str(pos, frag);
+            }
+            6 => {
+                // control code via unicode escape
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                let ch = ["\u{0000}", "\u{0001}", "\u{001F}"][rng.random_range(0..3)];
+                s.insert_str(pos, ch);
             }
             _ => {
-                // As-is: take UTF‑8 prefix from remaining bytes
-                let rest = u.bytes(u.len())?;
-                to_utf8_prefix(rest)
-                    .map(|s| s.to_owned())
-                    .ok_or(arbitrary::Error::NotEnoughData)?
+                // random bracket/quote
+                let add = ["{", "[", "]", "}", "\""][rng.random_range(0..5)];
+                let pos = bounds[rng.random_range(0..bounds.len())];
+                s.insert_str(pos, add);
             }
-        };
-
-        let chunks = split_into_safe_chunks(&out, split_seed as u64)
-            .into_iter()
-            .map(|s| s.to_owned())
-            .collect::<Vec<_>>();
-
-        Ok(PreparedInput { flags, chunks })
-    }
-}
-
-fn append_ws_str(
-    target: &mut String,
-    u: &mut arbitrary::Unstructured<'_>,
-    unicode: bool,
-) -> arbitrary::Result<()> {
-    // Up to 8 codepoints of whitespace
-    let n = 1 + u.choose_index(8)?;
-    for _ in 0..n {
-        if unicode {
-            let idx = u.choose_index(WS_TABLE.len())?;
-            target.push_str(std::str::from_utf8(WS_TABLE[idx]).unwrap());
-        } else {
-            target.push(match u.choose_index(4)? {
-                0 => ' ',
-                1 => '\t',
-                2 => '\n',
-                _ => '\r',
-            });
         }
     }
-    Ok(())
+    s
+}
+
+impl<'a> Arbitrary<'a> for FuzzerInput {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let all = u.bytes(u.len())?;
+        if all.len() < HEADER { return Err(arbitrary::Error::NotEnoughData); }
+        let flags = all[0];
+        let split_seed = u32::from_le_bytes(all[1..HEADER].try_into().unwrap()) as u64;
+        let mut text = String::from_utf8_lossy(&all[HEADER..]).into_owned();
+        if (flags & 0x08) != 0 {
+            text = corrupt_utf8_text(text, split_seed);
+        }
+        let chunks = split_into_safe_chunks(&text, split_seed).into_iter().map(|s| s.to_owned()).collect();
+        Ok(FuzzerInput { flags, chunks })
+    }
 }

@@ -66,34 +66,6 @@ fn render_tokens(tokens: &[Token]) -> Result<String, core::fmt::Error> {
     Ok(rendered)
 }
 
-// struct TestValue {
-//     value: Value,
-//     tokens: Vec<Token>,
-//     tokens_with_whitespace: Vec<Token>,
-// }
-
-// impl Arbitrary for TestValue {
-//     fn arbitrary(g: &mut Gen) -> Self {
-//         let value = Value::arbitrary(g);
-//         let tokens = value.get_lexed_tokens();
-//         let mut tokens_with_whitespace = Vec::new();
-
-//         // intersperse whitespace tokens between non-whitespace tokens
-//         for (i, token) in tokens.iter().enumerate() {
-//             if i > 0 {
-//                 // Add a whitespace token before the current token
-//                 tokens_with_whitespace.push(Token {
-//                     value: TokenValue::Whitespace(" ".to_string()),
-
-//         TestValue {
-//             value,
-//             tokens,
-//             tokens_with_whitespace,
-//         }
-//     }
-// }
-// }
-
 #[test]
 fn roundtrip_rendered_tokens() {
     let tokens = [

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::context::EventCtx;
+use crate::{backend::PathError, context::EventCtx};
 
 /// Error returned while parsing JSON input.
 #[derive(Error, Debug, PartialEq)]
@@ -29,4 +29,6 @@ pub enum SyntaxError {
     InvalidUnicodeEscapeSequence(u32),
     #[error("unexpected end of input")]
     UnexpectedEndOfInput,
+    #[error(transparent)]
+    PathError(PathError),
 }

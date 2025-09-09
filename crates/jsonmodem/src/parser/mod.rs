@@ -26,8 +26,6 @@ use alloc::{
     vec::Vec,
 };
 use core::mem::{ManuallyDrop, MaybeUninit};
-#[cfg(test)]
-use std::eprintln;
 
 pub use error::{ErrorSource, ParserError, SyntaxError};
 use escape_buffer::UnicodeEscapeBuffer;
@@ -68,25 +66,6 @@ pub(crate) enum Token<'src> {
 }
 
 impl Token<'_> {
-    #[cfg(test)]
-    fn to_owned(&self) -> Token<'static> {
-        match self {
-            Token::Eof => Token::Eof,
-            Token::PropertyName(name) => Token::PropertyName(name.clone()),
-            Token::PropertyNameRaw(bytes) => Token::PropertyNameRaw(bytes.clone()),
-            Token::StringBorrowed(s) => Token::StringOwned((*s).into()),
-            Token::StringOwned(s) => Token::StringOwned(s.clone()),
-            Token::StringRaw(bytes) => Token::StringRaw(bytes.clone()),
-            Token::Boolean(b) => Token::Boolean(*b),
-            Token::Null => Token::Null,
-            Token::NumberBorrowed(s) => Token::Number((*s).into()),
-            Token::Number(s) => Token::Number(s.clone()),
-            Token::Punctuator(c) => Token::Punctuator(*c),
-        }
-    }
-}
-
-impl Token<'_> {
     /// Returns `true` if the token value is [`Eof`].
     ///
     /// [`Eof`]: TokenValue::Eof
@@ -119,6 +98,7 @@ enum ParseState {
     BeforePropertyName,
     AfterPropertyName,
     BeforePropertyValue,
+    BeforeFirstArrayValue,
     BeforeArrayValue,
     AfterPropertyValue,
     AfterArrayValue,
@@ -160,7 +140,9 @@ impl From<ParseState> for LexState {
             ParseState::BeforePropertyName => LexState::BeforePropertyName,
             ParseState::AfterPropertyName => LexState::AfterPropertyName,
             ParseState::BeforePropertyValue => LexState::BeforePropertyValue,
-            ParseState::BeforeArrayValue => LexState::BeforeArrayValue,
+            ParseState::BeforeFirstArrayValue | ParseState::BeforeArrayValue => {
+                LexState::BeforeArrayValue
+            }
             ParseState::AfterPropertyValue => LexState::AfterPropertyValue,
             ParseState::AfterArrayValue => LexState::AfterArrayValue,
             ParseState::End => LexState::End,
@@ -196,10 +178,6 @@ pub struct JsonModem<Ctx: EventCtx> {
     /// emitted a parse event. Determines the value of `is_initial` on
     /// [`ParseEvent::String`].
     initialized_string: bool,
-    /// Indicates if a key is pending, i.e.: we have opened an object but have
-    /// not pushed a key yet.
-    pending_key: bool,
-    pending_path_op: Option<PathOp>,
 
     /// Options
     allow_unicode_whitespace: bool,
@@ -215,10 +193,6 @@ pub struct JsonModem<Ctx: EventCtx> {
     /// in non-release builds.
     #[doc(hidden)]
     panic_on_error: bool,
-
-    /// Sequence of tokens produced by the lexer.
-    #[cfg(test)]
-    lexed_tokens: Vec<Token<'static>>,
 
     /// Tracks a pending high surrogate (0xD800..=0xDBFF) seen via \u escapes
     /// awaiting a following low surrogate to form a single code point.
@@ -316,12 +290,6 @@ impl<Ctx: EventCtx> Drop for JsonModemClosed<'_, Ctx> {
 }
 
 impl<'src, Ctx: EventCtx> JsonModemClosed<'src, Ctx> {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn get_lexed_tokens(&self) -> &[Token<'static>] {
-        self.parser.get_lexed_tokens()
-    }
-
     #[allow(clippy::wrong_self_convention)]
     pub fn to_iter(
         mut self,
@@ -353,15 +321,6 @@ impl<'src, Ctx: EventCtx> LendingIterator for JsonModemClosed<'src, Ctx> {
     }
 }
 
-#[derive(Debug, PartialEq)]
-#[allow(dead_code)]
-enum PathOp {
-    PushIndexZero,
-    PushKeyOwned(String),
-    PushKeyRaw(Vec<u8>),
-    BumpIndex,
-}
-
 impl<Ctx: EventCtx> JsonModem<Ctx> {
     #[must_use]
     /// Creates a new `JsonModem` with the given event factory and options.
@@ -383,16 +342,12 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
 
             path: MaybeUninit::new(f.frozen_new()),
             initialized_string: false,
-            pending_key: false,
-            pending_path_op: None,
 
             multiple_values: options.allow_multiple_json_values,
             decode_mode: options.decode_mode,
             allow_uppercase_u: options.allow_uppercase_u,
             allow_unicode_whitespace: options.allow_unicode_whitespace,
             panic_on_error: options.panic_on_error,
-            #[cfg(test)]
-            lexed_tokens: Vec::new(),
             pending_high_surrogate: None,
         }
     }
@@ -475,38 +430,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
     }
 
     #[inline]
-    fn apply_path_op(&'_ mut self, op: PathOp, f: &'_ mut Ctx, path: &'_ mut Ctx::Path) {
-        #[cfg(test)]
-        eprintln!("applying pending path op: {op:?}");
-        match op {
-            PathOp::PushIndexZero => {
-                f.push_index_zero(path);
-                self.parse_state = ParseState::BeforeArrayValue;
-            }
-            PathOp::PushKeyOwned(s) => {
-                if !self.pending_key {
-                    f.pop_kind(path);
-                }
-                f.push_key_from_str(path, &s);
-                self.pending_key = false;
-                self.parse_state = ParseState::AfterPropertyName;
-            }
-            PathOp::PushKeyRaw(bytes) => {
-                if !self.pending_key {
-                    f.pop_kind(path);
-                }
-                f.push_key_from_raw_str(path, &bytes);
-                self.pending_key = false;
-                self.parse_state = ParseState::AfterPropertyName;
-            }
-            PathOp::BumpIndex => {
-                let _ = f.bump_last_index(path);
-                self.parse_state = ParseState::BeforeArrayValue;
-            }
-        }
-    }
-
-    #[inline]
     fn pop(&'_ mut self, f: &mut Ctx, path: &mut Ctx::Path) {
         let _ = f.pop_kind(path);
         self.parse_state = match f.last_kind(path) {
@@ -528,10 +451,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
         }
 
         loop {
-            if let Some(op) = self.pending_path_op.take() {
-                self.apply_path_op(op, f, path);
-            }
-
             if self.multiple_values && matches!(self.parse_state, ParseState::End) {
                 // No internal builder; adapters build values externally.
                 self.lex_state = LexState::Default;
@@ -553,8 +472,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             let is_eof = token.is_eof();
             match self.dispatch_parse_state(token, f, path) {
                 Ok(Some(evt)) => {
-                    #[cfg(test)]
-                    eprintln!("emitting event: {evt:?}");
                     return Some(Ok(evt));
                 }
                 Ok(None) => {}
@@ -588,8 +505,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
 
         loop {
             if let Some(tok) = self.lex_state_step(self.lex_state, scanner)? {
-                #[cfg(test)]
-                self.lexed_tokens.push(tok.to_owned());
                 return Ok(tok);
             }
         }
@@ -1428,7 +1343,7 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
     ) -> Result<Option<ParseEvent<'src, (), Ctx>>, ParserError<Ctx>> {
         use ParseState::{
             AfterArrayValue, AfterPropertyName, AfterPropertyValue, BeforeArrayValue,
-            BeforePropertyName, BeforePropertyValue, End, Error, Start,
+            BeforeFirstArrayValue, BeforePropertyName, BeforePropertyValue, End, Error, Start,
         };
 
         match self.parse_state {
@@ -1442,36 +1357,16 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             BeforePropertyName => match token {
                 Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::PropertyNameRaw(value) => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(self.pending_path_op, None, "Expected no pending path op");
-                    let first_key = self.pending_key;
-                    self.pending_key = false;
-                    if !first_key {
-                        ctx.pop_kind(path);
-                    }
                     ctx.push_key_from_raw_str(path, &value);
                     self.parse_state = AfterPropertyName;
                     Ok(None)
                 }
                 Token::PropertyName(value) => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(self.pending_path_op, None, "Expected no pending path op");
-                    let first_key = self.pending_key;
-                    self.pending_key = false;
-                    if !first_key {
-                        ctx.pop_kind(path);
-                    }
                     ctx.push_key_from_str(path, &value);
                     self.parse_state = AfterPropertyName;
                     Ok(None)
                 }
                 Token::Punctuator(b'}') => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(
-                        self.pending_path_op, None,
-                        "Expected no pending path op, found {:?}",
-                        self.pending_path_op
-                    );
                     // Closing an object before any property: do not pop the
                     // path (no key was pushed yet). Update parse state based on
                     // the parent context.
@@ -1500,15 +1395,27 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                 _ => self.push(token, ctx, path),
             },
 
+            BeforeFirstArrayValue => match token {
+                Token::Eof => Ok(None),
+                Token::Punctuator(b']') => {
+                    self.parse_state = match ctx.last_kind(path) {
+                        Some(PathKind::Index) => ParseState::AfterArrayValue,
+                        Some(PathKind::Key) => ParseState::AfterPropertyValue,
+                        None => ParseState::End,
+                    };
+                    Ok(Some(ParseEvent::ArrayEnd { path: () }))
+                }
+                _ => {
+                    ctx.push_index_zero(path);
+
+                    self.parse_state = ParseState::BeforeArrayValue;
+                    self.push(token, ctx, path)
+                }
+            },
+
             BeforeArrayValue => match token {
                 Token::Eof => Ok(None),
                 Token::Punctuator(b']') => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(
-                        self.pending_path_op, None,
-                        "Expected no pending path op, found {:?}",
-                        self.pending_path_op
-                    );
                     self.pop(ctx, path);
                     Ok(Some(ParseEvent::ArrayEnd { path: () }))
                 }
@@ -1518,16 +1425,11 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             AfterPropertyValue => match token {
                 Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::Punctuator(b',') => {
+                    self.pop(ctx, path);
                     self.parse_state = BeforePropertyName;
                     Ok(None)
                 }
                 Token::Punctuator(b'}') => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(
-                        self.pending_path_op, None,
-                        "Expected no pending path op, found {:?}",
-                        self.pending_path_op
-                    );
                     self.pop(ctx, path);
                     Ok(Some(ParseEvent::ObjectEnd { path: () }))
                 }
@@ -1537,25 +1439,12 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             AfterArrayValue => match token {
                 Token::Eof if self.end_of_input => Err(self.invalid_eof()),
                 Token::Punctuator(b',') => {
-                    #[cfg(test)]
-                    eprintln!("in afterarrayvalue");
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(
-                        self.pending_path_op, None,
-                        "Expected no pending path op, found {:?}",
-                        self.pending_path_op
-                    );
-                    self.pending_path_op = Some(PathOp::BumpIndex);
-                    self.parse_state = BeforeArrayValue;
+                    ctx.bump_last_index(path)
+                        .map_err(|e| self.syntax_error(SyntaxError::PathError(e)))?;
+                    self.parse_state = ParseState::BeforeArrayValue;
                     Ok(None)
                 }
                 Token::Punctuator(b']') => {
-                    #[cfg(any(fuzzing, debug_assertions))]
-                    assert_eq!(
-                        self.pending_path_op, None,
-                        "Expected no pending path op, found {:?}",
-                        self.pending_path_op
-                    );
                     self.pop(ctx, path);
                     Ok(Some(ParseEvent::ArrayEnd { path: () }))
                 }
@@ -1564,9 +1453,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             End | Error => Ok(None),
         }
     }
-
-    // Old transitional implementation removed: the parser now applies
-    // pending path operations in a structured way (see `apply_pending_path_op`).
 
     #[inline]
     fn push<'src, 'a>(
@@ -1577,19 +1463,11 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
     ) -> Result<Option<ParseEvent<'src, (), Ctx>>, ParserError<Ctx>> {
         let evt: Option<ParseEvent<'src, (), Ctx>> = match token {
             Token::Punctuator(b'{') => {
-                self.pending_key = true;
                 self.parse_state = ParseState::BeforePropertyName;
                 return Ok(Some(ParseEvent::ObjectBegin { path: () }));
             }
             Token::Punctuator(b'[') => {
-                #[cfg(any(fuzzing, debug_assertions))]
-                assert_eq!(
-                    self.pending_path_op, None,
-                    "Expected no pending path op, found {:?}",
-                    self.pending_path_op
-                );
-                self.pending_path_op = Some(PathOp::PushIndexZero);
-                self.parse_state = ParseState::BeforeArrayValue;
+                self.parse_state = ParseState::BeforeFirstArrayValue;
                 return Ok(Some(ParseEvent::ArrayBegin { path: () }));
             }
 
@@ -1726,12 +1604,6 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             }
             c => c.to_string(),
         }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn get_lexed_tokens(&self) -> &[Token<'static>] {
-        &self.lexed_tokens
     }
 }
 

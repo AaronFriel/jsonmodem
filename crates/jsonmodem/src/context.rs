@@ -2,6 +2,8 @@ use core::{
     error::Error,
     fmt::{Debug, Display},
 };
+use thiserror::Error;
+
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PathKind {
@@ -9,9 +11,11 @@ pub enum PathKind {
     Index,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Error, Debug, PartialEq, Eq)]
 pub enum PathError {
+    #[error("not an array frame")]
     NotArrayFrame,
+    #[error("empty path")]
     Empty,
 }
 

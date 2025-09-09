@@ -196,6 +196,120 @@ fn debug_events_for_buffers_case_two() {
     println!("{out}");
 }
 
+#[ignore = "debug-only helper"]
+#[test]
+fn debug_events_for_buffers_case_three() {
+    let case = FuzzCase {
+        name: "buffers_case_three",
+        harness: Harness::Buffers,
+        flags: 30,
+        split_seed: 1_017_481_773,
+        payload: concat!(
+            "\u{0009}\u{000D}\u{2001}\u{2006}\u{2001}\u{2029}\u{2004} {\"\":[],\"\\u0005\":\"yS\",
+            \"\\\\\"\":{\"\":{}},\"K\":\"_\",\"gA\":[[],\"a\\\\\"\\u000b\"]},\"Y`\\u001c\":\"\"}]",
+            "\u{202F}\u{2007}\u{2009}\u{2004}\u{000A}\u{2003}\u{1680}\u{2029}\u{2001}\u{2005}\u{000A}\u{202F}\u{202F}\u{2000}\u{1680}\u{2002}\u{2005}\u{2029}[]\u{3000}",
+            "\u{205F}\u{1680}\u{000D}\u{FFFD}\u{2003}\u{1680}\u{1680}\u{FFFD}\u{0009}\u{000D}\u{202F}\u{2004}[]\u{2029}\u{1680}\u{2008}\u{0009}\u{2001}\u{2029}",
+        ),
+        description: "debug trace for buffers_case_three fuzz crash",
+    };
+    let (options, chunks) = chunks_for_case(&case);
+    let mut parser: JsonModem<jsonmodem::StdBackend> = JsonModem::new(options);
+    let mut out = String::new();
+    let _ = writeln!(&mut out, "chunks = {}", chunks.len());
+    for (i, chunk) in chunks.iter().enumerate() {
+        let _ = writeln!(&mut out, "feed#{i} chunk='{chunk}'");
+        for evt in parser.feed(chunk).to_iter() {
+            match evt {
+                Ok(e) => {
+                    let _ = writeln!(&mut out, "feed#{i} -> {e:?}");
+                }
+                Err(e) => {
+                    let _ = writeln!(&mut out, "feed#{i} -> ERROR: {e:?}");
+                }
+            }
+        }
+    }
+    out.push_str("finish()...\n");
+    for evt in parser.finish().to_iter() {
+        match evt {
+            Ok(e) => {
+                let _ = writeln!(&mut out, "finish -> {e:?}");
+            }
+            Err(e) => {
+                let _ = writeln!(&mut out, "finish -> ERROR: {e:?}");
+            }
+        }
+    }
+    println!("{out}");
+}
+
+#[ignore = "debug-only helper"]
+#[test]
+fn debug_buffers_iter_for_case_three() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let case = FuzzCase {
+        name: "buffers_case_three",
+        harness: Harness::Buffers,
+        flags: 30,
+        split_seed: 1_017_481_773,
+        payload: concat!(
+            "\u{0009}\u{000D}\u{2001}\u{2006}\u{2001}\u{2029}\u{2004} {\"\":[],\"\\u0005\":\"yS\",
+            \"\\\\\"\":{\"\":{}},\"K\":\"_\",\"gA\":[[],\"a\\\\\"\\u000b\"]},\"Y`\\u001c\":\"\"}]",
+            "\u{202F}\u{2007}\u{2009}\u{2004}\u{000A}\u{2003}\u{1680}\u{2029}\u{2001}\u{2005}\u{000A}\u{202F}\u{202F}\u{2000}\u{1680}\u{2002}\u{2005}\u{2029}[]\u{3000}",
+            "\u{205F}\u{1680}\u{000D}\u{FFFD}\u{2003}\u{1680}\u{1680}\u{FFFD}\u{0009}\u{000D}\u{202F}\u{2004}[]\u{2029}\u{1680}\u{2008}\u{0009}\u{2001}\u{2029}",
+        ),
+        description: "buffers iterator panic trace for buffers_case_three",
+    };
+
+    let (options, chunks) = chunks_for_case(&case);
+    let mut parser = JsonModemBuffers::new(options, BufferOptions::default());
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        println!("feed#{i} chunk='{chunk}'");
+        let mut iter = parser.feed(chunk).to_iter();
+        let mut event_idx = 0usize;
+        loop {
+            let next = catch_unwind(AssertUnwindSafe(|| iter.next()));
+            match next {
+                Ok(Some(Ok(evt))) => {
+                    println!("  event#{event_idx}: {evt:?}");
+                }
+                Ok(Some(Err(err))) => {
+                    println!("  event#{event_idx}: ERROR {err:?}");
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    println!("  panic while decoding event#{event_idx}");
+                    panic!("buffers iterator panic");
+                }
+            }
+            event_idx += 1;
+        }
+    }
+
+    println!("finish()...");
+    let mut closed = parser.finish().to_iter();
+    let mut event_idx = 0usize;
+    loop {
+        let next = catch_unwind(AssertUnwindSafe(|| closed.next()));
+        match next {
+            Ok(Some(Ok(evt))) => {
+                println!("  finish event#{event_idx}: {evt:?}");
+            }
+            Ok(Some(Err(err))) => println!(
+                "  finish event#{event_idx}: ERROR {err:?}"
+            ),
+            Ok(None) => break,
+            Err(_) => {
+                println!("  panic while decoding finish event#{event_idx}");
+                panic!("buffers iterator finish panic");
+            }
+        }
+        event_idx += 1;
+    }
+}
+
 // CI regression: fuzz_jsonmodem_buffers crash-ec7fe34d57815d37
 #[test]
 fn fuzz_ci_buffers_ec7fe34d57815d37() {
@@ -350,4 +464,68 @@ fn fuzz_regression_buffers_case_two() {
             "bracket burst at the root",
         ),
     });
+}
+
+#[test]
+fn fuzz_candidate_from_user_buffers() {
+    // Derived from the Provided FuzzerInput (flags expanded explicitly).
+    let options = ParserOptions::default()
+        .with_allow_multiple_json_values(false)
+        .with_allow_uppercase_u(false)
+        .with_allow_unicode_whitespace(false)
+        .with_panic_on_error(false);
+    let mut parser = JsonModemBuffers::new(options, BufferOptions::default());
+    let chunks: &[&str] = &[
+        "{{\"\\u0000\\u000f\":{\"\":{\"\":\"9~%\\r\"},\"\\u0007\\u0007\\u0007 #ɿ\":\"\"]\",\"\\u0016\":[[\"\",\"]\",[],{\"\":\"\"},{\"]e\":[true,6.6606492817934915e165,1.2201e5911614548592e185,\"'\\\":\\\"S\\\\u0019J\\\"},null,1.\"]},null,null,false]],\"\\u001dI\":{\"\\t\":{\"\\u0016\":[[{},[-9159615202055668737,[],null],null],true,[]],\"!\":{\"\":{\"\":{\"\":true},\",sU^\":[],\"k\\u0002\":\"\\u0005\",\"ю\":true}}}},\" \":{\"<\":null},\"\\\"\\b\":{},\"'M\":[[],-2.72817",
+        "46600704903e-237,false],\",sU>\\u0013;\":5254487156537939167,\"=\":\".(\",\"G\":null,\"O\u{7f}\"",
+        ":true,\"e,\\\"\":\"$*\",\"h\":true,\"",
+        "i t\":null,\"i-\":null,\"k\\u0002\":\"\\u00",
+        "05\",\"n$u^\":[],\"ϣ\":[[],{},7.484207260355667e251],\"\u{484}c3T\":\"\"},\"~M\":{}}}",
+    ];
+    for c in chunks {
+        consume_results(parser.feed(c).to_iter());
+    }
+    consume_results(parser.finish().to_iter());
+}
+
+#[test]
+fn fuzz_candidate_from_user_values() {
+    let options = ParserOptions::default()
+        .with_allow_multiple_json_values(false)
+        .with_allow_uppercase_u(false)
+        .with_allow_unicode_whitespace(false)
+        .with_panic_on_error(false);
+    let mut parser =
+        JsonModemValues::with_options(options, ValuesOptions::default().with_partial(true));
+    let chunks: &[&str] = &[
+        "{{\"\\u0000\\u000f\":{\"\":{\"\":\"9~%\\r\"},\"\\u0007\\u0007\\u0007 #ɿ\":\"\"]\",\"\\u0016\":[[\"\",\"]\",[],{\"\":\"\"},{\"]e\":[true,6.6606492817934915e165,1.2201e5911614548592e185,\"'\\\":\\\"S\\\\u0019J\\\"},null,1.\"]},null,null,false]],\"\\u001dI\":{\"\\t\":{\"\\u0016\":[[{},[-9159615202055668737,[],null],null],true,[]],\"!\":{\"\":{\"\":{\"\":true},\",sU^\":[],\"k\\u0002\":\"\\u0005\",\"ю\":true}}}},\" \":{\"<\":null},\"\\\"\\b\":{},\"'M\":[[],-2.72817",
+        "46600704903e-237,false],\",sU>\\u0013;\":5254487156537939167,\"=\":\".(\",\"G\":null,\"O\u{7f}\"",
+        ":true,\"e,\\\"\":\"$*\",\"h\":true,\"",
+        "i t\":null,\"i-\":null,\"k\\u0002\":\"\\u00",
+        "05\",\"n$u^\":[],\"ϣ\":[[],{},7.484207260355667e251],\"\u{484}c3T\":\"\"},\"~M\":{}}}",
+    ];
+    for c in chunks {
+        consume_results(parser.feed(c));
+    }
+    consume_results(parser.finish());
+}
+
+// Repro for fuzz-discovered abort in buffers harness (see fuzz artifact
+// crash-057e8a9e64884aa3)
+#[test]
+fn fuzz_ci_buffers_057e8a9e64884aa3() {
+    // Flags from debug print: allow_multiple_json_values=true, uppercase_u=false,
+    // unicode_ws=false, partial_values=true. For buffers harness, only the first
+    // matters.
+    let mut parser = JsonModemBuffers::new(parser_options(1), BufferOptions::default());
+    let chunks: &[&str] = &[
+        "{\"\":[[null,\"\\u001bV\\u001d\",9144662900591180799,{},{\",sb\":[[{\"\":{\"\":{\"\":{\"\":{\"\":{\"\":{\"\":\"xN'\",\"$Y\":{\"\":true,\"94_\":{\"\":{\"k\":13459907907603343736}}},\"/ۦҷ\\n\\u0007\":{\"\":null,\"\\u001dI\":{\"\\t\":{\"!\":{\"\":{\"\":{\"\":{\"\":{\"\":{}},\"\\u0002\\u0002\\u0002\\u0002\":{}-,\"f\\u0007Z7\":true},\"\u{200a}\u{2001}{}\":[[[{}],true],117664469269",
+        "997844{37,[],[],[{}\\\\,[]]]}}}}},\" \":{\"<\":null},\"=\":\".(",
+        "\",{\"O\u{7f}\":true,\"h\"",
+        ":{\"\":true}}}}}}}}}]]}]]}",
+    ];
+    for chunk in chunks {
+        consume_results(parser.feed(chunk).to_iter());
+    }
+    consume_results(parser.finish().to_iter());
 }

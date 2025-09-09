@@ -92,14 +92,14 @@ the user with minimal latency.
   * `jsonmodem::JsonModemValues` (values) — yields partial/complete values per chunk.
   * `parse_partial_json` – Rust port of [vercel/ai](https://github.com/vercel/ai)'s JSON fixing with `serde_json`.
   * `fix_json_parse` – helper from Vercel AI's library.
-  * `jiter` – partial JSON parser (`jiter_partial` and `jiter_partial_owned`). The *owned* variant is closer to real Python usage because borrowed strings must be materialized as [`str`](https://peps.python.org/pep-0393/).
+  * `jiter` – the parser used in Pydantic 2.0.
 
 
-| chunks | `StreamingParser` | `StreamingValuesParser`  | `parse_partial_json`  | `fix_json_parse`  | `jiter`   |
-| -----: | ----------------: | -----------------------: | --------------------: | ----------------: | --------: |
-|    100 |            180 μs |                   184 μs |              4,113 μs |          2,957 μs |  1,239 μs |
-|  1 000 |            203 μs |                   212 μs |             38,320 μs |         27,637 μs | 11,493 μs |
-|  5 000 |            266 μs |                   350 μs |            163,510 μs |        119,810 μs | 48,477 μs |
+| chunks | `JsonModem` | `JsonModemValues`  | `parse_partial_json`  | `fix_json_parse`  | `jiter`   |
+| -----: | ----------: | -----------------: | --------------------: | ----------------: | --------: |
+|    100 |      163 μs |             175 μs |              3,969 μs |          2,957 μs |  1,239 μs |
+|  1 000 |      184 μs |             202 μs |             38,320 μs |         27,637 μs | 11,493 μs |
+|  5 000 |      245 μs |             274 μs |            163,510 μs |        119,810 μs | 48,477 μs |
 
 _Benchmarks recorded on an AMD Ryzen Threadripper PRO 5975WX (64 cores @ 4.56 GHz) running Fedora Linux 42._
 

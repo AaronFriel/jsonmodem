@@ -44,15 +44,15 @@ fn bench_streaming_json_large(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("parse_partial_json", parts),
-            &parts,
-            |b, &_p| {
-                b.iter(|| run_parse_partial_json(black_box(&chunks)));
-            },
-        );
-
         if env::var_os("JSONMODEM_BENCH_COMPARISON").is_some() {
+            group.bench_with_input(
+                BenchmarkId::new("parse_partial_json", parts),
+                &parts,
+                |b, &_p| {
+                    b.iter(|| run_parse_partial_json(black_box(&chunks)));
+                },
+            );
+
             group.bench_with_input(
                 BenchmarkId::new("fix_json_parse", parts),
                 &parts,

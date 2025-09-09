@@ -14,7 +14,7 @@
 #![no_std]
 extern crate alloc;
 
-#[cfg(test)]
+#[cfg(any(test, fuzzing))]
 extern crate std;
 
 mod backend;
