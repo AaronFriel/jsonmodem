@@ -6,6 +6,7 @@ use std::{env, time::Duration};
 use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use jsonmodem::{
     BufferOptions, JsonModem, JsonModemBuffers, JsonModemValues, ParserOptions, StdBackend,
+    lending_iterator::LendingIterator,
 };
 use streaming_json_common::{make_json_payload, parse_partial_json_port, partial_json_fixer};
 
@@ -37,16 +38,19 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let mut parser = JsonModem::<StdBackend>::new(ParserOptions::default());
-                        for event in parser.feed(first_half).to_iter() {
-                            event.unwrap();
+                        let mut iter = parser.feed(first_half);
+                        while let Some(event) = iter.next() {
+                            let _ = black_box(event);
                         }
+                        drop(iter);
                         parser
                     },
                     |mut parser| {
                         let mut produced = 0usize;
                         let incremental_part = black_box(incremental_part);
-                        for event in parser.feed(incremental_part).to_iter() {
-                            event.unwrap();
+                        let mut iter = parser.feed(incremental_part);
+                        while let Some(event) = iter.next() {
+                            let _ = black_box(event);
                             produced += 1;
                         }
                         produced
@@ -66,16 +70,19 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                             ParserOptions::default(),
                             BufferOptions::default(),
                         );
-                        for event in parser.feed(first_half).to_iter() {
-                            event.unwrap();
+                        let mut iter = parser.feed(first_half);
+                        while let Some(event) = iter.next() {
+                            let _ = black_box(event);
                         }
+                        drop(iter);
                         parser
                     },
                     |mut parser| {
                         let mut produced = 0usize;
                         let incremental_part = black_box(incremental_part);
-                        for event in parser.feed(incremental_part).to_iter() {
-                            event.unwrap();
+                        let mut iter = parser.feed(incremental_part);
+                        while let Some(event) = iter.next() {
+                            let _ = black_box(event);
                             produced += 1;
                         }
                         produced
@@ -92,18 +99,20 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let mut parser = JsonModemValues::new(ParserOptions::default());
-                        for value in parser.feed(first_half) {
+                        let mut iter = parser.feed(first_half);
+                        while let Some(value) = LendingIterator::next(&mut iter) {
                             value.unwrap();
                         }
+                        drop(iter);
                         parser
                     },
                     |mut parser| {
                         let mut produced = 0usize;
                         let incremental_part = black_box(incremental_part);
-                        for value in parser.feed(incremental_part) {
-                            if value.unwrap().is_final {
-                                produced += 1;
-                            }
+                        let mut iter = parser.feed(incremental_part);
+                        while let Some(event) = LendingIterator::next(&mut iter) {
+                            let _ = black_box(event);
+                            produced += 1;
                         }
                         produced
                     },
@@ -127,10 +136,10 @@ fn bench_streaming_json_incremental(c: &mut Criterion) {
                     |mut parser| {
                         let mut produced = 0usize;
                         let incremental_part = black_box(incremental_part);
-                        for value in parser.feed(incremental_part) {
-                            if value.unwrap().is_final {
-                                produced += 1;
-                            }
+                        let mut iter = parser.feed(incremental_part);
+                        while let Some(event) = LendingIterator::next(&mut iter) {
+                            let _ = black_box(event);
+                            produced += 1;
                         }
                         produced
                     },

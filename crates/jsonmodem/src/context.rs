@@ -2,8 +2,8 @@ use core::{
     error::Error,
     fmt::{Debug, Display},
 };
-use thiserror::Error;
 
+use thiserror::Error;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum PathKind {

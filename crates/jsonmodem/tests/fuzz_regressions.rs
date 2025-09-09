@@ -246,7 +246,7 @@ fn debug_events_for_buffers_case_three() {
 #[ignore = "debug-only helper"]
 #[test]
 fn debug_buffers_iter_for_case_three() {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
 
     let case = FuzzCase {
         name: "buffers_case_three",
@@ -297,9 +297,7 @@ fn debug_buffers_iter_for_case_three() {
             Ok(Some(Ok(evt))) => {
                 println!("  finish event#{event_idx}: {evt:?}");
             }
-            Ok(Some(Err(err))) => println!(
-                "  finish event#{event_idx}: ERROR {err:?}"
-            ),
+            Ok(Some(Err(err))) => println!("  finish event#{event_idx}: ERROR {err:?}"),
             Ok(None) => break,
             Err(_) => {
                 println!("  panic while decoding finish event#{event_idx}");

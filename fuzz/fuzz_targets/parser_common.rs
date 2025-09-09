@@ -48,7 +48,11 @@ impl core::fmt::Debug for FuzzerInput {
         let uppercase_u = (self.flags & 2) != 0;
         let unicode_ws = (self.flags & 4) != 0;
         let partial = (self.flags & 0x10) != 0;
-        writeln!(f, "flags: allow_multiple={}, uppercase_u={}, unicode_ws={}, partial_values={}", allow_multiple, uppercase_u, unicode_ws, partial)?;
+        writeln!(
+            f,
+            "flags: allow_multiple={}, uppercase_u={}, unicode_ws={}, partial_values={}",
+            allow_multiple, uppercase_u, unicode_ws, partial
+        )?;
         let joined = self.chunks.join("");
         writeln!(f, "text:\n{}", joined)?;
         writeln!(f, "chunks:{}", self.chunks.len())?;
@@ -101,20 +105,33 @@ where
 }
 
 fn mutator(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
-    // Cooperative: always (re)write a valid header (if room), then either synthesize
-    // structured JSON payload (with optional corruption) or fall back to default
-    // mutation for exploration.
+    // Cooperative: always (re)write a valid header (if room), then either
+    // synthesize structured JSON payload (with optional corruption) or fall
+    // back to default mutation for exploration.
     let mut rng = SmallRng::seed_from_u64(seed as u64);
     let cap = core::cmp::min(max_size, data.len());
-    if cap < HEADER { return fuzzer_mutate(data, size, max_size); }
+    if cap < HEADER {
+        return fuzzer_mutate(data, size, max_size);
+    }
 
-    // Flags: randomize parser behaviors; bit 0x08 toggles corruption mode the target applies
+    // Flags: randomize parser behaviors; bit 0x08 toggles corruption mode the
+    // target applies
     let mut flags: u8 = 0;
-    if rng.random::<bool>() { flags |= 0x01; }
-    if rng.random::<bool>() { flags |= 0x02; }
-    if rng.random::<bool>() { flags |= 0x04; }
-    if rng.random::<bool>() { flags |= 0x08; }
-    if rng.random::<bool>() { flags |= 0x10; }
+    if rng.random::<bool>() {
+        flags |= 0x01;
+    }
+    if rng.random::<bool>() {
+        flags |= 0x02;
+    }
+    if rng.random::<bool>() {
+        flags |= 0x04;
+    }
+    if rng.random::<bool>() {
+        flags |= 0x08;
+    }
+    if rng.random::<bool>() {
+        flags |= 0x10;
+    }
     data[0] = flags;
     let split_seed = rng.random::<u32>();
     data[1..HEADER].copy_from_slice(&split_seed.to_le_bytes());
@@ -129,20 +146,30 @@ fn mutator(data: &mut [u8], size: usize, max_size: usize, seed: u32) -> usize {
     let roots = 1 + (seed as usize % 3);
     for r in 0..roots {
         // Leading whitespace before a value
-        if prefix >= cap { break; }
+        if prefix >= cap {
+            break;
+        }
         prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
         // Generate a JSON Value and serialize into-place
-        if prefix >= cap { break; }
+        if prefix >= cap {
+            break;
+        }
         prefix += append_value(&mut data[prefix..cap], size.max(32), cap - prefix);
         // Trailing whitespace after the value
-        if prefix >= cap { break; }
+        if prefix >= cap {
+            break;
+        }
         prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
-        if prefix >= cap { break; }
+        if prefix >= cap {
+            break;
+        }
         // Between roots, add a bit more whitespace
         if r + 1 != roots {
             prefix += append_whitespace(&mut data[prefix..cap], cap - prefix);
         }
-        if prefix >= cap { break; }
+        if prefix >= cap {
+            break;
+        }
     }
     core::cmp::min(prefix, cap)
 }
@@ -313,14 +340,19 @@ fn corrupt_utf8_text(mut s: String, seed: u64) -> String {
 impl<'a> Arbitrary<'a> for FuzzerInput {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
         let all = u.bytes(u.len())?;
-        if all.len() < HEADER { return Err(arbitrary::Error::NotEnoughData); }
+        if all.len() < HEADER {
+            return Err(arbitrary::Error::NotEnoughData);
+        }
         let flags = all[0];
         let split_seed = u32::from_le_bytes(all[1..HEADER].try_into().unwrap()) as u64;
         let mut text = String::from_utf8_lossy(&all[HEADER..]).into_owned();
         if (flags & 0x08) != 0 {
             text = corrupt_utf8_text(text, split_seed);
         }
-        let chunks = split_into_safe_chunks(&text, split_seed).into_iter().map(|s| s.to_owned()).collect();
+        let chunks = split_into_safe_chunks(&text, split_seed)
+            .into_iter()
+            .map(|s| s.to_owned())
+            .collect();
         Ok(FuzzerInput { flags, chunks })
     }
 }
