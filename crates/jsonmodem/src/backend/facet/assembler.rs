@@ -337,25 +337,24 @@ fn write_unsigned(
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::checked_conversions
+    clippy::checked_conversions,
+    clippy::float_arithmetic
 )]
 fn convert_signed(value: f64, allow_coerce: bool) -> Option<i64> {
     if value.is_nan() || value.is_infinite() {
         return None;
     }
-    if value.fract() == 0.0 {
+    if value % 1.0 == 0.0 {
         let rounded = value as i128;
         if rounded >= i64::MIN as i128 && rounded <= i64::MAX as i128 {
             return Some(rounded as i64);
         }
     }
     if allow_coerce {
-        let truncated = value.trunc();
-        if truncated.fract() == 0.0 {
-            let rounded = truncated as i128;
-            if rounded >= i64::MIN as i128 && rounded <= i64::MAX as i128 {
-                return Some(rounded as i64);
-            }
+        let truncated = value - value % 1.0;
+        let rounded = truncated as i128;
+        if rounded >= i64::MIN as i128 && rounded <= i64::MAX as i128 {
+            return Some(rounded as i64);
         }
     }
     None
@@ -367,21 +366,22 @@ fn convert_signed(value: f64, allow_coerce: bool) -> Option<i64> {
     clippy::cast_possible_wrap,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::checked_conversions
+    clippy::checked_conversions,
+    clippy::float_arithmetic
 )]
 fn convert_unsigned(value: f64, allow_coerce: bool) -> Option<u64> {
     if !(value.is_finite()) || value < 0.0 {
         return None;
     }
-    if value.fract() == 0.0 {
+    if value % 1.0 == 0.0 {
         let rounded = value as u128;
         if rounded <= u64::MAX as u128 {
             return Some(rounded as u64);
         }
     }
     if allow_coerce {
-        let truncated = value.trunc();
-        if truncated >= 0.0 && truncated.fract() == 0.0 {
+        let truncated = value - value % 1.0;
+        if truncated >= 0.0 {
             let rounded = truncated as u128;
             if rounded <= u64::MAX as u128 {
                 return Some(rounded as u64);

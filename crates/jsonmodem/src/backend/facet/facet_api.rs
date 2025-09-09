@@ -249,7 +249,8 @@ macro_rules! impl_numeric_signed {
                 clippy::cast_possible_wrap,
                 clippy::cast_precision_loss,
                 clippy::cast_sign_loss,
-                clippy::checked_conversions
+                clippy::checked_conversions,
+                clippy::float_arithmetic
             )]
             impl ValueDyn for $ty {
                 fn ty_name(&self) -> &'static str {
@@ -283,7 +284,7 @@ macro_rules! impl_numeric_signed {
                 }
 
                 fn write_f64(&mut self, value: f64) -> Result<(), &'static str> {
-                    if value.is_finite() && value.fract() == 0.0 {
+                    if value.is_finite() && value % 1.0 == 0.0 {
                         self.write_i64(value as i64)
                     } else {
                         Err("float does not fit signed")
@@ -309,7 +310,8 @@ macro_rules! impl_numeric_unsigned {
                 clippy::cast_possible_wrap,
                 clippy::cast_precision_loss,
                 clippy::cast_sign_loss,
-                clippy::checked_conversions
+                clippy::checked_conversions,
+                clippy::float_arithmetic
             )]
             impl ValueDyn for $ty {
                 fn ty_name(&self) -> &'static str {
@@ -343,7 +345,7 @@ macro_rules! impl_numeric_unsigned {
                 }
 
                 fn write_f64(&mut self, value: f64) -> Result<(), &'static str> {
-                    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 {
+                    if value.is_finite() && value % 1.0 == 0.0 && value >= 0.0 {
                         self.write_u64(value as u64)
                     } else {
                         Err("float does not fit unsigned")
