@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use bstr::ByteSlice;
 use facet::Facet;
 use jsonmodem::{JsonModemFacet, ParserOptions};
 
@@ -32,19 +33,53 @@ struct Config {
 
 fn main() -> Result<()> {
     let mut facet = JsonModemFacet::<Config>::new(ParserOptions::default())?;
-    let chunks = [
-        "{\"environment\":\"production\",",
-        "\"retries\":2,\"credentials\":{\"user\":\"ops\",",
-        "\"scopes\":[\"deploy\",\"metrics\"]},",
-        "\"feature_flags\":{\"dark_launch\":true,",
-        "\"audit\":false},",
-        "\"services\":[{\"name\":\"auth\",",
-        "\"endpoints\":[\"/login\",\"/logout\"],",
-        "\"metadata\":{\"tier\":\"critical\",",
-        "\"language\":\"rust\"}},{\"name\":\"metrics\",",
-        "\"endpoints\":[\"/scrape\"],",
-        "\"metadata\":{\"tier\":\"support\"}}]}",
-    ];
+    let original =
+        r#"
+{
+  "environment": "production",
+  "retries": 2,
+  "credentials": {
+    "user": "ops",
+    "scopes": [
+      "deploy",
+      "metrics"
+    ]
+  },
+  "feature_flags": {
+    "dark_launch": true,
+    "audit": false
+  },
+  "services": [
+    {
+      "name": "auth",
+      "endpoints": [
+        "/login",
+        "/logout"
+      ],
+      "metadata": {
+        "tier": "critical",
+        "language": "rust"
+      }
+    },
+    {
+      "name": "metrics",
+      "endpoints": [
+        "/scrape"
+      ],
+      "metadata": {
+        "tier": "support"
+      }
+    }
+  ]
+}
+"#;
+
+    let chunks = original
+        .as_bytes()
+        .chunks(25)
+        .map(|c| c.to_str().unwrap())
+        .collect::<Vec<_>>();
+
 
     for chunk in &chunks {
         if let Some(snapshot) = facet.feed(chunk)? {
