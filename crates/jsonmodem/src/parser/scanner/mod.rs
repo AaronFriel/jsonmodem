@@ -57,6 +57,8 @@ use core::cmp;
 #[cfg(all(test, trace_scanner))]
 use std::eprintln;
 
+use memchr::memchr2;
+
 /// Where the next character comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
@@ -617,9 +619,145 @@ impl<'src> Scanner<'src> {
     /// pulling previously skipped characters into the scratch.
     #[inline]
     fn ensure_owned_without_prefix_copy(&mut self) {
-        if let Some(a) = &mut self.anchor {
-            a.owned = true;
+        if let Some(anchor) = &mut self.anchor {
+            anchor.owned = true;
         }
+    }
+
+    #[inline]
+    fn push_ascii_to_scratch(&mut self, slice: &[u8]) {
+        match &mut self.scratch {
+            CaptureBuf::Text(s) => {
+                // SAFETY: caller guarantees ASCII, hence valid UTF-8.
+                s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
+            }
+            CaptureBuf::Raw(b) => b.extend_from_slice(slice),
+        }
+    }
+
+    #[inline]
+    fn copy_prefix_to_scratch(&mut self) {
+        let Some(anchor) = &self.anchor else {
+            return;
+        };
+        if anchor.source != Source::Batch || anchor.raw {
+            return;
+        }
+        let Some(start) = anchor.start_byte_in_batch else {
+            return;
+        };
+        if start >= self.byte_idx {
+            return;
+        }
+        let slice = &self.batch.as_bytes()[start..self.byte_idx];
+        match &mut self.scratch {
+            CaptureBuf::Text(s) => {
+                s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
+            }
+            CaptureBuf::Raw(b) => b.extend_from_slice(slice),
+        }
+    }
+
+    #[inline]
+    pub fn ensure_prefix_copied(&mut self) {
+        if matches!(self.anchor.as_ref(), Some(anchor) if !anchor.owned) {
+            self.copy_prefix_to_scratch();
+            if let Some(anchor) = &mut self.anchor {
+                anchor.owned = true;
+            }
+        }
+    }
+
+    /// Fast-path for JSON string bodies: consumes consecutive ASCII bytes
+    /// that are neither quotes nor backslashes. Stops before control characters
+    /// (`< 0x20`) so the caller can surface a syntax error.
+    #[inline]
+    pub fn consume_string_ascii_fast(&mut self) -> usize {
+        if !self.pending.is_empty() {
+            return 0;
+        }
+
+        self.ensure_anchor_started();
+
+        let (anchor_owned, anchor_raw, anchor_source) = if let Some(anchor) = self.anchor.as_ref() {
+            (anchor.owned, anchor.raw, anchor.source)
+        } else {
+            return 0;
+        };
+        if anchor_source != Source::Batch || anchor_raw {
+            return 0;
+        }
+
+        let start = self.byte_idx;
+        let bytes = self.batch.as_bytes();
+        if start >= bytes.len() {
+            return 0;
+        }
+
+        let search = &bytes[start..];
+        let limit = memchr2(b'"', b'\\', search).unwrap_or(search.len());
+        let ascii_limit = search[..limit]
+            .iter()
+            .position(|&b| !(0x20..0x80).contains(&b))
+            .unwrap_or(limit);
+        let consumed = ascii_limit;
+        if consumed == 0 {
+            return 0;
+        }
+
+        let slice = &search[..consumed];
+        self.byte_idx += consumed;
+        self.char_idx += consumed;
+        self.col += consumed;
+
+        if anchor_owned {
+            self.push_ascii_to_scratch(slice);
+        }
+
+        consumed
+    }
+
+    pub fn consume_digits_ascii_fast(&mut self) -> usize {
+        if !self.pending.is_empty() {
+            return 0;
+        }
+
+        self.ensure_anchor_started();
+
+        let (anchor_owned, anchor_raw, anchor_source) = if let Some(anchor) = self.anchor.as_ref() {
+            (anchor.owned, anchor.raw, anchor.source)
+        } else {
+            return 0;
+        };
+        if anchor_source != Source::Batch || anchor_raw {
+            return 0;
+        }
+
+        let start = self.byte_idx;
+        let bytes = self.batch.as_bytes();
+        if start >= bytes.len() {
+            return 0;
+        }
+
+        let search = &bytes[start..];
+        let ascii_limit = search
+            .iter()
+            .position(|&b| !b.is_ascii_digit())
+            .unwrap_or(search.len());
+        if ascii_limit == 0 {
+            return 0;
+        }
+
+        let slice = &search[..ascii_limit];
+        self.byte_idx += ascii_limit;
+        self.char_idx += ascii_limit;
+        self.col += ascii_limit;
+
+        if anchor_owned {
+            self.push_ascii_to_scratch(slice);
+        }
+
+        ascii_limit
     }
 
     /// ASCII loop across ring+batch: consumes consecutive ASCII scalars

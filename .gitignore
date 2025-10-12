@@ -1,6 +1,7 @@
 /target
 *.pending-snap
 actionlint
+vendor/
 
 /crates/jsonmodem-py/target/
 # jsonmodem-py (Python bindings) build artifacts
@@ -25,3 +26,6 @@ dist/
 /perf.data
 /perf.data.old
 /recent.log
+
+# Third-party research copies
+/third_party/jiter/

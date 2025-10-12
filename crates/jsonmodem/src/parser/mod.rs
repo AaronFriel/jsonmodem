@@ -792,9 +792,15 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     if c.is_ascii_digit() {
                         let unit = g.consume();
                         self.apply_advanced_unit(unit);
-                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                        self.column += consumed;
-                        self.pos += consumed;
+                        let consumed_fast = scanner.consume_digits_ascii_fast();
+                        if consumed_fast > 0 {
+                            self.column += consumed_fast;
+                            self.pos += consumed_fast;
+                        } else {
+                            let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                            self.column += consumed;
+                            self.pos += consumed;
+                        }
                         return Ok(None);
                     }
                     let tok = match scanner.emit() {
@@ -822,9 +828,15 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                         let unit = g.consume();
                         self.apply_advanced_unit(unit);
                         self.lex_state = DecimalFraction;
-                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                        self.column += consumed;
-                        self.pos += consumed;
+                        let consumed_fast = scanner.consume_digits_ascii_fast();
+                        if consumed_fast > 0 {
+                            self.column += consumed_fast;
+                            self.pos += consumed_fast;
+                        } else {
+                            let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                            self.column += consumed;
+                            self.pos += consumed;
+                        }
                         return Ok(None);
                     }
                     return Err(self.read_and_invalid_char(Char(c)));
@@ -844,9 +856,15 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     if c.is_ascii_digit() {
                         let unit = g.consume();
                         self.apply_advanced_unit(unit);
-                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                        self.column += consumed;
-                        self.pos += consumed;
+                        let consumed_fast = scanner.consume_digits_ascii_fast();
+                        if consumed_fast > 0 {
+                            self.column += consumed_fast;
+                            self.pos += consumed_fast;
+                        } else {
+                            let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                            self.column += consumed;
+                            self.pos += consumed;
+                        }
                         return Ok(None);
                     }
                     let tok = match scanner.emit() {
@@ -907,9 +925,15 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
                     if c.is_ascii_digit() {
                         let unit = g.consume();
                         self.apply_advanced_unit(unit);
-                        let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
-                        self.column += consumed;
-                        self.pos += consumed;
+                        let consumed_fast = scanner.consume_digits_ascii_fast();
+                        if consumed_fast > 0 {
+                            self.column += consumed_fast;
+                            self.pos += consumed_fast;
+                        } else {
+                            let consumed = scanner.consume_while_ascii(|d| d.is_ascii_digit());
+                            self.column += consumed;
+                            self.pos += consumed;
+                        }
                         return Ok(None);
                     }
                     let tok = match scanner.emit() {
@@ -925,99 +949,109 @@ impl<Ctx: EventCtx> JsonModem<Ctx> {
             }
 
             // -------------------------- STRING -----------------------------
-            LexState::String => match self.peek_char(scanner) {
-                // escape sequence
-                Char('\\') => {
-                    if !matches!(self.parse_state, ParseState::BeforePropertyName) {
-                        if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+            LexState::String => {
+                if self.pending_high_surrogate.is_none() {
+                    let skipped = scanner.consume_string_ascii_fast();
+                    if skipped > 0 {
+                        self.column += skipped;
+                        self.pos += skipped;
+                        return Ok(None);
+                    }
+                }
+                match self.peek_char(scanner) {
+                    // escape sequence
+                    Char('\\') => {
+                        if matches!(self.parse_state, ParseState::BeforePropertyName) {
+                            scanner.ensure_prefix_copied();
+                        } else if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
                             return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                         }
-                    }
 
-                    // Skip the backslash and enter escape state.
-                    if let Some(g) = scanner.peek_guard() {
-                        let unit = g.skip();
-                        self.apply_advanced_unit(unit);
+                        // Skip the backslash and enter escape state.
+                        if let Some(g) = scanner.peek_guard() {
+                            let unit = g.skip();
+                            self.apply_advanced_unit(unit);
+                        }
+                        self.lex_state = LexState::StringEscape;
+                        Ok(None)
                     }
-                    self.lex_state = LexState::StringEscape;
-                    Ok(None)
-                }
-                // closing quote -> complete string
-                Char('"') => {
-                    // Finalize pending high surrogate if any
-                    if let Some(high) = self.pending_high_surrogate.take() {
-                        match self.decode_mode {
-                            DecodeMode::StrictUnicode => {
-                                return Err(self.syntax_error(
-                                    error::SyntaxError::InvalidUnicodeEscapeSequence(u32::from(
-                                        high,
-                                    )),
-                                ));
-                            }
-                            DecodeMode::ReplaceInvalid => {
-                                scanner.push_char('\u{FFFD}');
-                            }
-                            DecodeMode::SurrogatePreserving => {
-                                scanner.push_codepoint(u32::from(high));
+                    // closing quote -> complete string
+                    Char('"') => {
+                        // Finalize pending high surrogate if any
+                        if let Some(high) = self.pending_high_surrogate.take() {
+                            match self.decode_mode {
+                                DecodeMode::StrictUnicode => {
+                                    return Err(self.syntax_error(
+                                        error::SyntaxError::InvalidUnicodeEscapeSequence(
+                                            u32::from(high),
+                                        ),
+                                    ));
+                                }
+                                DecodeMode::ReplaceInvalid => {
+                                    scanner.push_char('\u{FFFD}');
+                                }
+                                DecodeMode::SurrogatePreserving => {
+                                    scanner.push_codepoint(u32::from(high));
+                                }
                             }
                         }
-                    }
-                    // Important: emit before consuming the closing quote so the
-                    // scanner's anchor remains borrow-eligible and the end
-                    // index excludes the delimiter. Then advance past '"'.
-                    let tok = self.produce_string(false, scanner);
-                    if let Some(g) = scanner.peek_guard() {
-                        let unit = g.skip();
-                        self.apply_advanced_unit(unit);
-                    }
-                    Ok(Some(tok))
-                }
-                Char(c @ '\0'..='\x1F') => {
-                    // JSON spec allows 0x20 .. 0x10FFFF unescaped.
-                    Err(self.read_and_invalid_char(Char(c)))
-                }
-                Empty => {
-                    if !matches!(self.parse_state, ParseState::BeforePropertyName) {
-                        if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
-                            return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
+                        // Important: emit before consuming the closing quote so the
+                        // scanner's anchor remains borrow-eligible and the end
+                        // index excludes the delimiter. Then advance past '"'.
+                        let tok = self.produce_string(false, scanner);
+                        if let Some(g) = scanner.peek_guard() {
+                            let unit = g.skip();
+                            self.apply_advanced_unit(unit);
                         }
+                        Ok(Some(tok))
                     }
-                    Ok(Some(self.new_token(Token::Eof, true)))
-                }
-                Char(_c) => {
-                    // If a previous high surrogate was pending but no low surrogate followed,
-                    // finalize it now before consuming the normal character.
-                    if let Some(high) = self.pending_high_surrogate.take() {
-                        match self.decode_mode {
-                            DecodeMode::StrictUnicode => {
-                                return Err(self.syntax_error(
-                                    error::SyntaxError::InvalidUnicodeEscapeSequence(u32::from(
-                                        high,
-                                    )),
-                                ));
-                            }
-                            DecodeMode::ReplaceInvalid => {
-                                scanner.push_char('\u{FFFD}');
-                            }
-                            DecodeMode::SurrogatePreserving => {
-                                scanner.push_codepoint(u32::from(high));
+                    Char(c @ '\0'..='\x1F') => {
+                        // JSON spec allows 0x20 .. 0x10FFFF unescaped.
+                        Err(self.read_and_invalid_char(Char(c)))
+                    }
+                    Empty => {
+                        if !matches!(self.parse_state, ParseState::BeforePropertyName) {
+                            if let Some(fragment) = scanner.try_emit_borrowed_fragment() {
+                                return Ok(Some(self.produce_borrowed_fragment(true, fragment)));
                             }
                         }
+                        Ok(Some(self.new_token(Token::Eof, true)))
                     }
-                    // Fast-path: keep scanner and source in lockstep. First let the
-                    // scanner consume from the current source (ring or batch) until
-                    // a boundary or special char, then mirror exactly that many
-                    // chars into our local buffer from the source queue.
+                    Char(_c) => {
+                        // If a previous high surrogate was pending but no low surrogate followed,
+                        // finalize it now before consuming the normal character.
+                        if let Some(high) = self.pending_high_surrogate.take() {
+                            match self.decode_mode {
+                                DecodeMode::StrictUnicode => {
+                                    return Err(self.syntax_error(
+                                        error::SyntaxError::InvalidUnicodeEscapeSequence(
+                                            u32::from(high),
+                                        ),
+                                    ));
+                                }
+                                DecodeMode::ReplaceInvalid => {
+                                    scanner.push_char('\u{FFFD}');
+                                }
+                                DecodeMode::SurrogatePreserving => {
+                                    scanner.push_codepoint(u32::from(high));
+                                }
+                            }
+                        }
+                        // Fast-path: keep scanner and source in lockstep. First let the
+                        // scanner consume from the current source (ring or batch) until
+                        // a boundary or special char, then mirror exactly that many
+                        // chars into our local buffer from the source queue.
 
-                    if let Some(g) = scanner.peek_guard() {
-                        let unit = g.consume();
-                        self.apply_advanced_unit(unit);
+                        if let Some(g) = scanner.peek_guard() {
+                            let unit = g.consume();
+                            self.apply_advanced_unit(unit);
+                        }
+
+                        Ok(None)
                     }
-
-                    Ok(None)
+                    EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
                 }
-                EndOfInput => Err(self.read_and_invalid_char(EndOfInput)),
-            },
+            }
 
             StringEscape => match self.peek_char(scanner) {
                 Empty => {
