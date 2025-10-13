@@ -11,6 +11,26 @@ pub struct ParserError<Ctx: EventCtx> {
     pub(crate) column: usize,
 }
 
+impl<Ctx: EventCtx> ParserError<Ctx> {
+    /// Line number where the error occurred (1-based).
+    #[must_use]
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// Column number where the error occurred (1-based).
+    #[must_use]
+    pub fn column(&self) -> usize {
+        self.column
+    }
+
+    /// Underlying error source (context or syntax failure).
+    #[must_use]
+    pub fn source(&self) -> &ErrorSource<Ctx> {
+        &self.source
+    }
+}
+
 #[derive(Error, Debug, PartialEq)]
 pub enum ErrorSource<Ctx: EventCtx> {
     #[error("context error: {0}")]

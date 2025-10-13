@@ -31,8 +31,7 @@ pub use error::{ErrorSource, ParserError, SyntaxError};
 use escape_buffer::UnicodeEscapeBuffer;
 pub use event_builder::EventBuilder;
 use literal_buffer::ExpectedLiteralBuffer;
-use options::DecodeMode;
-pub use options::ParserOptions;
+pub use options::{DecodeMode, ParserOptions};
 
 // buffer is no longer used directly by the parser core; Scanner owns input state.
 pub use crate::event::ParseEvent;

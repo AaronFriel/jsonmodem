@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use ::jsonmodem::{
-    ParseEvent, ParserOptions as CoreParserOptions, PathComponent, StreamingParser as CoreJsonModem,
+    DecodeMode as CoreDecodeMode, JsonModem as CoreJsonModem, ParseEvent,
+    ParserOptions as CoreParserOptions, Path, PathItem, StdBackend,
 };
 use pyo3::{
     IntoPyObject,
@@ -18,6 +19,16 @@ enum DecodeMode {
     StrictUnicode,
     SurrogatePreserving,
     ReplaceInvalid,
+}
+
+impl DecodeMode {
+    fn to_core(self) -> CoreDecodeMode {
+        match self {
+            DecodeMode::StrictUnicode => CoreDecodeMode::StrictUnicode,
+            DecodeMode::SurrogatePreserving => CoreDecodeMode::SurrogatePreserving,
+            DecodeMode::ReplaceInvalid => CoreDecodeMode::ReplaceInvalid,
+        }
+    }
 }
 
 create_exception!(jsonmodem._jsonmodem, JsonModemSyntaxError, PyException);
@@ -111,13 +122,13 @@ impl OwnedEvent {
                     kind: OwnedEventKind::String,
                     path,
                     payload: OwnedPayload::String(OwnedStringFragment {
-                        fragment,
+                        fragment: fragment.into_owned(),
                         is_initial,
                         is_final,
                     }),
                 }
             }
-            ParseEvent::ArrayStart { path } => Self {
+            ParseEvent::ArrayBegin { path } => Self {
                 kind: OwnedEventKind::ArrayBegin,
                 path: convert_path(path),
                 payload: OwnedPayload::None,
@@ -151,11 +162,11 @@ impl OwnedEvent {
     }
 }
 
-fn convert_path(path: Vec<PathComponent>) -> Vec<OwnedPathComponent> {
+fn convert_path(path: Path) -> Vec<OwnedPathComponent> {
     path.into_iter()
         .map(|component| match component {
-            PathComponent::Key(key) => OwnedPathComponent::Key(key.to_string()),
-            PathComponent::Index(index) => OwnedPathComponent::Index(index),
+            PathItem::Key(key) => OwnedPathComponent::Key(key.to_string()),
+            PathItem::Index(index) => OwnedPathComponent::Index(index),
         })
         .collect()
 }
@@ -393,11 +404,11 @@ struct PyParserOptions {
 
 impl PyParserOptions {
     fn to_core(&self) -> CoreParserOptions {
-        CoreParserOptions {
-            allow_unicode_whitespace: self.allow_unicode_whitespace,
-            allow_multiple_json_values: self.allow_multiple,
-            ..CoreParserOptions::default()
-        }
+        CoreParserOptions::new()
+            .with_allow_unicode_whitespace(self.allow_unicode_whitespace)
+            .with_allow_multiple_json_values(self.allow_multiple)
+            .with_allow_uppercase_u(self.allow_uppercase_u)
+            .with_decode_mode(self.decode_mode.to_core())
     }
 }
 
@@ -506,7 +517,7 @@ impl PyParserOptions {
 /// ```
 #[pyclass(module = "jsonmodem._jsonmodem", name = "JsonModem", unsendable)]
 struct PyJsonModem {
-    parser: Option<CoreJsonModem>,
+    parser: Option<CoreJsonModem<StdBackend>>,
     finished: bool,
     active_strings: HashSet<Vec<OwnedPathComponent>>,
 }
@@ -629,16 +640,16 @@ impl PyEventIter {
 }
 
 fn collect_feed_events(
-    parser: &mut CoreJsonModem,
+    parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
     string_tracker: &mut HashSet<Vec<OwnedPathComponent>>,
 ) -> Vec<EventRecord> {
     let mut records = Vec::new();
-    for item in parser.feed(chunk) {
+    for item in parser.feed(chunk).to_iter() {
         match item {
             Ok(event) => records.push(event_record(event, string_tracker)),
             Err(err) => {
-                records.push(error_record(err.to_string(), err.line, err.column));
+                records.push(error_record(err.to_string(), err.line(), err.column()));
                 return records;
             }
         }
@@ -648,15 +659,15 @@ fn collect_feed_events(
 }
 
 fn collect_finish_events(
-    parser: CoreJsonModem,
+    parser: CoreJsonModem<StdBackend>,
     string_tracker: &mut HashSet<Vec<OwnedPathComponent>>,
 ) -> Vec<EventRecord> {
     let mut records = Vec::new();
-    for item in parser.finish() {
+    for item in parser.finish().to_iter() {
         match item {
             Ok(event) => records.push(event_record(event, string_tracker)),
             Err(err) => {
-                records.push(error_record(err.to_string(), err.line, err.column));
+                records.push(error_record(err.to_string(), err.line(), err.column()));
                 break;
             }
         }
@@ -665,18 +676,18 @@ fn collect_finish_events(
 }
 
 fn drain_pending_events(
-    parser: &mut CoreJsonModem,
+    parser: &mut CoreJsonModem<StdBackend>,
     string_tracker: &mut HashSet<Vec<OwnedPathComponent>>,
     records: &mut Vec<EventRecord>,
 ) {
     loop {
         let mut produced = false;
-        for item in parser.feed("") {
+        for item in parser.feed("").to_iter() {
             produced = true;
             match item {
                 Ok(event) => records.push(event_record(event, string_tracker)),
                 Err(err) => {
-                    records.push(error_record(err.to_string(), err.line, err.column));
+                    records.push(error_record(err.to_string(), err.line(), err.column()));
                     return;
                 }
             }

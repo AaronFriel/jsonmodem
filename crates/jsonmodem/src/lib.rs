@@ -43,7 +43,7 @@ pub use jsonmodem_buffers::{BufferedEvent, JsonModemBuffers};
 pub use jsonmodem_values::{JsonModemValues, StreamingValue, ValuesOptions};
 #[doc(hidden)]
 pub use parser::JsonModem;
-pub use parser::{ParserError, ParserOptions};
+pub use parser::{DecodeMode, ParserError, ParserOptions};
 pub use path::{Path, PathItem, PathItemFrom, PathLike};
 pub use value::Value;
 
