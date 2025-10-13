@@ -176,3 +176,32 @@ pub fn run_jiter_partial_owned(chunks: &[&str]) -> usize {
 
     calls
 }
+
+pub fn run_jsonmodem_events_single(payload: &str) -> usize {
+    let chunks = std::array::from_ref(&payload);
+    run_jsonmodem_events(chunks)
+}
+
+pub fn run_jsonmodem_buffers_single(payload: &str) -> usize {
+    let chunks = std::array::from_ref(&payload);
+    run_jsonmodem_buffers(chunks)
+}
+
+pub fn run_jsonmodem_values_single(payload: &str) -> usize {
+    let chunks = std::array::from_ref(&payload);
+    run_jsonmodem_values(chunks)
+}
+
+pub fn run_jiter_value(payload: &str) -> usize {
+    use jiter::JsonValue;
+    JsonValue::parse(payload.as_bytes(), false).unwrap();
+    1
+}
+
+pub fn run_jiter_value_owned(payload: &str) -> usize {
+    use jiter::JsonValue;
+    JsonValue::parse(payload.as_bytes(), false)
+        .unwrap()
+        .into_static();
+    1
+}
