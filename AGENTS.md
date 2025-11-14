@@ -154,6 +154,7 @@ workflow when adding or updating tests.
 
 Following these rules ensures that contributors can run and update snapshots
 consistently and that CI remains deterministic.
+
 # ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. ExecPlans are living documents and should be referred to and updated frequently throughout implementation. Store new execplans in plans/$short-feature-name/, e.g.: plans/py for the Python library.

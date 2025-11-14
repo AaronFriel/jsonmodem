@@ -5,13 +5,11 @@
     dead_code
 )]
 
-use alloc::{
-    borrow::{Cow, ToOwned},
-    collections::BTreeMap,
-    vec::Vec,
+use super::{
+    ImBackend, ImPath,
+    value::{Array, Map, Str, Value},
+    value_zipper::ValueZipper,
 };
-
-use super::{StdBackend, StdPath, value::Value, value_zipper::ValueZipper};
 #[cfg(debug_assertions)]
 use crate::backend::TransitionAsserter;
 use crate::{
@@ -22,32 +20,32 @@ use crate::{
 
 pub enum AppliedRef<'a> {
     Scalar {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
     },
     String {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
-        fragment: Cow<'a, str>,
+        fragment: Str,
         is_initial: bool,
         is_final: bool,
-        buffered: Option<&'a str>,
+        buffered: Option<Str>,
     },
     ArrayBegin {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
     },
     ArrayEnd {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
         root_completed: bool,
     },
     ObjectBegin {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
     },
     ObjectEnd {
-        path: &'a StdPath,
+        path: &'a ImPath,
         leaf: &'a Value,
         root_completed: bool,
     },
@@ -64,7 +62,6 @@ pub struct ValueApplicator {
 }
 
 impl ValueApplicator {
-    #[inline]
     pub fn new(options: BufferOptions) -> Self {
         Self {
             zipper: ValueZipper::new(),
@@ -75,10 +72,9 @@ impl ValueApplicator {
         }
     }
 
-    #[inline]
     pub fn push<'a, 'src>(
         &'a mut self,
-        event: &ParseEvent<'src, &'a StdPath, StdBackend>,
+        event: &ParseEvent<'src, &'a ImPath, ImBackend>,
     ) -> AppliedRef<'a>
     where
         'src: 'a,
@@ -91,15 +87,15 @@ impl ValueApplicator {
         let applied = match event {
             ParseEvent::Null { path } => {
                 let path = *path;
-                self.apply_scalar(&path, Value::Null)
+                self.apply_scalar(path, Value::Null)
             }
             ParseEvent::Boolean { path, value } => {
                 let path = *path;
-                self.apply_scalar(&path, Value::Boolean(*value))
+                self.apply_scalar(path, Value::Boolean(*value))
             }
             ParseEvent::Number { path, value } => {
                 let path = *path;
-                self.apply_scalar(&path, Value::Number(*value))
+                self.apply_scalar(path, Value::Number(*value))
             }
             ParseEvent::String {
                 path,
@@ -108,7 +104,6 @@ impl ValueApplicator {
                 is_final,
             } => {
                 let path = *path;
-                let fragment = fragment.clone();
                 match outcome.transition {
                     RootTransition::AppendString { .. }
                     | RootTransition::StartRootScalar
@@ -120,37 +115,23 @@ impl ValueApplicator {
                         debug_assert!(false, "unexpected transition for string event");
                     }
                 }
-                self.apply_string(&path, fragment, *is_initial, *is_final)
+                self.apply_string(path, fragment.clone(), *is_initial, *is_final)
             }
             ParseEvent::ArrayBegin { path } => {
                 let path = *path;
-                debug_assert!(matches!(
-                    outcome.transition,
-                    RootTransition::PushArray
-                        | RootTransition::StayArray { .. }
-                        | RootTransition::StayObject { .. }
-                ));
-                self.apply_container_begin(&path, ContainerKind::Array)
+                self.apply_container_begin(path, ContainerKind::Array)
             }
             ParseEvent::ArrayEnd { path } => {
                 let path = *path;
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
-                self.apply_container_end(&path, ContainerKind::Array)
+                self.apply_container_end(path, ContainerKind::Array)
             }
             ParseEvent::ObjectBegin { path } => {
                 let path = *path;
-                debug_assert!(matches!(
-                    outcome.transition,
-                    RootTransition::PushObject
-                        | RootTransition::StayObject { .. }
-                        | RootTransition::StayArray { .. }
-                ));
-                self.apply_container_begin(&path, ContainerKind::Object)
+                self.apply_container_begin(path, ContainerKind::Object)
             }
             ParseEvent::ObjectEnd { path } => {
                 let path = *path;
-                debug_assert!(matches!(outcome.transition, RootTransition::PopContainer));
-                self.apply_container_end(&path, ContainerKind::Object)
+                self.apply_container_end(path, ContainerKind::Object)
             }
         };
 
@@ -159,50 +140,38 @@ impl ValueApplicator {
         applied
     }
 
-    #[inline]
     pub fn read_root(&self) -> &Value {
         self.zipper.read_root()
     }
 
-    #[inline]
     pub fn take_root(&mut self) -> Value {
         self.zipper.take_root()
     }
 
-    #[inline]
     pub fn options(&self) -> BufferOptions {
         self.options
     }
 
-    #[inline]
-    fn apply_scalar<'a>(&'a mut self, path: &StdPath, value: Value) -> AppliedRef<'a> {
+    fn apply_scalar<'a>(&'a mut self, path: &'a ImPath, value: Value) -> AppliedRef<'a> {
         let (path, leaf) = self.zipper.with_leaf_mut(path, |slot| *slot = value);
         AppliedRef::Scalar { path, leaf }
     }
 
-    #[inline]
     fn apply_string<'a>(
         &'a mut self,
-        path: &StdPath,
-        fragment: Cow<'a, str>,
+        path: &'a ImPath,
+        fragment: Str,
         is_initial: bool,
         is_final: bool,
     ) -> AppliedRef<'a> {
-        let fragment_ref = fragment.as_ref();
-
         let (path, leaf) = self.zipper.with_leaf_mut(path, |slot| match slot {
-            Value::String(existing) => {
-                if is_initial {
-                    existing.clear();
-                }
-                existing.push_str(fragment_ref);
+            Value::String(existing) if !is_initial => {
+                existing.push_str(fragment.as_ref());
             }
             _ => {
-                *slot = Value::String(fragment_ref.to_owned());
+                *slot = Value::String(fragment.clone());
             }
         });
-
-        let buffered = None;
 
         AppliedRef::String {
             path,
@@ -210,20 +179,19 @@ impl ValueApplicator {
             fragment,
             is_initial,
             is_final,
-            buffered,
+            buffered: None,
         }
     }
 
-    #[inline]
     fn apply_container_begin<'a>(
         &'a mut self,
-        path: &StdPath,
+        path: &'a ImPath,
         kind: ContainerKind,
     ) -> AppliedRef<'a> {
         let (path, leaf) = self.zipper.with_leaf_mut(path, |slot| {
             *slot = match kind {
-                ContainerKind::Array => Value::Array(Vec::new()),
-                ContainerKind::Object => Value::Object(BTreeMap::default()),
+                ContainerKind::Array => Value::Array(Array::new_sync()),
+                ContainerKind::Object => Value::Object(Map::new_sync()),
             };
         });
 
@@ -233,10 +201,9 @@ impl ValueApplicator {
         }
     }
 
-    #[inline]
     fn apply_container_end<'a>(
         &'a mut self,
-        path: &StdPath,
+        path: &'a ImPath,
         kind: ContainerKind,
     ) -> AppliedRef<'a> {
         let (path, leaf) = self.zipper.with_leaf(path);

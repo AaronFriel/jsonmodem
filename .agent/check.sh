@@ -38,17 +38,18 @@ EXCLUDE_ARGS=(--exclude "$FUZZ_CRATE" --exclude jsonmodem-fuzz --exclude jsonmod
 # Speed up local iteration by enabling lighter-weight test and benchmark
 # configurations. CI runs without these features for full coverage.
 FAST_ENV=(JSONMODEM_TEST_FAST=1 JSONMODEM_BENCH_FAST=1)
+FEATURE_ARGS=(--features im)
 
-run_step "build (release)"  env "${FAST_ENV[@]}" cargo build  --workspace --release              "${EXCLUDE_ARGS[@]}"
-run_step "tests"            env "${FAST_ENV[@]}" cargo test   --workspace --verbose              "${EXCLUDE_ARGS[@]}"
-run_step "clippy"           env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets          "${EXCLUDE_ARGS[@]}" \
+run_step "build (release)"  env "${FAST_ENV[@]}" cargo build  --workspace --release              "${EXCLUDE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+run_step "tests"            env "${FAST_ENV[@]}" cargo test   --workspace --verbose              "${EXCLUDE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+run_step "clippy"           env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets          "${EXCLUDE_ARGS[@]}" "${FEATURE_ARGS[@]}" \
                                -- -D warnings
-run_step "docs (public)"    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps "${EXCLUDE_ARGS[@]}"
+run_step "docs (public)"    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps "${EXCLUDE_ARGS[@]}" "${FEATURE_ARGS[@]}"
 
 # Extra clippy pass that compiles under the same cfg flags Miri uses.
 run_step "clippy (cfg=miri)" \
          env RUSTFLAGS="--cfg miri" \
-         env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets "${EXCLUDE_ARGS[@]}" \
+         env "${FAST_ENV[@]}" cargo clippy --workspace --all-targets "${EXCLUDE_ARGS[@]}" "${FEATURE_ARGS[@]}" \
            -- -D warnings
 
 ###############################################################################

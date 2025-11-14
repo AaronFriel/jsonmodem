@@ -6,8 +6,8 @@ use std::{env, time::Duration};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use streaming_json_common::{
     make_json_payload, produce_chunks, run_fix_json_parse, run_jiter_partial,
-    run_jiter_partial_owned, run_jsonmodem_buffers, run_jsonmodem_events, run_jsonmodem_values,
-    run_parse_partial_json,
+    run_jiter_partial_owned, run_jsonmodem_buffers, run_jsonmodem_buffers_im, run_jsonmodem_events,
+    run_jsonmodem_events_im, run_jsonmodem_values, run_jsonmodem_values_im, run_parse_partial_json,
 };
 
 fn bench_streaming_json_strategies(c: &mut Criterion) {
@@ -26,6 +26,14 @@ fn bench_streaming_json_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
+            BenchmarkId::new("jsonmodem_events_im", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_events_im(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
             BenchmarkId::new("jsonmodem_buffers", parts),
             &parts,
             |b, &_p| {
@@ -34,10 +42,26 @@ fn bench_streaming_json_strategies(c: &mut Criterion) {
         );
 
         group.bench_with_input(
+            BenchmarkId::new("jsonmodem_buffers_im", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_buffers_im(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
             BenchmarkId::new("jsonmodem_values", parts),
             &parts,
             |b, &_p| {
                 b.iter(|| run_jsonmodem_values(black_box(&chunks)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("jsonmodem_values_im", parts),
+            &parts,
+            |b, &_p| {
+                b.iter(|| run_jsonmodem_values_im(black_box(&chunks)));
             },
         );
 

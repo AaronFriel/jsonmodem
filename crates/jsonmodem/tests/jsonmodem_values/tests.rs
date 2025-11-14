@@ -2,7 +2,10 @@
 use std::string::ToString;
 
 use insta::assert_snapshot;
-use jsonmodem::{JsonModemValues, ParserOptions, StreamingValue, Value, ValuesOptions};
+use jsonmodem::{
+    BufferOptions, ImValueAssembler, JsonModemValues, ParserOptions, StreamingValue, Value,
+    ValuesOptions,
+};
 use quickcheck::QuickCheck;
 use serde_json::{self, Value as SerdeValue};
 
@@ -33,6 +36,104 @@ fn collect_streaming_values(chunks: &[&str], options: ValuesOptions) -> Vec<Stre
     }
     out.extend(modem.finish().map(|res| res.expect("values finish error")));
     out
+}
+
+fn collect_im_streaming_values(
+    chunks: &[&str],
+    options: ValuesOptions,
+) -> Vec<StreamingValue<String>> {
+    let assembler = ImValueAssembler::new(BufferOptions::default());
+    let mut modem =
+        JsonModemValues::with_buffer_builder(ParserOptions::default(), options, assembler);
+    let mut out = Vec::new();
+    for chunk in chunks {
+        for value in modem.feed(chunk) {
+            let value = value.expect("im values iterator error");
+            out.push(StreamingValue {
+                index: value.index,
+                value: value.value.to_string(),
+                is_final: value.is_final,
+            });
+        }
+    }
+    for value in modem.finish() {
+        let value = value.expect("im values finish error");
+        out.push(StreamingValue {
+            index: value.index,
+            value: value.value.to_string(),
+            is_final: value.is_final,
+        });
+    }
+    out
+}
+
+#[test]
+fn im_backend_basic_roundtrip() {
+    let assembler = ImValueAssembler::new(BufferOptions::default());
+    let mut values = JsonModemValues::with_buffer_builder(
+        ParserOptions::default(),
+        ValuesOptions::default(),
+        assembler,
+    );
+
+    let mut finals = Vec::new();
+    for value in values.feed("[1,2,3]") {
+        let value = value.expect("iterator error");
+        if value.is_final {
+            finals.push(value.value.to_string());
+        }
+    }
+
+    for value in values.finish() {
+        let value = value.expect("finish error");
+        if value.is_final {
+            finals.push(value.value.to_string());
+        }
+    }
+
+    assert_eq!(finals, ["[1,2,3]".to_string()]);
+}
+
+#[test]
+fn im_backend_handles_nested_chunks() {
+    let assembler = ImValueAssembler::new(BufferOptions::default());
+    let mut values = JsonModemValues::with_buffer_builder(
+        ParserOptions::default(),
+        ValuesOptions::default(),
+        assembler,
+    );
+
+    let chunks = [
+        "{\"outer\":{\"inner\":\"va",
+        "lu\",\"list\":[1,",
+        "2,3]},\"flag\":true}",
+    ];
+
+    let mut finals = Vec::new();
+    for chunk in &chunks {
+        for value in values.feed(chunk) {
+            let value = value.expect("iterator error");
+            if value.is_final {
+                finals.push(value.value.to_string());
+            }
+        }
+    }
+
+    for value in values.finish() {
+        let value = value.expect("finish error");
+        if value.is_final {
+            finals.push(value.value.to_string());
+        }
+    }
+
+    let actual = finals
+        .pop()
+        .expect("expected a final value from immutable backend");
+    let parsed: SerdeValue = serde_json::from_str(&actual).unwrap();
+    let expected: SerdeValue =
+        serde_json::from_str("{\"outer\":{\"inner\":\"valu\",\"list\":[1,2,3]},\"flag\":true}")
+            .unwrap();
+    assert_eq!(parsed, expected);
 }
 
 fn render_streaming_values(chunks: &[&str], options: ValuesOptions) -> String {
@@ -156,9 +257,46 @@ fn values_array_matches_serde(digits: Vec<u8>, chunk_size: u8) -> bool {
     final_value == expected
 }
 
+fn im_values_array_matches_serde(digits: Vec<u8>, chunk_size: u8) -> bool {
+    let values: Vec<i16> = digits
+        .into_iter()
+        .map(|value| i16::from(value % 10))
+        .collect();
+    let joined = values
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let json = format!("[{joined}]");
+    let chunk_size = usize::from(chunk_size.max(1));
+    let chunked = chunk_input(&json, chunk_size);
+    let borrowed = chunked.iter().map(String::as_str).collect::<Vec<_>>();
+
+    let outputs = collect_im_streaming_values(&borrowed, ValuesOptions::default());
+
+    if outputs.is_empty() {
+        return true;
+    }
+
+    let final_value = match outputs.iter().rev().find(|value| value.is_final) {
+        Some(value) => value.value.clone(),
+        None => return false,
+    };
+
+    let expected = serde_json::to_string(&SerdeValue::from(values)).unwrap();
+    final_value == expected
+}
+
 #[test]
 fn prop_values_array_roundtrip() {
     QuickCheck::new()
         .tests(50)
         .quickcheck(values_array_matches_serde as fn(Vec<u8>, u8) -> bool);
+}
+
+#[test]
+fn prop_im_values_array_roundtrip() {
+    QuickCheck::new()
+        .tests(50)
+        .quickcheck(im_values_array_matches_serde as fn(Vec<u8>, u8) -> bool);
 }

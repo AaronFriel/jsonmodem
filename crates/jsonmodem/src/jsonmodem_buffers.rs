@@ -2,6 +2,8 @@
 
 use alloc::vec::Vec;
 
+use rpds::Vector;
+
 use crate::{
     buffer_options::BufferOptions,
     context::{BuilderCtx, EventCtx, OwnedEventCtx, PathCtx},
@@ -162,6 +164,12 @@ impl<T: PathRoot + ?Sized> PathRoot for &T {
 }
 
 impl<K, I> PathRoot for Vec<PathItem<K, I>> {
+    fn is_root(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl<K, I> PathRoot for Vector<PathItem<K, I>> {
     fn is_root(&self) -> bool {
         self.is_empty()
     }

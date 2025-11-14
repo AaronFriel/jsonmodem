@@ -1,11 +1,16 @@
+/// Immutable value definitions, zipper, and applicator for [`ImBackend`].
 pub mod value;
+/// Event-to-value applicator that builds immutable trees from parser events.
 pub mod value_applicator;
-pub mod value_tree;
+/// Persistent zipper utilities that mutate immutable values incrementally.
 pub mod value_zipper;
 
-use alloc::{borrow::Cow, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use core::num::ParseFloatError;
 
+use rpds::Vector;
+
+pub use self::value::{Array, Map, Str};
 use self::{
     value::Value,
     value_applicator::{AppliedRef, ValueApplicator},
@@ -19,40 +24,33 @@ use crate::{
     },
     path::PathItem,
 };
-type StdBufferedEvent<'a> = BorrowedBufferedEvent<'a, StdBackend>;
 
-/// Context type for the Rust backend used by the JSON streaming parser.
-///
-/// It defines how strings are decoded from raw bytes and provides
-/// concrete types for path and event data emitted during parsing.
+pub type ImPath = Vector<PathItem>;
+type ImBufferedEvent<'a> = BorrowedBufferedEvent<'a, ImBackend>;
+
+/// Backend that builds immutable JSON values using persistent containers.
 #[derive(Debug, PartialEq, Clone)]
 #[non_exhaustive]
-pub struct StdBackend {
+pub struct ImBackend {
     decode_mode: RustDecodeMode,
 }
 
+/// Modes controlling how raw string fragments are decoded for [`ImBackend`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-/// Modes for decoding raw bytes into strings.
 #[non_exhaustive]
 pub enum RustDecodeMode {
-    /// Strict UTF-8: invalid sequences are preserved only if already valid;
-    /// otherwise rejected.
     StrictUnicode,
-    /// Lossy decoding: invalid sequences are replaced (e.g., with the
-    /// replacement character).
     ReplaceInvalid,
 }
 
-impl Default for StdBackend {
+impl Default for ImBackend {
     fn default() -> Self {
-        Self {
-            decode_mode: RustDecodeMode::ReplaceInvalid,
-        }
+        Self::new()
     }
 }
 
-impl StdBackend {
-    /// Constructs a backend with the default lossy decoding strategy.
+impl ImBackend {
+    /// Creates a backend with lossy UTF-8 decoding for string fragments.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -60,142 +58,123 @@ impl StdBackend {
         }
     }
 
-    /// Overrides the Unicode decoding mode used for raw string fragments.
+    /// Overrides the decode mode used when decoding raw string fragments.
     #[must_use]
     pub fn with_decode_mode(mut self, decode_mode: RustDecodeMode) -> Self {
         self.decode_mode = decode_mode;
         self
     }
 
-    /// Returns the configured decode mode.
+    /// Returns the active decode mode.
     #[must_use]
     pub fn decode_mode(&self) -> RustDecodeMode {
         self.decode_mode
     }
 }
 
-pub type StdPath = Vec<PathItem>;
+impl PathCtx for ImBackend {
+    type PathState = Vector<PathItem>;
+    type Path = ImPath;
 
-impl PathCtx for StdBackend {
-    type PathState = Vec<PathItem>;
-    type Path = StdPath;
-
-    #[inline]
     fn frozen_new(&mut self) -> Self::PathState {
-        Vec::new()
+        Vector::new()
     }
 
-    #[inline]
     fn thaw(&mut self, frozen: Self::PathState) -> Self::Path {
         frozen
     }
 
-    #[inline]
     fn freeze(&mut self, thawed: Self::Path) -> Self::PathState {
         thawed
     }
 
-    #[inline]
     fn push_key_from_str(&mut self, t: &mut Self::Path, key: &str) {
-        t.push(PathItem::Key(key.into()));
+        t.push_back_mut(PathItem::Key(key.into()));
     }
 
-    #[inline]
     fn push_index_zero(&mut self, t: &mut Self::Path) {
-        t.push(PathItem::Index(0));
+        t.push_back_mut(PathItem::Index(0));
     }
 
-    #[inline]
     fn bump_last_index(&mut self, t: &mut Self::Path) -> Result<(), PathError> {
-        let Some(PathItem::Index(i)) = t.last_mut() else {
+        let Some(last_index) = t.len().checked_sub(1) else {
             return Err(PathError::NotArrayFrame);
         };
-        *i += 1;
-        Ok(())
+        match t.get_mut(last_index) {
+            Some(PathItem::Index(index)) => {
+                *index += 1;
+                Ok(())
+            }
+            _ => Err(PathError::NotArrayFrame),
+        }
     }
 
-    #[inline]
     fn pop_kind(&mut self, t: &mut Self::Path) -> Option<PathKind> {
-        t.pop().map(
-            #[inline]
-            |item| match item {
-                PathItem::Key(_) => PathKind::Key,
-                PathItem::Index(_) => PathKind::Index,
-            },
-        )
+        let kind = t.last().map(|component| match component {
+            PathItem::Key(_) => PathKind::Key,
+            PathItem::Index(_) => PathKind::Index,
+        });
+        if kind.is_some() {
+            let _ = t.drop_last_mut();
+        }
+        kind
     }
 
-    #[inline]
     fn last_kind(&self, t: &Self::Path) -> Option<PathKind> {
-        t.last().map(
-            #[inline]
-            |item| match item {
-                PathItem::Key(_) => PathKind::Key,
-                PathItem::Index(_) => PathKind::Index,
-            },
-        )
+        t.last().map(|component| match component {
+            PathItem::Key(_) => PathKind::Key,
+            PathItem::Index(_) => PathKind::Index,
+        })
     }
 }
 
-impl ValueCtx for StdBackend {
+impl ValueCtx for ImBackend {
     type Null = ();
     type Bool = bool;
     type Num<'src> = f64;
-    type Str<'src> = Cow<'src, str>;
+    type Str<'src> = Str;
     type Value = Value;
 }
 
-impl EventCtx for StdBackend {
+impl EventCtx for ImBackend {
     type Error = ParseFloatError;
 
-    #[inline]
     fn push_key_from_raw_str(&mut self, t: &mut Self::Path, key: &[u8]) {
-        t.push(PathItem::Key(String::from_utf8_lossy(key).into()));
+        t.push_back_mut(PathItem::Key(String::from_utf8_lossy(key).into()));
     }
 
-    #[inline]
     fn new_null(&mut self) -> Result<Self::Null, Self::Error> {
         Ok(())
     }
 
-    #[inline]
     fn new_bool(&mut self, b: bool) -> Result<Self::Bool, Self::Error> {
         Ok(b)
     }
 
-    #[inline]
     fn new_number<'src>(&mut self, n: &'src str) -> Result<Self::Num<'src>, Self::Error> {
         n.parse()
     }
 
-    #[inline]
     fn new_number_owned<'a>(&mut self, n: String) -> Result<Self::Num<'a>, Self::Error> {
         n.parse()
     }
 
-    #[inline]
     fn new_str<'src>(&mut self, frag: &'src str) -> Result<Self::Str<'src>, Self::Error> {
-        Ok(Cow::Borrowed(frag))
+        Ok(Str::from(frag))
     }
 
-    #[inline]
     fn new_str_owned<'a>(&mut self, frag: String) -> Result<Self::Str<'a>, Self::Error> {
-        Ok(Cow::Owned(frag))
+        Ok(Str::from(frag))
     }
 
-    #[inline]
     fn new_str_raw_owned<'a>(&mut self, bytes: Vec<u8>) -> Result<Self::Str<'a>, Self::Error> {
         match self.decode_mode {
             RustDecodeMode::StrictUnicode => {
-                // In strict mode, reject non-UTF8 raw input.
-                // Parser should avoid calling this in strict mode; if it does,
-                // we still avoid panicking by producing an error-like lossy string.
                 let owned = String::from_utf8(bytes)
                     .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-                Ok(Cow::Owned(owned))
+                Ok(Str::from(owned))
             }
             RustDecodeMode::ReplaceInvalid => {
-                // Decode lossily; special-case WTF-8 surrogate code units to U+FFFD.
                 let mut norm = Vec::with_capacity(bytes.len());
                 let mut i = 0;
                 while i < bytes.len() {
@@ -215,65 +194,64 @@ impl EventCtx for StdBackend {
                     Ok(s) => s,
                     Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
                 };
-                Ok(Cow::Owned(owned))
+                Ok(Str::from(owned))
             }
         }
     }
 }
 
-impl OwnedEventCtx for StdBackend {
+impl OwnedEventCtx for ImBackend {
     type OwnedNum = f64;
-    type OwnedStr = String;
+    type OwnedStr = Str;
 
-    #[inline]
     fn num_into_owned(n: Self::Num<'_>) -> Self::OwnedNum {
         n
     }
 
-    #[inline]
     fn str_into_owned(s: Self::Str<'_>) -> Self::OwnedStr {
-        s.into_owned()
+        s
     }
 }
 
-impl BuilderCtx for StdBackend {
-    type Array = Vec<Value>;
-    type Object = BTreeMap<Arc<str>, Value>;
+impl BuilderCtx for ImBackend {
+    type Array = Array;
+    type Object = Map;
 }
 
+/// String-buffering assembler for [`ImBackend`].
+#[allow(dead_code)]
 #[derive(Debug)]
-pub struct StdStringAssembler {
-    scratch: String,
+pub struct ImStringAssembler {
+    scratch: Str,
     options: BufferOptions,
 }
 
-impl StdStringAssembler {
-    #[inline]
+impl ImStringAssembler {
+    /// Creates a new assembler with the provided buffering options.
+    #[must_use]
     pub fn new(options: BufferOptions) -> Self {
         Self {
-            scratch: String::new(),
+            scratch: Str::default(),
             options,
         }
     }
 
-    #[inline]
+    /// Returns the configured buffering behaviour.
+    #[must_use]
     pub fn options(&self) -> BufferOptions {
         self.options
     }
 
-    #[inline]
-    fn string_value(&mut self, _is_final: bool) -> Cow<'_, str> {
-        // Always emit prefixes for the string-accumulating assembler.
-        Cow::Borrowed(self.scratch.as_str())
+    fn string_value(&self) -> Str {
+        self.scratch.clone()
     }
 }
 
-impl BufferAssembler<StdBackend> for StdStringAssembler {
-    #[inline]
+impl BufferAssembler<ImBackend> for ImStringAssembler {
     fn on_event<'a, 'src>(
         &'a mut self,
-        event: ParseEvent<'src, &'a StdPath, StdBackend>,
-    ) -> Result<StdBufferedEvent<'a>, ParseFloatError>
+        event: ParseEvent<'src, &'a ImPath, ImBackend>,
+    ) -> Result<ImBufferedEvent<'a>, ParseFloatError>
     where
         'src: 'a,
     {
@@ -291,7 +269,7 @@ impl BufferAssembler<StdBackend> for StdStringAssembler {
                     self.scratch.clear();
                 }
                 self.scratch.push_str(fragment.as_ref());
-                let value = Some(self.string_value(is_final));
+                let value = Some(self.string_value());
                 Ok(BufferedEvent::String {
                     path,
                     fragment,
@@ -308,31 +286,33 @@ impl BufferAssembler<StdBackend> for StdStringAssembler {
     }
 }
 
+/// Immutable value assembler built around rpds containers.
 #[derive(Debug)]
-pub struct StdValueAssembler {
+pub struct ImValueAssembler {
     applicator: ValueApplicator,
 }
 
-impl StdValueAssembler {
-    #[inline]
+impl ImValueAssembler {
+    /// Creates a new value assembler for the supplied buffering options.
+    #[must_use]
     pub fn new(options: BufferOptions) -> Self {
         Self {
             applicator: ValueApplicator::new(options),
         }
     }
 
-    #[inline]
+    /// Returns the current root value without consuming it.
+    #[must_use]
     pub fn read_root(&self) -> &Value {
         self.applicator.read_root()
     }
 
-    #[inline]
+    /// Consumes the accumulated root value, replacing it with `null`.
     pub fn take_root(&mut self) -> Value {
         self.applicator.take_root()
     }
 
-    #[inline]
-    fn map_scalar<'a>(path: &'a StdPath, leaf: &'a Value) -> StdBufferedEvent<'a> {
+    fn map_scalar<'a>(path: &'a ImPath, leaf: &'a Value) -> ImBufferedEvent<'a> {
         match leaf {
             Value::Null => BufferedEvent::Null { path },
             Value::Boolean(flag) => BufferedEvent::Boolean { path, value: *flag },
@@ -346,51 +326,45 @@ impl StdValueAssembler {
         }
     }
 
-    #[inline]
-    fn map_string<'a>(
-        path: &'a StdPath,
-        fragment: Cow<'a, str>,
+    fn map_string(
+        path: &ImPath,
+        fragment: Str,
         is_initial: bool,
         is_final: bool,
-        buffered: Option<&'a str>,
-    ) -> StdBufferedEvent<'a> {
+        buffered: Option<Str>,
+    ) -> ImBufferedEvent<'_> {
         BufferedEvent::String {
             path,
             fragment,
-            value: buffered.map(Cow::Borrowed),
+            value: buffered,
             is_initial,
             is_final,
         }
     }
 
-    #[inline]
-    fn map_array_begin(path: &StdPath) -> StdBufferedEvent<'_> {
+    fn map_array_begin(path: &ImPath) -> ImBufferedEvent<'_> {
         BufferedEvent::ArrayBegin { path }
     }
 
-    #[inline]
-    fn map_array_end<'a>(path: &'a StdPath, value: &'a Value) -> StdBufferedEvent<'a> {
+    fn map_array_end<'a>(path: &'a ImPath, value: &'a Value) -> ImBufferedEvent<'a> {
         BufferedEvent::ArrayEnd {
             path,
             value: value.as_array(),
         }
     }
 
-    #[inline]
-    fn map_object_begin(path: &StdPath) -> StdBufferedEvent<'_> {
+    fn map_object_begin(path: &ImPath) -> ImBufferedEvent<'_> {
         BufferedEvent::ObjectBegin { path }
     }
 
-    #[inline]
-    fn map_object_end<'a>(path: &'a StdPath, value: &'a Value) -> StdBufferedEvent<'a> {
+    fn map_object_end<'a>(path: &'a ImPath, value: &'a Value) -> ImBufferedEvent<'a> {
         BufferedEvent::ObjectEnd {
             path,
             value: value.as_object(),
         }
     }
 
-    #[inline]
-    fn map_event(applied: AppliedRef<'_>) -> StdBufferedEvent<'_> {
+    fn map_event(applied: AppliedRef<'_>) -> ImBufferedEvent<'_> {
         match applied {
             AppliedRef::Scalar { path, leaf } => Self::map_scalar(path, leaf),
             AppliedRef::String {
@@ -410,12 +384,11 @@ impl StdValueAssembler {
     }
 }
 
-impl BufferAssembler<StdBackend> for StdValueAssembler {
-    #[inline]
+impl BufferAssembler<ImBackend> for ImValueAssembler {
     fn on_event<'a, 'src>(
         &'a mut self,
-        event: ParseEvent<'src, &'a StdPath, StdBackend>,
-    ) -> Result<StdBufferedEvent<'a>, ParseFloatError>
+        event: ParseEvent<'src, &'a ImPath, ImBackend>,
+    ) -> Result<ImBufferedEvent<'a>, ParseFloatError>
     where
         'src: 'a,
     {
@@ -424,15 +397,11 @@ impl BufferAssembler<StdBackend> for StdValueAssembler {
     }
 }
 
-impl RootedBufferAssembler<StdBackend> for StdValueAssembler
+impl RootedBufferAssembler<ImBackend> for ImValueAssembler
 where
-    <StdBackend as PathCtx>::Path: crate::jsonmodem_buffers::PathRoot,
+    <ImBackend as PathCtx>::Path: crate::jsonmodem_buffers::PathRoot,
 {
-    #[inline]
     fn root(&self) -> &Value {
         self.read_root()
     }
 }
-
-#[allow(dead_code)]
-pub type StdBufferAssembler = StdValueAssembler;

@@ -3,8 +3,8 @@
 #[path = "parse_partial_json_port.rs"]
 pub mod parse_partial_json_port;
 use jsonmodem::{
-    BufferOptions, JsonModem, JsonModemBuffers, JsonModemValues, ParserOptions, StdBackend,
-    lending_iterator::LendingIterator,
+    BufferOptions, ImBackend, ImValueAssembler, JsonModem, JsonModemBuffers, JsonModemValues,
+    ParserOptions, StdBackend, ValuesOptions, lending_iterator::LendingIterator,
 };
 
 pub fn produce_chunks(payload: &str, parts: usize) -> Vec<&str> {
@@ -59,9 +59,52 @@ pub fn run_jsonmodem_events(chunks: &[&str]) -> usize {
     events
 }
 
+pub fn run_jsonmodem_events_im(chunks: &[&str]) -> usize {
+    let mut parser = JsonModem::<ImBackend>::new(ParserOptions::default());
+    let mut events = 0usize;
+
+    for &chunk in chunks {
+        let mut iter = parser.feed(chunk);
+        while let Some(event) = iter.next() {
+            event.unwrap();
+            events += 1;
+        }
+    }
+
+    let mut iter = parser.finish();
+    while let Some(event) = iter.next() {
+        event.unwrap();
+        events += 1;
+    }
+
+    events
+}
+
 pub fn run_jsonmodem_buffers(chunks: &[&str]) -> usize {
     let mut parser =
         JsonModemBuffers::<StdBackend, _>::new(ParserOptions::default(), BufferOptions::default());
+    let mut events = 0usize;
+
+    for &chunk in chunks {
+        let mut iter = parser.feed(chunk);
+        while let Some(event) = iter.next() {
+            event.unwrap();
+            events += 1;
+        }
+    }
+
+    let mut iter = parser.finish();
+    while let Some(event) = iter.next() {
+        event.unwrap();
+        events += 1;
+    }
+
+    events
+}
+
+pub fn run_jsonmodem_buffers_im(chunks: &[&str]) -> usize {
+    let assembler = ImValueAssembler::new(BufferOptions::default());
+    let mut parser = JsonModemBuffers::with_builder(ParserOptions::default(), assembler);
     let mut events = 0usize;
 
     for &chunk in chunks {
@@ -98,6 +141,36 @@ pub fn run_jsonmodem_values(chunks: &[&str]) -> usize {
     let mut iter = parser.finish();
     while let Some(value) = LendingIterator::next(&mut iter) {
         let value = value.expect("values finish failure");
+        if value.is_final {
+            produced += 1;
+        }
+    }
+
+    produced
+}
+
+pub fn run_jsonmodem_values_im(chunks: &[&str]) -> usize {
+    let assembler = ImValueAssembler::new(BufferOptions::default());
+    let mut parser = JsonModemValues::with_buffer_builder(
+        ParserOptions::default(),
+        ValuesOptions::default(),
+        assembler,
+    );
+    let mut produced = 0usize;
+
+    for &chunk in chunks {
+        let mut iter = parser.feed(chunk);
+        while let Some(value) = LendingIterator::next(&mut iter) {
+            let value = value.expect("im values parse failure");
+            if value.is_final {
+                produced += 1;
+            }
+        }
+    }
+
+    let mut iter = parser.finish();
+    while let Some(value) = LendingIterator::next(&mut iter) {
+        let value = value.expect("im values finish failure");
         if value.is_final {
             produced += 1;
         }
