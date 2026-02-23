@@ -247,7 +247,12 @@ impl<Ctx: EventCtx> Drop for JsonModemIterator<'_, '_, Ctx> {
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
 
         // Persist scanner carryover (unread tail + token scratch + positions)
-        self.parser.scanner_state = core::mem::take(&mut self.scanner).finish();
+        let scanner = core::mem::take(&mut self.scanner);
+        self.parser.scanner_state = if scanner.can_finish_without_merge() {
+            scanner.into_state()
+        } else {
+            scanner.finish()
+        };
     }
 }
 
@@ -283,7 +288,12 @@ impl<Ctx: EventCtx> Drop for JsonModemClosed<'_, Ctx> {
         self.parser.path = MaybeUninit::new(self.factory.freeze(thawed));
 
         // Persist scanner carryover (unread tail + token scratch + positions)
-        let carry = core::mem::take(&mut self.scanner).finish();
+        let scanner = core::mem::take(&mut self.scanner);
+        let carry = if scanner.can_finish_without_merge() {
+            scanner.into_state()
+        } else {
+            scanner.finish()
+        };
         self.parser.scanner_state = carry;
     }
 }
