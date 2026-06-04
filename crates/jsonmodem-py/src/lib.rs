@@ -2905,8 +2905,10 @@ fn append_range_row(table: &mut Vec<u8>, range: Option<(usize, usize)>) -> PyRes
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ByteScanState {
     ArrayValueOrEnd,
+    ArrayValue,
     ArrayAfterValue,
     ObjectKeyOrEnd,
+    ObjectKey,
     ObjectAfterKey,
     ObjectValue,
     ObjectAfterValue,
@@ -2935,7 +2937,7 @@ fn scan_string_range_table(bytes: &[u8]) -> PyResult<Vec<u8>> {
                 index += 1;
             }
             b'"' => match state {
-                Some(ByteScanState::ObjectKeyOrEnd) => {
+                Some(ByteScanState::ObjectKeyOrEnd | ByteScanState::ObjectKey) => {
                     let (_, _, next, _) = scan_json_string(bytes, index)?;
                     *stack.last_mut().expect("object state") = ByteScanState::ObjectAfterKey;
                     index = next;
@@ -2973,11 +2975,11 @@ fn scan_string_range_table(bytes: &[u8]) -> PyResult<Vec<u8>> {
             },
             b',' => match stack.last_mut() {
                 Some(state @ ByteScanState::ArrayAfterValue) => {
-                    *state = ByteScanState::ArrayValueOrEnd;
+                    *state = ByteScanState::ArrayValue;
                     index += 1;
                 }
                 Some(state @ ByteScanState::ObjectAfterValue) => {
-                    *state = ByteScanState::ObjectKeyOrEnd;
+                    *state = ByteScanState::ObjectKey;
                     index += 1;
                 }
                 _ => return Err(scan_error("comma was not valid in this position")),
@@ -3004,10 +3006,13 @@ fn scan_string_range_table(bytes: &[u8]) -> PyResult<Vec<u8>> {
 fn can_start_value(state: Option<ByteScanState>, root_done: bool) -> bool {
     match state {
         None => !root_done,
-        Some(ByteScanState::ArrayValueOrEnd | ByteScanState::ObjectValue) => true,
+        Some(
+            ByteScanState::ArrayValueOrEnd | ByteScanState::ArrayValue | ByteScanState::ObjectValue,
+        ) => true,
         Some(
             ByteScanState::ArrayAfterValue
             | ByteScanState::ObjectKeyOrEnd
+            | ByteScanState::ObjectKey
             | ByteScanState::ObjectAfterKey
             | ByteScanState::ObjectAfterValue,
         ) => false,
@@ -3016,7 +3021,7 @@ fn can_start_value(state: Option<ByteScanState>, root_done: bool) -> bool {
 
 fn complete_value(stack: &mut [ByteScanState], root_done: &mut bool) -> PyResult<()> {
     match stack.last_mut() {
-        Some(state @ ByteScanState::ArrayValueOrEnd) => {
+        Some(state @ (ByteScanState::ArrayValueOrEnd | ByteScanState::ArrayValue)) => {
             *state = ByteScanState::ArrayAfterValue;
         }
         Some(state @ ByteScanState::ObjectValue) => {

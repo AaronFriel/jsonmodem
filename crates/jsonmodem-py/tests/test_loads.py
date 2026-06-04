@@ -51,3 +51,15 @@ def test_string_range_table_packs_offsets_without_per_value_tuples():
     assert len(table) == 16
     rows = struct.unpack("<IIII", table)
     assert rows == (2, 7, 2**32 - 1, 2**32 - 1)
+
+
+def test_string_range_table_allows_empty_containers():
+    assert string_range_table(b"[]") == b""
+    assert string_range_table(b"{}") == b""
+    assert string_range_table(b'{"empty":[],"nested":{}}') == b""
+
+
+@pytest.mark.parametrize("data", [b'["x",]', b'{"a":1,}', b'{"a":["x",]}'])
+def test_string_range_table_rejects_trailing_commas(data):
+    with pytest.raises(Exception, match="not valid|invalid"):
+        string_range_table(data)
