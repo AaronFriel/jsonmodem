@@ -35,6 +35,13 @@ partial JSON suite can include `serde`, `jiter`, and fix-JSON variants when the
 `JSONMODEM_BENCH_COMPARISON` environment variable is set. For quick local runs,
 set `JSONMODEM_BENCH_FAST=1` to use shorter warmup and measurement intervals.
 
+For Python performance work, the primary comparison is incremental parsing of a
+stream of JSON fragments. Compare `jsonmodem` to `jiter` and other libraries by
+having each parser process the same fragment boundaries and, when the
+competitor supports partial parsing, every cumulative prefix. Do not present
+one-shot `loads()`/full-document decode as the optimization target for
+`jsonmodem`; include those numbers only as clearly labeled reference results.
+
 ## Flamegraphs and line-level profiling
 
 This repository ships a GitHub Action that runs

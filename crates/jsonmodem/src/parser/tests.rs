@@ -1324,8 +1324,8 @@ fn parity_small_feeds_mixed_utf8() {
         events: &[Result<ParseEvent<'src, Vec<PathItem>, StdBackend>, ParserError<StdBackend>>],
     ) -> String {
         let mut s = String::new();
-        for ev in events {
-            if let Ok(ParseEvent::String { fragment, .. }) = ev {
+        for ev in events.iter().flatten() {
+            if let ParseEvent::String { fragment, .. } = ev {
                 s.push_str(fragment.as_ref());
             }
         }
@@ -1554,7 +1554,7 @@ fn unicode_whitespace_rejected_by_default() {
         }) => {
             assert_eq!(c, '\u{00A0}');
         }
-        other => panic!("expected InvalidCharacter error, got: {:?}", other),
+        other => panic!("expected InvalidCharacter error, got: {other:?}"),
     }
 }
 

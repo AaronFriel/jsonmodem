@@ -36,9 +36,13 @@ jobs:
             ${{ runner.os }}-cargo-fuzz-${{ matrix.target }}-
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        env:
+          RUSTFLAGS: ""
+        run: cargo +stable install cargo-fuzz --locked
 
       - name: Fuzz (5 000 runs per target)
+        env:
+          RUSTFLAGS: ""
         run: cargo fuzz run ${{ matrix.target }} -- -runs=5000 -max_total_time=300
 
       - name: Save fuzz caches (per-target)

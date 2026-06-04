@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = { version = "1.4.1", features = ["derive"] }
-libfuzzer-sys = { version = "0.15.3", package = "libafl_libfuzzer" }
+libfuzzer-sys = "0.4.12"
 rand = "0.9.1"
 serde_json = "1.0.140"
 

@@ -382,10 +382,7 @@ fn alternate_consume_and_skip() {
     let mut s_by_peek = Scanner::from_state(carry(""), &batch);
     let mut s_by_scanner = Scanner::from_state(carry(""), &batch);
 
-    loop {
-        let Some(g) = s_by_peek.peek_guard() else {
-            break;
-        };
+    while let Some(g) = s_by_peek.peek_guard() {
         // Capture the even-positioned digit
         g.consume();
         s_by_scanner.consume();
@@ -402,12 +399,12 @@ fn alternate_consume_and_skip() {
     match s_by_peek.emit() {
         Capture::Owned(t) => assert_eq!(t, expected),
         Capture::Borrowed(b) => panic!("expected owned text, got borrowed: {b}"),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
     match s_by_scanner.emit() {
         Capture::Owned(t) => assert_eq!(t, expected),
         Capture::Borrowed(b) => panic!("expected owned text, got borrowed: {b}"),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
 }
 
@@ -421,10 +418,7 @@ fn alternate_skip_and_consume() {
     let mut s_by_peek = Scanner::from_state(carry(""), &batch);
     let mut s_by_scanner = Scanner::from_state(carry(""), &batch);
 
-    loop {
-        let Some(g) = s_by_peek.peek_guard() else {
-            break;
-        };
+    while let Some(g) = s_by_peek.peek_guard() {
         // Skip the even-positioned digit
         g.consume();
         s_by_scanner.consume();
@@ -441,12 +435,12 @@ fn alternate_skip_and_consume() {
     match s_by_peek.emit() {
         Capture::Owned(t) => assert_eq!(t, expected),
         Capture::Borrowed(b) => panic!("expected owned text, got borrowed: {b}"),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
     match s_by_scanner.emit() {
         Capture::Owned(t) => assert_eq!(t, expected),
         Capture::Borrowed(b) => panic!("expected owned text, got borrowed: {b}"),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
 }
 
@@ -462,10 +456,7 @@ fn peek_consume() {
 
     // lazy anchor
 
-    loop {
-        let Some(g) = s_by_peek.peek_guard() else {
-            break;
-        };
+    while let Some(g) = s_by_peek.peek_guard() {
         g.consume();
         s_by_scanner.consume();
     }
@@ -474,12 +465,12 @@ fn peek_consume() {
     match s_by_peek.emit() {
         Capture::Owned(t) => panic!("expected borrowed text, got owned: {t}"),
         Capture::Borrowed(b) => assert_eq!(b, expected),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
     match s_by_scanner.emit() {
         Capture::Owned(t) => panic!("expected borrowed text, got owned: {t}"),
         Capture::Borrowed(b) => assert_eq!(b, expected),
-        Capture::Raw(b) => panic!("expected owned text, got raw: {:?}", b),
+        Capture::Raw(b) => panic!("expected owned text, got raw: {b:?}"),
     }
 }
 
