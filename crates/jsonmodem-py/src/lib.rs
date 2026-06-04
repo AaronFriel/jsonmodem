@@ -2513,6 +2513,14 @@ fn with_readonly_byte_text<T>(
             "{caller} requires a bytes-like input with itemsize 1 for no-copy payload views"
         )));
     }
+    if let Ok(memoryview) = data.downcast::<PyMemoryView>() {
+        let owner = memoryview.getattr("obj")?;
+        if owner.downcast::<PyBytes>().is_err() {
+            return Err(PyTypeError::new_err(format!(
+                "{caller} requires memoryview input backed by bytes for stable no-copy payload views"
+            )));
+        }
+    }
 
     let bytes = if guard.view.len == 0 {
         &[]

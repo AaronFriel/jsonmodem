@@ -186,6 +186,10 @@ def test_byte_views_reject_str_and_mutable_input():
     with pytest.raises(TypeError, match="read-only"):
         list(parser.feed(bytearray(b'{"a": "hi"}')))
 
+    mutable_owner = bytearray(b'{"a": "hi"}')
+    with pytest.raises(TypeError, match="backed by bytes"):
+        list(parser.feed(memoryview(mutable_owner).toreadonly()))
+
 
 def test_path_filter_matches_wildcard_path():
     parser = JsonModemPathFilter("items.*.metadata.etag")
