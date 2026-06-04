@@ -1,0 +1,13 @@
+pyperf
+orjson
+msgspec
+jiter
+ijson
+json-stream
+pysimdjson
+python-rapidjson
+ujson
+jsonriver
+partial-json-parser
+streaming-json-parser
+json-streamer

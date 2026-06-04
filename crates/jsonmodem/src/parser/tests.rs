@@ -1324,8 +1324,8 @@ fn parity_small_feeds_mixed_utf8() {
         events: &[Result<ParseEvent<'src, Vec<PathItem>, StdBackend>, ParserError<StdBackend>>],
     ) -> String {
         let mut s = String::new();
-        for ev in events {
-            if let Ok(ParseEvent::String { fragment, .. }) = ev {
+        for ev in events.iter().flatten() {
+            if let ParseEvent::String { fragment, .. } = ev {
                 s.push_str(fragment.as_ref());
             }
         }
