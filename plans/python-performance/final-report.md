@@ -107,14 +107,16 @@ byte-range result table. That would be a new capability, not another variant of
 
 ## Validation
 
-- `.agent/check-py.sh` passed: release extension build, 26 Python tests, pydoc,
-  and pdoc.
+- `.agent/check-py.sh` passed after the public API removals: release extension
+  build, 20 Python tests, pydoc, and pdoc.
 - `cargo fmt --check` passed, with the repository's existing stable-toolchain
   warnings for nightly-only formatting options.
 - `cargo check -p jsonmodem-py` passed.
 - `PATH="$HOME/.local/bin:$PATH" .agent/check.sh` passed: rustfmt, release
   build, Rust tests, clippy, public docs, cfg-miri clippy, and actionlint.
   Miri was skipped by the script's default `AGENT_CHECK_MIRI_DISABLE=true`.
+- `cargo +nightly fuzz run fuzz_jsonmodem -- -runs=5000 -max_total_time=300`
+  passed after switching the fuzz crate back to `libfuzzer-sys 0.4.12`.
 - `pyperf check target/python-perf/jiter-cumulative-prefix-documents-feed-views-fast.json`
   passed with expected fast-mode warnings.
 - `pyperf check` also passed for `target/python-perf/jiter-all-8b-20260604.json`,
@@ -122,4 +124,5 @@ byte-range result table. That would be a new capability, not another variant of
   `target/python-perf/realistic-all-20260604.json`, all with expected
   fast-mode warnings.
 
-No files were staged or committed.
+The PR branch has been pushed for Codex review; do not merge until the
+ChatGPT/Codex review is approving and GitHub checks are green.

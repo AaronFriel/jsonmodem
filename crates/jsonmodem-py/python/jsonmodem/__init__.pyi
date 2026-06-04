@@ -43,6 +43,14 @@ class ByteViewStringPayload(TypedDict):
 ByteViewPayload: TypeAlias = Union[None, bool, float, ByteViewStringPayload]
 ByteViewEvent: TypeAlias = Tuple[EventKind, Path, ByteViewPayload]
 
+class FilteredStringPayload(TypedDict):
+    fragment: str
+    is_initial: bool
+    is_final: bool
+
+FilteredPayload: TypeAlias = Union[None, bool, float, FilteredStringPayload]
+FilteredEvent: TypeAlias = Tuple[EventKind, Path, FilteredPayload]
+
 class DecodeMode:
     StrictUnicode: ClassVar["DecodeMode"]
     SurrogatePreserving: ClassVar["DecodeMode"]
@@ -109,8 +117,8 @@ class JsonModemPathFilter:
     @property
     def is_finished(self) -> bool: ...
 
-    def feed(self, chunk: JSONInput) -> Iterator[Union[Event, ByteViewEvent]]: ...
-    def finish(self) -> Iterator[Union[Event, ByteViewEvent]]: ...
+    def feed(self, chunk: JSONInput) -> Iterator[Union[FilteredEvent, ByteViewEvent]]: ...
+    def finish(self) -> Iterator[Union[FilteredEvent, ByteViewEvent]]: ...
 
 class JsonModemSyntaxError(Exception): ...
 class JsonModemStateError(Exception): ...
