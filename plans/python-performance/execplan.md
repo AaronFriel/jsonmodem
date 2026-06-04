@@ -10,6 +10,8 @@ After this work, Python users should be able to compare `jsonmodem` fairly again
 
 The current public design has one main feed API. `JsonModem.feed()` accepts either one chunk or an iterable of chunks. Earlier `feed_many()`, pooled `JsonEvent`, `feed_objects()`, `feed_many_objects()`, `finish_objects()`, and `warm_event_pool()` experiments are historical and intentionally removed from the public Python API because performance should be the default, not a separate opt-in mode.
 
+The experimental `jsonmodem.loads()`, `jsonmodem.string_ranges()`, and `jsonmodem.string_range_table()` helpers are also historical and removed from the public Python API. The Rust core never depended on them; they existed only in the Python extension for measurement.
+
 Every headline comparison must process the same incoming fragment boundaries. For `jiter`, the fair document comparison is reparsing every cumulative prefix with `partial_mode=True`, because that asks both libraries to report partial progress after every fragment. For libraries without a true incremental or partial API, results must be labeled as full-decode or reference-only and kept out of the optimization target.
 
 The direct incremental competitor is Pydantic's `jiter` Python interface in cumulative-prefix partial mode. The streaming comparisons include `ijson`, `json-stream`, `jsonriver`, `partial-json-parser`, and `json-streamer` where their APIs match the use case. Full native decoders such as the Python standard library `json`, `orjson`, `msgspec`, `python-rapidjson`, `ujson`, and `pysimdjson` are useful reference results for end-to-end application tradeoffs, but they are not targets for this Python incremental optimization plan.
@@ -53,6 +55,7 @@ LLM partial-parser comparisons include `jsonriver`, `partial-json-parser`, and `
 - [x] (2026-06-03T08:50:00Z) Installed added benchmark dependencies with `uv pip install -r crates/jsonmodem-py/benchmarks/requirements-bench.txt`; this added `ijson 3.5.0`, `json-stream 2.5.1`, and `json-stream-rs-tokenizer 0.5.1`.
 - [x] (2026-06-03T09:00:00Z) Ran a fast HTTP nested-extraction smoke benchmark: `python crates/jsonmodem-py/benchmarks/bench_realistic_scenarios.py --scenario http_nested_response --group http_extract --fast --output target/python-perf/realistic-http-extract-smoke.json`, then `python -m pyperf check target/python-perf/realistic-http-extract-smoke.json`.
 - [x] (2026-06-03T09:20:00Z) Added `JsonModemPathFilter(paths, *, options=None, byte_views=False)` to filter matching parser events before Python event construction; it supports dotted paths, `*` wildcard components, multiple path patterns, and byte-view payloads.
+- [x] (2026-06-04T17:10:00Z) Removed experimental public Python helpers `loads()`, `string_ranges()`, and `string_range_table()` plus their active tests and benchmark imports. Added a no-copy byte-view guard rejecting memoryviews whose itemsize is not 1.
 - [x] (2026-06-03T09:27:00Z) Ran `.agent/check-py.sh`; build and 24 Python tests passed. `pdoc` still emitted the existing native `DecodeMode.__hash__` warning and exited successfully.
 - [x] (2026-06-03T09:38:00Z) Ran fast path-filter smoke benchmarks for LLM content forwarding and HTTP nested extraction, then ran `python -m pyperf check` on both output files.
 - [x] (2026-06-03T09:55:00Z) Installed optional native-decode competitors with `uv pip install -r crates/jsonmodem-py/benchmarks/requirements-bench.txt`; this added `pysimdjson 7.0.2`, `python-rapidjson 1.23`, and `ujson 5.12.1`.
@@ -447,19 +450,19 @@ when new headline numbers are needed:
 
 ## Outcomes & Retrospective
 
-Current outcome: the benchmark harness, competitor comparison, byte-oriented no-copy range APIs, `JsonModemByteViews`, `JsonModemPathFilter`, single `JsonModem.feed()` API, and tiny-chunk profiling harness are implemented in this worktree. `JsonModem.feed()` accepts either one chunk or an iterable of chunks, returns an exact outer tuple for fast unpacking, and uses `PathView` / `StringPayload` for lower-allocation path and string payload access. The historical `loads()` path improved the medium fixture from roughly `97.8 us` for event tuples to roughly `45.4 us`, but full native-object decode is not the current goal and should be reported only as reference context.
+Current outcome: the benchmark harness, competitor comparison, `JsonModemByteViews`, `JsonModemPathFilter`, single `JsonModem.feed()` API, and tiny-chunk profiling harness are implemented in this worktree. `JsonModem.feed()` accepts either one chunk or an iterable of chunks, returns an exact outer tuple for fast unpacking, and uses `PathView` / `StringPayload` for lower-allocation path and string payload access. The historical `loads()` path improved the medium fixture from roughly `97.8 us` for event tuples to roughly `45.4 us`, but full native-object decode is not the current goal and the helper is no longer public API.
 
 Historical note: byte-range extraction already clears a 10x internal baseline for one string-heavy task. On `string_array_unique.json`, the direct byte table path measured roughly `183 us` versus `9.01 ms` for the event tuple API, about `49x` faster, while keeping the source bytes as the payload owner and returning offsets into that input. The remaining target is the incremental stream API.
 
 For the user's true incremental benchmark, jsonmodem is faster than cumulative `jiter` partial parsing and the single `feed(chunks)` path is the current recommended API. The next performance phase should avoid Python event tuple construction for target string forwarding by adding a focused sink API or a compact byte-range batch API, but that would be a deliberate new capability rather than another feed variant.
 
-Remaining work before a PR: optimize path filtering and event emission below the current parser path-maintenance and Python-object construction cost, broaden scanner correctness tests if `string_range_table()` is intended as public API rather than benchmark API, and decide whether the direct scanner should share validation code with the core parser before publishing it as a stable interface.
+Remaining work before a PR: optimize path filtering and event emission below the current parser path-maintenance and Python-object construction cost, then rerun the fair fragment-stream comparisons. Do not reintroduce full-document decode or string-range helper APIs unless the public API direction changes explicitly.
 
 ## Context and Orientation
 
 The Rust parser crate lives in `crates/jsonmodem`. The Python extension lives in `crates/jsonmodem-py` and is built with PyO3 and maturin. The current Python API exposes `JsonModem.feed()` and `JsonModem.finish()` returning iterators of `(kind, path, payload)` tuples. `feed()` accepts one chunk or an iterable of chunks. That API is useful for low-level streaming, but it still creates Python objects per parser event and must be benchmarked against other incremental or partial parsers, not against one-shot full-document decode.
 
-This work adds performance-oriented incremental Python paths. "Byte-range mode" means string-like JSON payloads can be exposed as `bytes` or `memoryview` referring to the original input buffer where JSON escaping and UTF-8 validation permit it. "Native Python value" and `loads()` work are retained as historical/reference context and are not the optimization target.
+This work adds performance-oriented incremental Python paths. "Byte-range mode" means string-like JSON payloads can be exposed as `bytes` or `memoryview` referring to the original input buffer where JSON escaping and UTF-8 validation permit it. "Native Python value" and `loads()` work are retained only as historical measurement context and are not part of the public API.
 
 The existing Rust performance plan at `plans/perf/jsonmodem_jiter_execplan.md` is relevant because it identifies Jiter datasets and single-chunk Rust parsing gaps. This Python plan should import those datasets or reproduce them in this worktree before running Python comparisons.
 
@@ -518,13 +521,11 @@ Second, import benchmark data. Prefer copying the Jiter fixture files from `orig
 
 Third, run a baseline for the current event binding. Measure total event consumption, object allocation pressure, and memory peak. This baseline is the denominator for the 10x target.
 
-Fourth, keep the historical native-value API as a reference result only. It is
-useful for explaining why full-document decode is not the target, but no new
-optimization work should be planned around this API in this ExecPlan:
-
-    jsonmodem.loads(data: bytes | bytearray | memoryview | str) -> object
-    jsonmodem.loadb(data: bytes | bytearray | memoryview) -> object
-    JsonModemValues.feed(...) for streaming native roots, if streaming roots are ready
+Fourth, keep native-value experiments as historical reference results only. They
+are useful for explaining why full-document decode is not the target, but no
+public `jsonmodem.loads()` API should be shipped from this work and no new
+optimization work should be planned around full-document native decode in this
+ExecPlan.
 
 Do not use one-shot native decode timings as headline evidence for incremental
 parser performance.
@@ -545,7 +546,7 @@ mode that tracks only the paths needed by the caller. Improvements must be
 measured against the same fragment stream and against `jiter` cumulative-prefix
 partial parsing.
 
-For true no-copy byte payloads in the streaming event parser, add source span metadata to string events. The Python API should retain the original `bytes` object and return `memoryview` objects for no-escape strings that lie wholly within a retained input buffer. If the string spans chunks or contains escapes, the API must either materialize a Python `str`/`bytes` object or return a segmented representation that clearly documents it is not one contiguous view. The one-shot `string_range_table(data)` API already gives callers compact offsets into one retained `bytes` input.
+For true no-copy byte payloads in the streaming event parser, add source span metadata to string events. The Python API should retain the original `bytes` object and return `memoryview` objects for no-escape strings that lie wholly within a retained input buffer. If the string spans chunks or contains escapes, the API must either materialize a Python `str`/`bytes` object or return a segmented representation that clearly documents it is not one contiguous view. The former one-shot `string_range_table(data)` experiment proved compact offsets can be fast, but it is not public API in this PR.
 
 The byte-view streaming design should use these rules:
 

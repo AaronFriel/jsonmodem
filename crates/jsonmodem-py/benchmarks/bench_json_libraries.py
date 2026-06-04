@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference full-decode benchmarks.
+"""Reference JSON library benchmarks.
 
 This file is useful for context, regression checks, and allocation summaries,
 but it is not the optimization target for Python performance work. Headline
@@ -75,11 +75,6 @@ def run_native_decode(decoder: Callable[[bytes], Any], data: bytes) -> int:
     return len(repr(value))
 
 
-def run_byte_scan(scanner: Callable[[bytes], Any], data: bytes) -> int:
-    value = scanner(data)
-    return len(value)
-
-
 def measure_tracemalloc(label: str, func: Callable[[bytes], Any], data: bytes) -> tuple[str, int, int]:
     tracemalloc.start()
     func(data)
@@ -89,11 +84,8 @@ def measure_tracemalloc(label: str, func: Callable[[bytes], Any], data: bytes) -
 
 
 def discover_decoders() -> dict[str, Callable[[bytes], Any]]:
-    from jsonmodem import loads as jsonmodem_loads
-
     decoders: dict[str, Callable[[bytes], Any]] = {
         "stdlib_json": lambda data: json.loads(data),
-        "jsonmodem_loads": jsonmodem_loads,
     }
 
     orjson = load_optional("orjson")
@@ -124,15 +116,6 @@ def discover_decoders() -> dict[str, Callable[[bytes], Any]]:
     return decoders
 
 
-def discover_byte_scanners() -> dict[str, Callable[[bytes], Any]]:
-    from jsonmodem import string_range_table, string_ranges
-
-    return {
-        "jsonmodem_string_ranges": string_ranges,
-        "jsonmodem_string_range_table": string_range_table,
-    }
-
-
 def add_metadata(runner: pyperf.Runner, workloads: dict[str, bytes]) -> None:
     optional = {
         "orjson": load_optional("orjson"),
@@ -153,8 +136,8 @@ def add_metadata(runner: pyperf.Runner, workloads: dict[str, bytes]) -> None:
         "pysimdjson_version": package_version(optional["simdjson"]),
         "ujson_version": package_version(optional["ujson"]),
         "benchmark_method": (
-            "reference-only full decode and byte scan context; not the "
-            "incremental jsonmodem optimization target"
+            "reference-only full decode context; not the incremental "
+            "jsonmodem optimization target"
         ),
     }
     for name, data in workloads.items():
@@ -175,7 +158,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--group",
         action="append",
-        choices=("events", "native", "byte"),
+        choices=("events", "native"),
         help="Run only the selected benchmark group. May be passed multiple times.",
     )
     parser.add_argument(
@@ -215,7 +198,6 @@ def main() -> None:
     )
     workloads = {name: (DATA_ROOT / name).read_bytes() for name in selected_workloads}
     decoders = discover_decoders()
-    byte_scanners = discover_byte_scanners()
 
     if args.list:
         for workload in selected_workloads:
@@ -224,16 +206,12 @@ def main() -> None:
             if "native" in selected_groups:
                 for name in decoders:
                     print(f"{name}:{workload}")
-            if "byte" in selected_groups:
-                for name in byte_scanners:
-                    print(f"{name}:{workload}")
         return
 
     if args.alloc_summary:
         decoders_for_alloc: dict[str, Callable[[bytes], Any]] = {
             "jsonmodem_events": consume_events,
             **discover_decoders(),
-            **discover_byte_scanners(),
         }
         for workload_name, data in workloads.items():
             print(f"# {workload_name} bytes={len(data)} sha256={stable_hash(data)}")
@@ -259,15 +237,6 @@ def main() -> None:
                     f"{decoder_name}:{workload_name}",
                     run_native_decode,
                     decoder,
-                    data,
-                )
-
-        if "byte" in selected_groups:
-            for scanner_name, scanner in byte_scanners.items():
-                runner.bench_func(
-                    f"{scanner_name}:{workload_name}",
-                    run_byte_scan,
-                    scanner,
                     data,
                 )
 

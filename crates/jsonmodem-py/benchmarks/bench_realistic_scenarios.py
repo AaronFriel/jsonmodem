@@ -424,11 +424,8 @@ def json_stream_har_urls(data: bytes) -> int:
 
 
 def discover_decoders() -> dict[str, Callable[[bytes], Any]]:
-    from jsonmodem import loads as jsonmodem_loads
-
     decoders: dict[str, Callable[[bytes], Any]] = {
         "stdlib_json": lambda data: json.loads(data),
-        "jsonmodem_loads": jsonmodem_loads,
     }
 
     orjson = load_optional("orjson")

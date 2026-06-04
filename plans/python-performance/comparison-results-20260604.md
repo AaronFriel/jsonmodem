@@ -9,6 +9,11 @@ answers a different user question.
 All timings below are `pyperf --fast` means from this worktree. `pyperf check`
 passed for all three result files with expected fast-mode stability warnings.
 
+Update: later PR cleanup removed the experimental public `jsonmodem.loads()`,
+`jsonmodem.string_ranges()`, and `jsonmodem.string_range_table()` helpers. Rows
+below with those names are preserved as historical measurements only; active
+benchmarks no longer import or publish those helpers.
+
 Artifacts:
 
 - `target/python-perf/jiter-all-8b-20260604.json`
@@ -97,9 +102,10 @@ libraries compare?"
 | `jsonmodem_string_range_table:string_array_unique.json` | 176.7 us |
 
 Result: full-object decode is dominated by `orjson`, `msgspec`, `pysimdjson`,
-and one-shot `jiter`. `jsonmodem.loads()` is not the feature to optimize. The
-packed string range table is much faster because it returns byte-range metadata
-instead of Python objects.
+and one-shot `jiter`. Historical `jsonmodem.loads()` measurements are not the
+feature to optimize. The historical packed string range table experiment showed
+that returning compact byte-offset metadata is much faster than building Python
+objects, but that helper is no longer public API.
 
 ## Realistic Application Scenarios
 

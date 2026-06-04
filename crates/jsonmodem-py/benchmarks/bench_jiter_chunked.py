@@ -4,8 +4,8 @@
 The primary comparison in this file is a stream of JSON fragments.  For each
 document workload, jsonmodem consumes every fragment through its incremental
 API, while jiter is measured by reparsing every cumulative prefix with
-``partial_mode=True``.  One-shot reassembled decodes are available only through
-the ``reference`` group and are not optimization targets for jsonmodem.
+``partial_mode=True``.  Reassembled full-document decodes are available only
+through the ``reference`` group and are not optimization targets for jsonmodem.
 """
 
 from __future__ import annotations
@@ -78,13 +78,6 @@ def load_workloads() -> dict[str, bytes]:
         "sequence_medium": make_sequence(500),
         "sequence_large": make_sequence(2000),
     }
-
-
-def run_jsonmodem_loads_reassembled(chunks: list[bytes]) -> int:
-    from jsonmodem import loads
-
-    value = loads(b"".join(chunks))
-    return len(repr(value))
 
 
 def run_jiter_reassembled(chunks: list[bytes]) -> int:
@@ -211,8 +204,8 @@ def add_metadata(runner: pyperf.Runner, workloads: dict[str, bytes], chunk_size:
     runner.metadata["chunk_size_bytes"] = str(chunk_size)
     runner.metadata["benchmark_method"] = (
         "primary results parse every stream fragment; jiter document results "
-        "use cumulative prefixes with partial_mode=True; reassembled loads are "
-        "reference-only"
+        "use cumulative prefixes with partial_mode=True; reassembled "
+        "full-document decoders are reference-only"
     )
     for name, data in workloads.items():
         runner.metadata[f"workload_{name}_bytes"] = str(len(data))
@@ -264,7 +257,6 @@ def main() -> None:
             benches.append((f"jsonmodem_feed_chunks_chunked:{name}", lambda chunks=chunks: run_jsonmodem_feed_chunks_chunked(chunks)))
             benches.append((f"jiter_cumulative_partial_prefixes:{name}", lambda chunks=chunks: run_jiter_cumulative_partial_prefixes(chunks)))
         if name in DOC_WORKLOADS and "reference" in selected_groups:
-            benches.append((f"reference_jsonmodem_loads_reassembled:{name}", lambda chunks=chunks: run_jsonmodem_loads_reassembled(chunks)))
             benches.append((f"reference_jiter_reassembled:{name}", lambda chunks=chunks: run_jiter_reassembled(chunks)))
         if name in SEQUENCE_WORKLOADS and "sequences" in selected_groups:
             benches.append((f"jsonmodem_sequence_chunked:{name}", lambda chunks=chunks: run_jsonmodem_sequence_chunked(chunks)))

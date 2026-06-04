@@ -6,8 +6,9 @@ suite. It complements `execplan.md`; it should stay dense and auditable.
 2026-06-03 update: the primary benchmark goal is incremental parsing of a
 stream of JSON fragments. `jsonmodem` should be compared to `jiter` by feeding
 the same fragments and having `jiter` parse every cumulative prefix with
-`partial_mode=True`. Full-document `loads()` comparisons are reference-only
-context and should not be used as the optimization target.
+`partial_mode=True`. Full-document competitor decoders are reference-only
+context and should not be used as the optimization target; `jsonmodem` does not
+expose a public `loads()` API in the current PR.
 
 ## Package and API Sources
 

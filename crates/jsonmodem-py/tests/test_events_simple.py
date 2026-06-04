@@ -152,6 +152,14 @@ def test_byte_views_accept_readonly_memoryview_input():
     assert bytes(payload["fragment"]) == b"ok"
 
 
+def test_byte_views_reject_non_byte_memoryview_input():
+    parser = JsonModemByteViews(ParserOptions())
+    data = memoryview(b'["AB"]').cast("H")
+
+    with pytest.raises(TypeError, match="itemsize 1"):
+        list(parser.feed(data))
+
+
 def test_byte_views_materialize_escaped_fragments_as_text():
     parser = JsonModemByteViews(ParserOptions())
 

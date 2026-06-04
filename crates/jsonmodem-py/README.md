@@ -68,8 +68,9 @@ async def stream_json(request: Request):
 
 The Python performance benchmarks are written around streams of fragments. The
 fair `jiter` comparison reparses every cumulative prefix with
-`partial_mode=True`; reassembled full-document `loads()` timings are kept as
-reference results only.
+`partial_mode=True`; reassembled full-document decoder timings are kept as
+competitor reference results only. `jsonmodem` does not expose a full-document
+`loads()` API.
 
 Build wheels for release:
 

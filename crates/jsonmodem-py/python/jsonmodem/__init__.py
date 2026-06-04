@@ -11,9 +11,6 @@ ParserOptions = _native.ParserOptions
 DecodeMode = _native.DecodeMode
 JsonModemSyntaxError = _native.JsonModemSyntaxError
 JsonModemStateError = _native.JsonModemStateError
-loads = _native.loads
-string_ranges = _native.string_ranges
-string_range_table = _native.string_range_table
 
 __all__ = [
     "JsonModem",
@@ -25,9 +22,6 @@ __all__ = [
     "DecodeMode",
     "JsonModemSyntaxError",
     "JsonModemStateError",
-    "loads",
-    "string_ranges",
-    "string_range_table",
 ]
 
 __version__ = getattr(_native, "__version__", "0.0.0")

@@ -29,9 +29,9 @@ The tuple contents are optimized defaults:
 - string payloads are lightweight `StringPayload` objects with `.fragment`, `.is_initial`, `.is_final`, and compatibility dictionary-style access.
 
 The earlier experimental APIs `feed_many()`, `JsonEvent`, object-feed methods,
-and `warm_event_pool()` were removed. They proved useful ideas, but the user
-rejected API proliferation and the object-feed path regressed immediate
-unpacking.
+`warm_event_pool()`, `loads()`, `string_ranges()`, and `string_range_table()`
+were removed. They proved useful for experiments, but this PR keeps the public
+Python surface focused on incremental fragment parsing.
 
 ## Results
 
@@ -45,7 +45,8 @@ Full cross-library comparison results from 2026-06-04 are recorded in
   compared with `jsonriver` at about 12.5 ms, `json-streamer` at about 77 ms,
   and `partial-json-parser` at about 522 ms;
 - full-document decode: `orjson`, `msgspec`, `pysimdjson`, and one-shot `jiter`
-  beat `jsonmodem.loads()`, which remains reference-only;
+  remain useful context, but `jsonmodem` no longer exposes a public
+  full-document decode API;
 - complete newline-delimited JSON objects: buffered-line `jiter` and native
   full decoders beat current jsonmodem event streaming;
 - selective HTTP/deep/HAR extraction: `JsonModemPathFilter` improves event
