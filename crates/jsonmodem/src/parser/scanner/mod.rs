@@ -767,8 +767,7 @@ impl<'src> Scanner<'src> {
     pub fn consume_while_ascii(&mut self, pred: impl Fn(u8) -> bool) -> usize {
         self.ensure_anchor_started();
         let mut copied = 0usize;
-        loop {
-            let Some(u) = self.peek() else { break };
+        while let Some(u) = self.peek() {
             if !u.ch.is_ascii() {
                 break;
             }

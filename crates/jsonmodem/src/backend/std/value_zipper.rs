@@ -57,7 +57,7 @@ impl ValueZipper {
     {
         let slot = self.align_path(path);
         mutate(slot);
-        let slot_ptr = slot as *mut Value;
+        let slot_ptr = core::ptr::from_mut::<Value>(slot);
         let path = &self.path_components;
         let leaf = unsafe { &*slot_ptr };
         (path, leaf)
@@ -65,7 +65,7 @@ impl ValueZipper {
 
     #[inline]
     pub(crate) fn with_leaf<'a>(&'a mut self, path: &Path) -> (&'a StdPath, &'a Value) {
-        let slot = self.align_path(path) as *mut Value;
+        let slot = core::ptr::from_mut::<Value>(self.align_path(path));
         let path = &self.path_components;
         let leaf = unsafe { &*slot };
         (path, leaf)

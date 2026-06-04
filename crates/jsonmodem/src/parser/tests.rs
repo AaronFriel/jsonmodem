@@ -1554,7 +1554,7 @@ fn unicode_whitespace_rejected_by_default() {
         }) => {
             assert_eq!(c, '\u{00A0}');
         }
-        other => panic!("expected InvalidCharacter error, got: {:?}", other),
+        other => panic!("expected InvalidCharacter error, got: {other:?}"),
     }
 }
 
