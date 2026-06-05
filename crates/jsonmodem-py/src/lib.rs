@@ -1658,7 +1658,7 @@ impl PyJsonModemValueView {
         match core_value_at_path(&root, &self.path) {
             Some(CoreValue::Array(values)) => Ok(values.len()),
             Some(CoreValue::Object(map)) => Ok(map.len()),
-            Some(CoreValue::String(value)) => Ok(value.len()),
+            Some(CoreValue::String(value)) => Ok(value.chars().count()),
             Some(_) => Err(PyTypeError::new_err("value view has no length")),
             None => Ok(0),
         }

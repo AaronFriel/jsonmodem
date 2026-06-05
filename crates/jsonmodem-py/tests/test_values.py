@@ -38,6 +38,19 @@ def test_values_feed_accepts_iterable_chunks():
     assert len(root_view["items"]) == 2
 
 
+def test_values_string_view_len_matches_python_string_len():
+    parser = JsonModemValues()
+
+    updates = list(parser.feed('{"emoji":"🙂","word":"café"}'))
+    updates.extend(parser.finish())
+
+    root_view = updates[-1][1]
+    assert root_view["emoji"].snapshot() == "🙂"
+    assert len(root_view["emoji"]) == len("🙂") == 1
+    assert root_view["word"].snapshot() == "café"
+    assert len(root_view["word"]) == len("café") == 4
+
+
 def test_values_view_before_input_is_empty():
     parser = JsonModemValues()
 
