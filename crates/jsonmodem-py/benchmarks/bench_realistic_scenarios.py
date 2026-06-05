@@ -175,9 +175,9 @@ def jsonmodem_extract_etags(data: bytes) -> int:
 
 
 def jsonmodem_filter_extract_etags(data: bytes) -> int:
-    from jsonmodem import JsonModemPathFilter
+    from jsonmodem import JsonModem
 
-    parser = JsonModemPathFilter("items.*.metadata.etag")
+    parser = JsonModem(paths="items.*.metadata.etag")
     total = 0
     for chunk in chunk_bytes(data, 4096):
         for _kind, _path, payload in parser.feed(chunk):
@@ -200,9 +200,9 @@ def ijson_extract_etags(data: bytes) -> int:
 
 
 def jsonmodem_forward_tool_content(data: bytes) -> int:
-    from jsonmodem import JsonModemByteViews
+    from jsonmodem import JsonModem
 
-    parser = JsonModemByteViews()
+    parser = JsonModem(byte_views=True)
     total = 0
     for chunk in chunk_bytes(data, 257):
         for kind, path, payload in parser.feed(chunk):
@@ -220,9 +220,9 @@ def jsonmodem_forward_tool_content(data: bytes) -> int:
 
 
 def jsonmodem_filter_forward_tool_content(data: bytes) -> int:
-    from jsonmodem import JsonModemPathFilter
+    from jsonmodem import JsonModem
 
-    parser = JsonModemPathFilter("content", byte_views=True)
+    parser = JsonModem(paths="content", byte_views=True)
     total = 0
     for chunk in chunk_bytes(data, 257):
         for _kind, _path, payload in parser.feed(chunk):
@@ -249,6 +249,21 @@ def jsonmodem_owned_tool_content(data: bytes) -> int:
     for kind, path, payload in parser.finish():
         if kind == "string" and path.endswith("content"):
             total += len(payload.fragment.encode())
+    return total
+
+
+def jsonmodem_values_tool_content(data: bytes) -> int:
+    from jsonmodem import JsonModemValues
+
+    parser = JsonModemValues()
+    total = 0
+    for chunk in chunk_bytes(data, 257):
+        for _index, view, path, _is_final in parser.feed(chunk):
+            if path.endswith("content"):
+                total = len(view["content"])
+    for _index, view, path, _is_final in parser.finish():
+        if path.endswith("content"):
+            total = len(view["content"])
     return total
 
 
@@ -347,9 +362,9 @@ def jsonmodem_deep_nested(data: bytes) -> int:
 
 
 def jsonmodem_filter_deep_nested(data: bytes) -> int:
-    from jsonmodem import JsonModemPathFilter
+    from jsonmodem import JsonModem
 
-    parser = JsonModemPathFilter("records.*.outer.middle.inner.target")
+    parser = JsonModem(paths="records.*.outer.middle.inner.target")
     total = 0
     for chunk in chunk_bytes(data, 4096):
         for _kind, _path, payload in parser.feed(chunk):
@@ -392,9 +407,9 @@ def jsonmodem_har_urls(data: bytes) -> int:
 
 
 def jsonmodem_filter_har_urls(data: bytes) -> int:
-    from jsonmodem import JsonModemPathFilter
+    from jsonmodem import JsonModem
 
-    parser = JsonModemPathFilter("log.entries.*.request.url")
+    parser = JsonModem(paths="log.entries.*.request.url")
     total = 0
     for chunk in chunk_bytes(data, 4096):
         for _kind, _path, payload in parser.feed(chunk):
@@ -543,6 +558,7 @@ def main() -> None:
     if "llm_tool_arguments" in scenarios and "llm_partial" in groups:
         data = scenarios["llm_tool_arguments"]
         benches.append(("jsonmodem_pathfilter_byteviews:llm_partial_content", lambda data=data: jsonmodem_filter_forward_tool_content(data)))
+        benches.append(("jsonmodem_values:llm_partial_content", lambda data=data: jsonmodem_values_tool_content(data)))
         if load_optional("jsonriver") is not None:
             benches.append(("jsonriver:llm_partial_content", lambda data=data: jsonriver_progressive_tool_content(data)))
         if load_optional("partial_json_parser") is not None:

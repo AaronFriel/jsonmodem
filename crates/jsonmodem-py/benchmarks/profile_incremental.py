@@ -6,7 +6,7 @@ from time import perf_counter
 from typing import Callable
 
 import jiter
-from jsonmodem import JsonModem, JsonModemPathFilter
+from jsonmodem import JsonModem
 
 
 def make_doc(chunk_count: int, chunk_size: int) -> bytes:
@@ -70,7 +70,7 @@ def jsonmodem_feed_chunks_events_unpack(chunks: list[bytes]) -> int:
 
 
 def jsonmodem_pathfilter_byteviews(chunks: list[bytes]) -> int:
-    parser = JsonModemPathFilter("content", byte_views=True)
+    parser = JsonModem(paths="content", byte_views=True)
     total = 0
     for chunk in chunks:
         for _kind, _path, payload in parser.feed(chunk):

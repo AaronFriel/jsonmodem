@@ -5,8 +5,8 @@ from . import _jsonmodem as _native
 JsonModem = _native.JsonModem
 PathView = _native.PathView
 StringPayload = _native.StringPayload
-JsonModemByteViews = _native.JsonModemByteViews
-JsonModemPathFilter = _native.JsonModemPathFilter
+JsonModemValues = _native.JsonModemValues
+JsonModemValueView = _native.JsonModemValueView
 ParserOptions = _native.ParserOptions
 DecodeMode = _native.DecodeMode
 JsonModemSyntaxError = _native.JsonModemSyntaxError
@@ -16,8 +16,8 @@ __all__ = [
     "JsonModem",
     "PathView",
     "StringPayload",
-    "JsonModemByteViews",
-    "JsonModemPathFilter",
+    "JsonModemValues",
+    "JsonModemValueView",
     "ParserOptions",
     "DecodeMode",
     "JsonModemSyntaxError",

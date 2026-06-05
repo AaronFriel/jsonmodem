@@ -40,7 +40,7 @@ pub use event::ParseEvent;
 #[allow(unused_imports)]
 pub use event::test_util;
 pub use jsonmodem_buffers::{BufferedEvent, JsonModemBuffers};
-pub use jsonmodem_values::{JsonModemValues, StreamingValue, ValuesOptions};
+pub use jsonmodem_values::{JsonModemValues, StreamingValue, ValuesError, ValuesOptions};
 #[doc(hidden)]
 pub use parser::JsonModem;
 pub use parser::{DecodeMode, ParserError, ParserOptions};

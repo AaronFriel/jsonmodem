@@ -1,13 +1,17 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    cell::RefCell,
+    collections::BTreeMap,
     os::raw::{c_int, c_void},
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use ::jsonmodem::{
-    DecodeMode as CoreDecodeMode, JsonModem as CoreJsonModem, ParseEvent,
-    ParserOptions as CoreParserOptions, Path, PathItem, StdBackend,
+    DecodeMode as CoreDecodeMode, JsonModem as CoreJsonModem,
+    JsonModemValues as CoreJsonModemValues, ParseEvent, ParserOptions as CoreParserOptions, Path,
+    PathItem, StdBackend, StreamingValue as CoreStreamingValue, Value as CoreValue,
+    ValuesError as CoreValuesError, ValuesOptions as CoreValuesOptions,
     lending_iterator::LendingIterator as CoreLendingIterator,
 };
 use pyo3::{
@@ -17,7 +21,8 @@ use pyo3::{
     ffi,
     prelude::*,
     types::{
-        PyAny, PyBool, PyBytes, PyDict, PyMemoryView, PySlice, PyString, PyStringMethods, PyTuple,
+        PyAny, PyBool, PyBytes, PyDict, PyList, PyMemoryView, PySlice, PyString, PyStringMethods,
+        PyTuple,
     },
 };
 
@@ -164,168 +169,6 @@ impl ByteViewEvent {
     }
 }
 
-fn borrowed_parse_event_to_raw_event(
-    py: Python<'_>,
-    event: ParseEvent<'_, &Path, StdBackend>,
-    interns: &InternedStrings,
-    active_string_paths: Option<&mut HashMap<Vec<OwnedPathComponent>, PyObject>>,
-) -> PyResult<PyObject> {
-    match event {
-        ParseEvent::Null { path } => build_raw_event(
-            py,
-            OwnedEventKind::Null,
-            path,
-            py.None().into_bound(py).into_any(),
-            interns,
-        ),
-        ParseEvent::Boolean { path, value } => build_raw_event(
-            py,
-            OwnedEventKind::Bool,
-            path,
-            PyBool::new(py, value).to_owned().into_any(),
-            interns,
-        ),
-        ParseEvent::Number { path, value } => build_raw_event(
-            py,
-            OwnedEventKind::Number,
-            path,
-            value.into_pyobject(py)?.into_any(),
-            interns,
-        ),
-        ParseEvent::String {
-            path,
-            fragment,
-            is_initial,
-            is_final,
-        } => {
-            let dict = PyDict::new(py);
-            dict.set_item(interns.fragment_key(py), fragment.as_ref())?;
-            dict.set_item(interns.is_initial_key(py), is_initial)?;
-            dict.set_item(interns.is_final_key(py), is_final)?;
-            if let Some(active_string_paths) = active_string_paths {
-                let path = string_path_object(
-                    py,
-                    path,
-                    is_initial,
-                    is_final,
-                    interns,
-                    active_string_paths,
-                )?;
-                build_raw_event_with_path(
-                    py,
-                    OwnedEventKind::String,
-                    path,
-                    dict.into_any(),
-                    interns,
-                )
-            } else {
-                build_raw_event(py, OwnedEventKind::String, path, dict.into_any(), interns)
-            }
-        }
-        ParseEvent::ArrayBegin { path } => build_raw_event(
-            py,
-            OwnedEventKind::ArrayBegin,
-            path,
-            py.None().into_bound(py).into_any(),
-            interns,
-        ),
-        ParseEvent::ArrayEnd { path, .. } => build_raw_event(
-            py,
-            OwnedEventKind::ArrayEnd,
-            path,
-            py.None().into_bound(py).into_any(),
-            interns,
-        ),
-        ParseEvent::ObjectBegin { path } => build_raw_event(
-            py,
-            OwnedEventKind::ObjectBegin,
-            path,
-            py.None().into_bound(py).into_any(),
-            interns,
-        ),
-        ParseEvent::ObjectEnd { path, .. } => build_raw_event(
-            py,
-            OwnedEventKind::ObjectEnd,
-            path,
-            py.None().into_bound(py).into_any(),
-            interns,
-        ),
-    }
-}
-
-fn string_path_object(
-    py: Python<'_>,
-    path: &Path,
-    is_initial: bool,
-    is_final: bool,
-    interns: &InternedStrings,
-    active_string_paths: &mut HashMap<Vec<OwnedPathComponent>, PyObject>,
-) -> PyResult<PyObject> {
-    let key = convert_borrowed_path(path);
-    if !is_initial {
-        if let Some(path_object) = active_string_paths.get(&key) {
-            let path_object = path_object.clone_ref(py);
-            if is_final {
-                active_string_paths.remove(&key);
-            }
-            return Ok(path_object);
-        }
-    }
-
-    let path_object = build_path_tuple(py, &key, interns)?.into_any().unbind();
-    if is_initial && !is_final {
-        active_string_paths.insert(key, path_object.clone_ref(py));
-    } else if is_final {
-        active_string_paths.remove(&key);
-    }
-    Ok(path_object)
-}
-
-fn build_raw_event(
-    py: Python<'_>,
-    kind: OwnedEventKind,
-    path: &Path,
-    payload: Bound<'_, PyAny>,
-    interns: &InternedStrings,
-) -> PyResult<PyObject> {
-    let path = build_core_path_tuple(py, path, interns)?
-        .into_any()
-        .unbind();
-    build_raw_event_with_path(py, kind, path, payload, interns)
-}
-
-fn build_raw_event_with_path(
-    py: Python<'_>,
-    kind: OwnedEventKind,
-    path: PyObject,
-    payload: Bound<'_, PyAny>,
-    interns: &InternedStrings,
-) -> PyResult<PyObject> {
-    let kind = interns.kind_bound(py, kind).into_any().unbind();
-    let payload = payload.unbind();
-    unsafe {
-        let tuple_ptr = ffi::PyTuple_New(3);
-        if tuple_ptr.is_null() {
-            return Err(PyErr::fetch(py));
-        }
-
-        if ffi::PyTuple_SetItem(tuple_ptr, 0, kind.into_ptr()) != 0 {
-            ffi::Py_DECREF(tuple_ptr);
-            return Err(PyErr::fetch(py));
-        }
-        if ffi::PyTuple_SetItem(tuple_ptr, 1, path.into_ptr()) != 0 {
-            ffi::Py_DECREF(tuple_ptr);
-            return Err(PyErr::fetch(py));
-        }
-        if ffi::PyTuple_SetItem(tuple_ptr, 2, payload.into_ptr()) != 0 {
-            ffi::Py_DECREF(tuple_ptr);
-            return Err(PyErr::fetch(py));
-        }
-
-        Ok(Bound::from_owned_ptr(py, tuple_ptr).into_any().unbind())
-    }
-}
-
 fn build_view_event(
     py: Python<'_>,
     kind: OwnedEventKind,
@@ -437,67 +280,6 @@ fn borrowed_parse_event_to_view_event(
             convert_borrowed_path(path),
             py.None(),
             interns,
-        ),
-    }
-}
-
-fn build_core_path_tuple<'py>(
-    py: Python<'py>,
-    path: &Path,
-    interns: &'py InternedStrings,
-) -> PyResult<Bound<'py, PyTuple>> {
-    if path.is_empty() {
-        return Ok(PyTuple::empty(py));
-    }
-
-    unsafe {
-        let tuple_ptr = ffi::PyTuple_New(path.len() as ffi::Py_ssize_t);
-        if tuple_ptr.is_null() {
-            return Err(PyErr::fetch(py));
-        }
-
-        for (index, component) in path.iter().enumerate() {
-            let pair = match build_core_path_component_tuple(py, component, interns) {
-                Ok(pair) => pair,
-                Err(err) => {
-                    ffi::Py_DECREF(tuple_ptr);
-                    return Err(err);
-                }
-            };
-            let status = ffi::PyTuple_SetItem(
-                tuple_ptr,
-                index as ffi::Py_ssize_t,
-                pair.into_any().unbind().into_ptr(),
-            );
-            if status != 0 {
-                ffi::Py_DECREF(tuple_ptr);
-                return Err(PyErr::fetch(py));
-            }
-        }
-
-        Ok(Bound::from_owned_ptr(py, tuple_ptr).downcast_into_unchecked())
-    }
-}
-
-fn build_core_path_component_tuple<'py>(
-    py: Python<'py>,
-    component: &PathItem<impl AsRef<str>, usize>,
-    interns: &'py InternedStrings,
-) -> PyResult<Bound<'py, PyTuple>> {
-    match component {
-        PathItem::Key(key) => PyTuple::new(
-            py,
-            [
-                interns.key_tag(py).into_any().unbind(),
-                PyString::new(py, key.as_ref()).into_any().unbind(),
-            ],
-        ),
-        PathItem::Index(index) => PyTuple::new(
-            py,
-            [
-                interns.index_tag(py).into_any().unbind(),
-                index.into_pyobject(py)?.into_any().unbind(),
-            ],
         ),
     }
 }
@@ -1271,7 +1053,8 @@ impl PyStringPayload {
 struct PyJsonModem {
     parser: Option<CoreJsonModem<StdBackend>>,
     finished: bool,
-    active_string_paths: HashMap<Vec<OwnedPathComponent>, PyObject>,
+    patterns: Option<Vec<PathPattern>>,
+    byte_views: bool,
     interns: InternedStrings,
     record_pool: EventRecordPool,
 }
@@ -1285,17 +1068,27 @@ impl PyJsonModem {
     /// options:
     ///     Optional `ParserOptions` instance.  When omitted, defaults are used.
     #[new]
-    #[pyo3(signature=(options=None))]
-    fn new(py: Python<'_>, options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature=(options=None, *, paths=None, byte_views=false))]
+    fn new(
+        py: Python<'_>,
+        options: Option<Bound<'_, PyAny>>,
+        paths: Option<Bound<'_, PyAny>>,
+        byte_views: bool,
+    ) -> PyResult<Self> {
         let parsed_options = match options {
             Some(item) => read_parser_options(item)?,
             None => PyParserOptions::default(),
+        };
+        let patterns = match paths {
+            Some(item) if !item.is_none() => Some(read_path_patterns(&item)?),
+            _ => None,
         };
 
         Ok(Self {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
             finished: false,
-            active_string_paths: HashMap::new(),
+            patterns,
+            byte_views,
             interns: InternedStrings::new(py)?,
             record_pool: new_event_record_pool(),
         })
@@ -1313,37 +1106,97 @@ impl PyJsonModem {
     /// a `JsonModemSyntaxError` is raised from the iterator at the first
     /// invalid token.
     #[pyo3(text_signature = "($self, chunk_or_chunks)")]
-    fn feed(
-        &mut self,
-        py: Python<'_>,
-        chunk_or_chunks: Bound<'_, PyAny>,
-    ) -> PyResult<Py<PyEventIter>> {
+    fn feed(&mut self, py: Python<'_>, chunk_or_chunks: Bound<'_, PyAny>) -> PyResult<PyObject> {
         let parser = self
             .parser
             .as_mut()
             .ok_or_else(|| state_error("parser has already finished"))?;
 
+        if self.byte_views {
+            let patterns = self.patterns.as_deref();
+            let mut records = Vec::new();
+            if is_single_byte_view_input(&chunk_or_chunks) {
+                return with_readonly_byte_text(
+                    py,
+                    &chunk_or_chunks,
+                    "JsonModem.feed()",
+                    |text, source| {
+                        let records = match patterns {
+                            Some(patterns) => collect_filtered_byte_view_feed_events(
+                                py, parser, text, source, patterns,
+                            )?,
+                            None => collect_byte_view_feed_events(py, parser, text, source)?,
+                        };
+                        Ok(
+                            PyByteEventIter::new(py, records, self.interns.clone_ref(py))?
+                                .into_any(),
+                        )
+                    },
+                );
+            }
+
+            for item in chunk_or_chunks.try_iter()? {
+                let chunk = item?;
+                let mut chunk_records =
+                    with_readonly_byte_text(py, &chunk, "JsonModem.feed()", |text, source| {
+                        match patterns {
+                            Some(patterns) => collect_filtered_byte_view_feed_events(
+                                py, parser, text, source, patterns,
+                            ),
+                            None => collect_byte_view_feed_events(py, parser, text, source),
+                        }
+                    })?;
+                let has_error = chunk_records
+                    .iter()
+                    .any(|record| matches!(record, ByteViewRecord::Error(_)));
+                records.append(&mut chunk_records);
+                if has_error {
+                    break;
+                }
+            }
+            return Ok(PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any());
+        }
+
         let interns = self.interns.clone_ref(py);
         let record_pool = Arc::clone(&self.record_pool);
+        let patterns = self.patterns.as_deref();
         if is_single_json_input(&chunk_or_chunks) {
             return with_input_text(py, &chunk_or_chunks, "feed()", |chunk| {
                 let mut records = take_event_records(&record_pool);
-                collect_feed_events(py, parser, chunk, &interns, &mut records)?;
-                PyEventIter::new(py, records, record_pool)
+                match patterns {
+                    Some(patterns) => collect_filtered_view_feed_events(
+                        py,
+                        parser,
+                        chunk,
+                        patterns,
+                        &interns,
+                        &mut records,
+                    )?,
+                    None => collect_feed_events(py, parser, chunk, &interns, &mut records)?,
+                }
+                Ok(PyEventIter::new(py, records, record_pool)?.into_any())
             });
         }
 
         let mut records = take_event_records(&record_pool);
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "feed()", |chunk| {
-                collect_feed_events(py, parser, chunk, &interns, &mut records)
+            with_input_text(py, &chunk, "feed()", |chunk| match patterns {
+                Some(patterns) => collect_filtered_view_feed_events(
+                    py,
+                    parser,
+                    chunk,
+                    patterns,
+                    &interns,
+                    &mut records,
+                ),
+                None => collect_feed_events(py, parser, chunk, &interns, &mut records),
             })?;
             if matches!(records.last(), Some(EventRecord::Error(_))) {
                 break;
             }
         }
-        PyEventIter::new(py, records, record_pool)
+        Ok(PyEventIter::new(py, records, record_pool)?.into_any())
     }
 
     /// Mark the parser as complete and emit any buffered trailing events.
@@ -1352,7 +1205,7 @@ impl PyJsonModem {
     /// `JsonModemStateError`.  The returned iterator may still surface syntax
     /// errors (for example, trailing garbage once the document is closed).
     #[pyo3(text_signature = "($self)")]
-    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyEventIter>> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<PyObject> {
         if self.finished {
             return Err(state_error("finish() has already been called"));
         }
@@ -1361,12 +1214,26 @@ impl PyJsonModem {
             .parser
             .take()
             .ok_or_else(|| state_error("parser has already finished"))?;
+
+        if self.byte_views {
+            let records = match self.patterns.as_deref() {
+                Some(patterns) => collect_filtered_byte_view_finish_events(py, parser, patterns)?,
+                None => collect_byte_view_finish_events(py, parser)?,
+            };
+            self.finished = true;
+            return Ok(PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any());
+        }
+
         let mut records = take_event_records(&self.record_pool);
         let interns = self.interns.clone_ref(py);
-        collect_finish_events(py, parser, &interns, &mut records)?;
+        match self.patterns.as_deref() {
+            Some(patterns) => {
+                collect_filtered_view_finish_events(py, parser, patterns, &interns, &mut records)?;
+            }
+            None => collect_finish_events(py, parser, &interns, &mut records)?,
+        }
         self.finished = true;
-        self.active_string_paths.clear();
-        PyEventIter::new(py, records, Arc::clone(&self.record_pool))
+        Ok(PyEventIter::new(py, records, Arc::clone(&self.record_pool))?.into_any())
     }
 
     /// `True` once the parser has been exhausted or `finish()` was called.
@@ -1435,64 +1302,107 @@ impl PyEventIter {
     }
 }
 
-/// Streaming JSON parser that returns byte views for borrowed string payloads.
+enum ValueRecord {
+    Value(PyObject),
+    Error(OwnedParserError),
+    Consumed,
+}
+
+/// Streaming JSON parser that yields native Python value snapshots.
 ///
-/// This parser is intended for consumers that can work with UTF-8 bytes
-/// directly.  `feed()` accepts immutable `bytes` and read-only contiguous
-/// `memoryview` objects.  When a string fragment is unescaped and lies inside
-/// the current input chunk, the payload's `fragment` is a `memoryview` over the
-/// caller's original bytes.  Escaped or otherwise materialized fragments fall
-/// back to Python `str`.
+/// This is retained as an internal benchmark/control adapter. The public
+/// `JsonModemValues` API is the read-only view parser below.
 #[pyclass(
     module = "jsonmodem._jsonmodem",
-    name = "JsonModemByteViews",
+    name = "JsonModemValueSnapshots",
     unsendable
 )]
-struct PyJsonModemByteViews {
-    parser: Option<CoreJsonModem<StdBackend>>,
+struct PyJsonModemValues {
+    parser: Option<CoreJsonModemValues<StdBackend>>,
     finished: bool,
-    interns: InternedStrings,
 }
 
 #[pymethods]
-impl PyJsonModemByteViews {
-    /// Construct a byte-view streaming parser.
+impl PyJsonModemValues {
+    /// Construct an incremental value parser.
+    ///
+    /// Parameters
+    /// ----------
+    /// options:
+    ///     Optional `ParserOptions` instance.  When omitted, defaults are used.
+    /// partial:
+    ///     Emit non-final snapshots while a root JSON value is still being
+    ///     parsed.  This defaults to `True` because this class is meant for
+    ///     partial stream consumers.
     #[new]
-    #[pyo3(signature=(options=None))]
-    fn new(py: Python<'_>, options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature=(options=None, *, partial=true))]
+    fn new(options: Option<Bound<'_, PyAny>>, partial: bool) -> PyResult<Self> {
         let parsed_options = match options {
             Some(item) => read_parser_options(item)?,
             None => PyParserOptions::default(),
         };
+        let values_options = CoreValuesOptions::default().with_partial(partial);
 
         Ok(Self {
-            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            parser: Some(CoreJsonModemValues::with_options(
+                parsed_options.to_core(),
+                values_options,
+            )),
             finished: false,
-            interns: InternedStrings::new(py)?,
         })
     }
 
-    /// Feed immutable UTF-8 bytes and get an iterator over new events.
+    /// Feed UTF-8 JSON to the parser and get value snapshots.
     ///
-    /// `chunk` may be `bytes` or a read-only contiguous `memoryview`.
-    /// `str`, `bytearray`, and writable memory views are rejected because this
-    /// API returns views into caller-owned memory.
-    #[pyo3(text_signature = "($self, chunk)")]
-    fn feed(&mut self, py: Python<'_>, chunk: Bound<'_, PyAny>) -> PyResult<Py<PyByteEventIter>> {
+    /// `chunk_or_chunks` accepts the same input types as `JsonModem.feed()`: a
+    /// single `str`, `bytes`, `bytearray`, or contiguous `memoryview`, or an
+    /// iterable of those chunk types.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
         let parser = self
             .parser
             .as_mut()
             .ok_or_else(|| state_error("parser has already finished"))?;
 
-        with_readonly_byte_text(py, &chunk, "JsonModemByteViews.feed()", |text, source| {
-            let records = collect_byte_view_feed_events(py, parser, text, source)?;
-            PyByteEventIter::new(py, records, self.interns.clone_ref(py))
-        })
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(py, &chunk_or_chunks, "JsonModemValues.feed()", |chunk| {
+                collect_value_feed(py, parser, chunk, &mut records)?;
+                PyValueIter::new(py, records)
+            });
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemValues.feed()", |chunk| {
+                collect_value_feed(py, parser, chunk, &mut records)
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
     }
 
-    /// Mark the parser as complete and emit any buffered trailing events.
+    /// Return a snapshot of the current root value.
+    ///
+    /// Before any input arrives this returns `None`, matching the Rust value
+    /// adapter's empty root.
+    fn view(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let parser = self
+            .parser
+            .as_ref()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        value_to_py(py, parser.view_root())
+    }
+
+    /// Mark the parser as complete and emit any remaining value snapshots.
     #[pyo3(text_signature = "($self)")]
-    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyByteEventIter>> {
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
         if self.finished {
             return Err(state_error("finish() has already been called"));
         }
@@ -1501,9 +1411,10 @@ impl PyJsonModemByteViews {
             .parser
             .take()
             .ok_or_else(|| state_error("parser has already finished"))?;
-        let records = collect_byte_view_finish_events(py, parser)?;
+        let mut records = Vec::new();
+        collect_value_finish(py, parser, &mut records)?;
         self.finished = true;
-        PyByteEventIter::new(py, records, self.interns.clone_ref(py))
+        PyValueIter::new(py, records)
     }
 
     /// `True` once the parser has been exhausted or `finish()` was called.
@@ -1513,7 +1424,790 @@ impl PyJsonModemByteViews {
     }
 }
 
-/// Iterator over byte-view streaming events produced by `JsonModemByteViews`.
+/// Iterator over value snapshots produced by `JsonModemValues`.
+#[pyclass(module = "jsonmodem._jsonmodem")]
+struct PyValueIter {
+    records: Vec<ValueRecord>,
+    index: usize,
+}
+
+impl PyValueIter {
+    fn new(py: Python<'_>, records: Vec<ValueRecord>) -> PyResult<Py<PyValueIter>> {
+        Py::new(py, PyValueIter { records, index: 0 })
+    }
+}
+
+#[pymethods]
+impl PyValueIter {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Yield the next `(index, value, is_final)` tuple or raise
+    /// `StopIteration`.
+    fn __next__<'py>(&mut self, py: Python<'py>) -> PyResult<Option<PyObject>> {
+        if self.index >= self.records.len() {
+            return Ok(None);
+        }
+
+        let entry = std::mem::replace(&mut self.records[self.index], ValueRecord::Consumed);
+        self.index += 1;
+
+        match entry {
+            ValueRecord::Value(value) => Ok(Some(value)),
+            ValueRecord::Error(err) => Err(parser_error_to_py(py, &err)),
+            ValueRecord::Consumed => Ok(None),
+        }
+    }
+}
+
+/// Streaming JSON parser that mutates one Python root object in place.
+///
+/// `JsonModemMutableValues` is for consumers that want ordinary Python
+/// `dict`/`list` containers and can process change notifications.  Each
+/// yielded tuple is `(index, root, path, is_final)`, where `root` is the
+/// current Python root object and `path` identifies the field changed by the
+/// event.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemMutableValues",
+    unsendable
+)]
+struct PyJsonModemMutableValues {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    root: Option<PyObject>,
+    next_index: usize,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemMutableValues {
+    #[new]
+    #[pyo3(signature=(options=None))]
+    fn new(options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            root: None,
+            next_index: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed UTF-8 JSON and get `(index, root, path, is_final)` updates.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(
+                py,
+                &chunk_or_chunks,
+                "JsonModemMutableValues.feed()",
+                |chunk| {
+                    collect_mutable_value_feed(
+                        py,
+                        parser,
+                        chunk,
+                        &mut self.root,
+                        &mut self.next_index,
+                        &mut records,
+                    )?;
+                    PyValueIter::new(py, records)
+                },
+            );
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemMutableValues.feed()", |chunk| {
+                collect_mutable_value_feed(
+                    py,
+                    parser,
+                    chunk,
+                    &mut self.root,
+                    &mut self.next_index,
+                    &mut records,
+                )
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Return the current Python root object, or `None` before input arrives.
+    fn view(&self, py: Python<'_>) -> PyObject {
+        self.root
+            .as_ref()
+            .map(|root| root.clone_ref(py))
+            .unwrap_or_else(|| py.None())
+    }
+
+    /// Mark the parser as complete and emit any remaining updates.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_mutable_value_finish(
+            py,
+            parser,
+            &mut self.root,
+            &mut self.next_index,
+            &mut records,
+        )?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Read-only view into the current incremental value tree.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemValueView",
+    unsendable
+)]
+struct PyJsonModemValueView {
+    root: Rc<RefCell<Option<CoreValue>>>,
+    path: Vec<OwnedPathComponent>,
+}
+
+#[pymethods]
+impl PyJsonModemValueView {
+    /// Return this view as a normal Python value.
+    fn snapshot(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let root = self.root.borrow();
+        match core_value_at_path(&root, &self.path) {
+            Some(value) => value_to_py(py, value),
+            None => Ok(py.None()),
+        }
+    }
+
+    /// Return a nested read-only value view.
+    fn __getitem__(
+        &self,
+        py: Python<'_>,
+        key: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyJsonModemValueView>> {
+        let mut path = self.path.clone();
+        {
+            let root = self.root.borrow();
+            let value = core_value_at_path(&root, &self.path)
+                .ok_or_else(|| PyIndexError::new_err("value view is empty"))?;
+            match value {
+                CoreValue::Object(map) => {
+                    let key: String = key.extract()?;
+                    if !map.contains_key(key.as_str()) {
+                        return Err(PyIndexError::new_err(format!("missing object key {key:?}")));
+                    }
+                    path.push(OwnedPathComponent::Key(key));
+                }
+                CoreValue::Array(values) => {
+                    let index: usize = key.extract()?;
+                    if index >= values.len() {
+                        return Err(PyIndexError::new_err(format!(
+                            "array index {index} out of range"
+                        )));
+                    }
+                    path.push(OwnedPathComponent::Index(index));
+                }
+                _ => {
+                    return Err(PyTypeError::new_err(
+                        "value view only supports indexing arrays and objects",
+                    ));
+                }
+            }
+        }
+
+        Py::new(
+            py,
+            PyJsonModemValueView {
+                root: Rc::clone(&self.root),
+                path,
+            },
+        )
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        let root = self.root.borrow();
+        match core_value_at_path(&root, &self.path) {
+            Some(CoreValue::Array(values)) => Ok(values.len()),
+            Some(CoreValue::Object(map)) => Ok(map.len()),
+            Some(CoreValue::String(value)) => Ok(value.len()),
+            Some(_) => Err(PyTypeError::new_err("value view has no length")),
+            None => Ok(0),
+        }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        let root = self.root.borrow();
+        match core_value_at_path(&root, &self.path) {
+            Some(CoreValue::Null) => "null",
+            Some(CoreValue::Boolean(_)) => "bool",
+            Some(CoreValue::Number(_)) => "number",
+            Some(CoreValue::String(_)) => "string",
+            Some(CoreValue::Array(_)) => "array",
+            Some(CoreValue::Object(_)) => "object",
+            None => "empty",
+        }
+    }
+
+    #[getter]
+    fn path(&self, py: Python<'_>) -> PyResult<PyObject> {
+        build_path_tuple_for_event(py, &self.path)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let snapshot = self.snapshot(py)?;
+        Ok(format!("JsonModemValueView({})", snapshot.bind(py).repr()?))
+    }
+}
+
+/// Streaming JSON parser that returns read-only views and changed paths.
+///
+/// Each yielded tuple is `(index, view, path, is_final)`.  The view points at
+/// the current root and can be inspected with `snapshot()` or `__getitem__()`;
+/// it does not build a Python `dict`/`list` unless requested.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemValueViews",
+    unsendable
+)]
+struct PyJsonModemValueViews {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    root: Rc<RefCell<Option<CoreValue>>>,
+    next_index: usize,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemValueViews {
+    #[new]
+    #[pyo3(signature=(options=None))]
+    fn new(options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            root: Rc::new(RefCell::new(None)),
+            next_index: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed UTF-8 JSON and get `(index, view, path, is_final)` updates.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(
+                py,
+                &chunk_or_chunks,
+                "JsonModemValueViews.feed()",
+                |chunk| {
+                    collect_view_value_feed(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                    )?;
+                    PyValueIter::new(py, records)
+                },
+            );
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemValueViews.feed()", |chunk| {
+                collect_view_value_feed(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &mut self.next_index,
+                    &mut records,
+                )
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Return a read-only view of the current root value.
+    fn view(&self, py: Python<'_>) -> PyResult<Py<PyJsonModemValueView>> {
+        Py::new(
+            py,
+            PyJsonModemValueView {
+                root: Rc::clone(&self.root),
+                path: Vec::new(),
+            },
+        )
+    }
+
+    /// Mark the parser as complete and emit any remaining updates.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_view_value_finish(py, parser, &self.root, &mut self.next_index, &mut records)?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Experimental value-view parser that reuses one root view object.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemValueViewsCached",
+    unsendable
+)]
+struct PyJsonModemValueViewsCached {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    root: Rc<RefCell<Option<CoreValue>>>,
+    root_view: Py<PyJsonModemValueView>,
+    next_index: usize,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemValueViewsCached {
+    #[new]
+    #[pyo3(signature=(options=None))]
+    fn new(py: Python<'_>, options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+        let root = Rc::new(RefCell::new(None));
+        let root_view = Py::new(
+            py,
+            PyJsonModemValueView {
+                root: Rc::clone(&root),
+                path: Vec::new(),
+            },
+        )?;
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            root,
+            root_view,
+            next_index: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed UTF-8 JSON and get `(index, view, path, is_final)` updates.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(
+                py,
+                &chunk_or_chunks,
+                "JsonModemValueViewsCached.feed()",
+                |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        |py, index, path, is_final| {
+                            cached_view_update_record(py, index, &self.root_view, &path, is_final)
+                        },
+                    )?;
+                    PyValueIter::new(py, records)
+                },
+            );
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemValueViewsCached.feed()", |chunk| {
+                collect_view_value_feed_with(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &mut self.next_index,
+                    &mut records,
+                    |py, index, path, is_final| {
+                        cached_view_update_record(py, index, &self.root_view, &path, is_final)
+                    },
+                )
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Return the cached root view.
+    fn view(&self, py: Python<'_>) -> Py<PyJsonModemValueView> {
+        self.root_view.clone_ref(py)
+    }
+
+    /// Mark the parser as complete and emit any remaining updates.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_view_value_finish_with(
+            py,
+            parser,
+            &self.root,
+            &mut self.next_index,
+            &mut records,
+            |py, index, path, is_final| {
+                cached_view_update_record(py, index, &self.root_view, &path, is_final)
+            },
+        )?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Experimental value-view parser that emits changed paths only.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemValuePaths",
+    unsendable
+)]
+struct PyJsonModemValuePaths {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    root: Rc<RefCell<Option<CoreValue>>>,
+    next_index: usize,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemValuePaths {
+    #[new]
+    #[pyo3(signature=(options=None))]
+    fn new(options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            root: Rc::new(RefCell::new(None)),
+            next_index: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed UTF-8 JSON and get `(index, path, is_final)` updates.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(
+                py,
+                &chunk_or_chunks,
+                "JsonModemValuePaths.feed()",
+                |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        path_only_update_record,
+                    )?;
+                    PyValueIter::new(py, records)
+                },
+            );
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemValuePaths.feed()", |chunk| {
+                collect_view_value_feed_with(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &mut self.next_index,
+                    &mut records,
+                    path_only_update_record,
+                )
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Return a read-only view of the current root value.
+    fn view(&self, py: Python<'_>) -> PyResult<Py<PyJsonModemValueView>> {
+        Py::new(
+            py,
+            PyJsonModemValueView {
+                root: Rc::clone(&self.root),
+                path: Vec::new(),
+            },
+        )
+    }
+
+    /// Mark the parser as complete and emit any remaining updates.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_view_value_finish_with(
+            py,
+            parser,
+            &self.root,
+            &mut self.next_index,
+            &mut records,
+            path_only_update_record,
+        )?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Streaming JSON parser that returns a reused read-only root view.
+#[pyclass(module = "jsonmodem._jsonmodem", name = "JsonModemValues", unsendable)]
+struct PyJsonModemValueViewsPathView {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    root: Rc<RefCell<Option<CoreValue>>>,
+    root_view: Py<PyJsonModemValueView>,
+    next_index: usize,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemValueViewsPathView {
+    #[new]
+    #[pyo3(signature=(options=None))]
+    fn new(py: Python<'_>, options: Option<Bound<'_, PyAny>>) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+        let root = Rc::new(RefCell::new(None));
+        let root_view = Py::new(
+            py,
+            PyJsonModemValueView {
+                root: Rc::clone(&root),
+                path: Vec::new(),
+            },
+        )?;
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            root,
+            root_view,
+            next_index: 0,
+            finished: false,
+        })
+    }
+
+    /// Feed UTF-8 JSON and get `(index, view, path_view, is_final)` updates.
+    #[pyo3(text_signature = "($self, chunk_or_chunks)")]
+    fn feed(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyValueIter>> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut records = Vec::new();
+        if is_single_json_input(&chunk_or_chunks) {
+            return with_input_text(py, &chunk_or_chunks, "JsonModemValues.feed()", |chunk| {
+                collect_view_value_feed_with(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &mut self.next_index,
+                    &mut records,
+                    |py, index, path, is_final| {
+                        cached_view_path_view_update_record(
+                            py,
+                            index,
+                            &self.root_view,
+                            path,
+                            is_final,
+                        )
+                    },
+                )?;
+                PyValueIter::new(py, records)
+            });
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            with_input_text(py, &chunk, "JsonModemValues.feed()", |chunk| {
+                collect_view_value_feed_with(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &mut self.next_index,
+                    &mut records,
+                    |py, index, path, is_final| {
+                        cached_view_path_view_update_record(
+                            py,
+                            index,
+                            &self.root_view,
+                            path,
+                            is_final,
+                        )
+                    },
+                )
+            })?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Return the cached root view.
+    fn view(&self, py: Python<'_>) -> Py<PyJsonModemValueView> {
+        self.root_view.clone_ref(py)
+    }
+
+    /// Mark the parser as complete and emit any remaining updates.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_view_value_finish_with(
+            py,
+            parser,
+            &self.root,
+            &mut self.next_index,
+            &mut records,
+            |py, index, path, is_final| {
+                cached_view_path_view_update_record(py, index, &self.root_view, path, is_final)
+            },
+        )?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Iterator over byte-view streaming events produced by `JsonModem`.
 #[pyclass(module = "jsonmodem._jsonmodem")]
 struct PyByteEventIter {
     records: Vec<ByteViewRecord>,
@@ -1560,133 +2254,6 @@ impl PyByteEventIter {
     }
 }
 
-/// Streaming JSON parser that only emits events matching selected paths.
-///
-/// Paths are strings such as `"content"` or `"items.*.metadata.etag"`. A `*`
-/// component matches either one object key or one array index. When
-/// `byte_views=True`, matching string fragments use the same payload rules as
-/// `JsonModemByteViews`.
-#[pyclass(
-    module = "jsonmodem._jsonmodem",
-    name = "JsonModemPathFilter",
-    unsendable
-)]
-struct PyJsonModemPathFilter {
-    parser: Option<CoreJsonModem<StdBackend>>,
-    finished: bool,
-    patterns: Vec<PathPattern>,
-    byte_views: bool,
-    active_string_paths: HashMap<Vec<OwnedPathComponent>, PyObject>,
-    interns: InternedStrings,
-    record_pool: EventRecordPool,
-}
-
-#[pymethods]
-impl PyJsonModemPathFilter {
-    /// Construct a path-filtered streaming parser.
-    #[new]
-    #[pyo3(signature=(paths, *, options=None, byte_views=false))]
-    fn new(
-        _py: Python<'_>,
-        paths: Bound<'_, PyAny>,
-        options: Option<Bound<'_, PyAny>>,
-        byte_views: bool,
-    ) -> PyResult<Self> {
-        let parsed_options = match options {
-            Some(item) => read_parser_options(item)?,
-            None => PyParserOptions::default(),
-        };
-        let patterns = read_path_patterns(&paths)?;
-
-        Ok(Self {
-            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
-            finished: false,
-            patterns,
-            byte_views,
-            active_string_paths: HashMap::new(),
-            interns: InternedStrings::new(_py)?,
-            record_pool: new_event_record_pool(),
-        })
-    }
-
-    /// Feed JSON and get an iterator over matching events.
-    ///
-    /// With `byte_views=False`, input accepts the same types as `JsonModem`.
-    /// With `byte_views=True`, input accepts the same read-only bytes-like
-    /// types as `JsonModemByteViews`.
-    #[pyo3(text_signature = "($self, chunk)")]
-    fn feed(&mut self, py: Python<'_>, chunk: Bound<'_, PyAny>) -> PyResult<PyObject> {
-        let parser = self
-            .parser
-            .as_mut()
-            .ok_or_else(|| state_error("parser has already finished"))?;
-
-        if self.byte_views {
-            let patterns = &self.patterns;
-            with_readonly_byte_text(py, &chunk, "JsonModemPathFilter.feed()", |text, source| {
-                let records =
-                    collect_filtered_byte_view_feed_events(py, parser, text, source, patterns)?;
-                Ok(PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any())
-            })
-        } else {
-            let patterns = &self.patterns;
-            let interns = self.interns.clone_ref(py);
-            let record_pool = Arc::clone(&self.record_pool);
-            with_input_text(py, &chunk, "JsonModemPathFilter.feed()", |text| {
-                let mut records = take_event_records(&record_pool);
-                collect_filtered_feed_events(
-                    py,
-                    parser,
-                    text,
-                    patterns,
-                    &interns,
-                    None,
-                    &mut records,
-                )?;
-                Ok(PyEventIter::new(py, records, record_pool)?.into_any())
-            })
-        }
-    }
-
-    /// Mark the parser as complete and emit any buffered matching events.
-    #[pyo3(text_signature = "($self)")]
-    fn finish(&mut self, py: Python<'_>) -> PyResult<PyObject> {
-        if self.finished {
-            return Err(state_error("finish() has already been called"));
-        }
-
-        let parser = self
-            .parser
-            .take()
-            .ok_or_else(|| state_error("parser has already finished"))?;
-        self.finished = true;
-
-        if self.byte_views {
-            let records = collect_filtered_byte_view_finish_events(py, parser, &self.patterns)?;
-            Ok(PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any())
-        } else {
-            let mut records = take_event_records(&self.record_pool);
-            let interns = self.interns.clone_ref(py);
-            collect_filtered_finish_events(
-                py,
-                parser,
-                &self.patterns,
-                &interns,
-                Some(&mut self.active_string_paths),
-                &mut records,
-            )?;
-            self.active_string_paths.clear();
-            Ok(PyEventIter::new(py, records, Arc::clone(&self.record_pool))?.into_any())
-        }
-    }
-
-    /// `True` once the parser has been exhausted or `finish()` was called.
-    #[getter]
-    fn is_finished(&self) -> bool {
-        self.finished
-    }
-}
-
 fn collect_feed_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
@@ -1708,13 +2275,12 @@ fn collect_feed_events(
     drain_pending_events(py, parser, interns, records)
 }
 
-fn collect_filtered_feed_events(
+fn collect_filtered_view_feed_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
     patterns: &[PathPattern],
     interns: &InternedStrings,
-    mut active_string_paths: Option<&mut HashMap<Vec<OwnedPathComponent>, PyObject>>,
     records: &mut Vec<EventRecord>,
 ) -> PyResult<()> {
     let mut events = parser.feed(chunk);
@@ -1722,12 +2288,7 @@ fn collect_filtered_feed_events(
         match item {
             Ok(event) => {
                 if path_matches_patterns(event.path(), patterns) {
-                    records.push(event_record(
-                        py,
-                        event,
-                        interns,
-                        active_string_paths.as_deref_mut(),
-                    )?);
+                    records.push(view_event_record(py, event, interns)?);
                 }
             }
             Err(err) => {
@@ -1737,7 +2298,7 @@ fn collect_filtered_feed_events(
         }
     }
     drop(events);
-    drain_filtered_pending_events(py, parser, patterns, interns, active_string_paths, records)
+    drain_filtered_view_pending_events(py, parser, patterns, interns, records)
 }
 
 fn collect_byte_view_feed_events(
@@ -1942,12 +2503,11 @@ fn collect_finish_events(
     Ok(())
 }
 
-fn collect_filtered_finish_events(
+fn collect_filtered_view_finish_events(
     py: Python<'_>,
     parser: CoreJsonModem<StdBackend>,
     patterns: &[PathPattern],
     interns: &InternedStrings,
-    mut active_string_paths: Option<&mut HashMap<Vec<OwnedPathComponent>, PyObject>>,
     records: &mut Vec<EventRecord>,
 ) -> PyResult<()> {
     let mut events = parser.finish();
@@ -1955,12 +2515,7 @@ fn collect_filtered_finish_events(
         match item {
             Ok(event) => {
                 if path_matches_patterns(event.path(), patterns) {
-                    records.push(event_record(
-                        py,
-                        event,
-                        interns,
-                        active_string_paths.as_deref_mut(),
-                    )?);
+                    records.push(view_event_record(py, event, interns)?);
                 }
             }
             Err(err) => {
@@ -1970,6 +2525,771 @@ fn collect_filtered_finish_events(
         }
     }
     Ok(())
+}
+
+fn collect_value_feed(
+    py: Python<'_>,
+    parser: &mut CoreJsonModemValues<StdBackend>,
+    chunk: &str,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    for item in parser.feed(chunk) {
+        match item {
+            Ok(value) => records.push(streaming_value_record(py, value)?),
+            Err(err) => {
+                records.push(values_error_record(err));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_value_finish(
+    py: Python<'_>,
+    parser: CoreJsonModemValues<StdBackend>,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    for item in parser.finish() {
+        match item {
+            Ok(value) => records.push(streaming_value_record(py, value)?),
+            Err(err) => {
+                records.push(values_error_record(err));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn streaming_value_record(
+    py: Python<'_>,
+    value: CoreStreamingValue<CoreValue>,
+) -> PyResult<ValueRecord> {
+    let index = value.index.into_pyobject(py)?.into_any().unbind();
+    let value_object = value_to_py(py, &value.value)?;
+    let is_final = PyBool::new(py, value.is_final)
+        .to_owned()
+        .into_any()
+        .unbind();
+    let tuple = PyTuple::new(py, [index, value_object, is_final])?;
+    Ok(ValueRecord::Value(tuple.into_any().unbind()))
+}
+
+fn values_error_record(err: CoreValuesError<StdBackend>) -> ValueRecord {
+    let err = match err {
+        CoreValuesError::Parser(err) => OwnedParserError {
+            message: err.to_string(),
+            line: err.line(),
+            column: err.column(),
+        },
+        CoreValuesError::Assembler(err) => OwnedParserError {
+            message: err.to_string(),
+            line: 0,
+            column: 0,
+        },
+    };
+    ValueRecord::Error(err)
+}
+
+fn value_to_py(py: Python<'_>, value: &CoreValue) -> PyResult<PyObject> {
+    match value {
+        CoreValue::Null => Ok(py.None()),
+        CoreValue::Boolean(value) => Ok(PyBool::new(py, *value).to_owned().into_any().unbind()),
+        CoreValue::Number(value) => Ok(value.into_pyobject(py)?.into_any().unbind()),
+        CoreValue::String(value) => Ok(PyString::new(py, value).into_any().unbind()),
+        CoreValue::Array(values) => {
+            let list = PyList::empty(py);
+            for item in values {
+                list.append(value_to_py(py, item)?)?;
+            }
+            Ok(list.into_any().unbind())
+        }
+        CoreValue::Object(map) => {
+            let dict = PyDict::new(py);
+            for (key, item) in map {
+                dict.set_item(key.as_ref(), value_to_py(py, item)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        }
+    }
+}
+
+fn collect_mutable_value_feed(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    root: &mut Option<PyObject>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some(record) = mutable_event_record(py, event, root, next_index)? {
+                    records.push(record);
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_mutable_value_finish(
+    py: Python<'_>,
+    parser: CoreJsonModem<StdBackend>,
+    root: &mut Option<PyObject>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.finish();
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some(record) = mutable_event_record(py, event, root, next_index)? {
+                    records.push(record);
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_view_value_feed(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some(record) = view_value_event_record(py, event, root, next_index)? {
+                    records.push(record);
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_view_value_finish(
+    py: Python<'_>,
+    parser: CoreJsonModem<StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.finish();
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some(record) = view_value_event_record(py, event, root, next_index)? {
+                    records.push(record);
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_view_value_feed_with(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+    mut build_record: impl FnMut(
+        Python<'_>,
+        usize,
+        Vec<OwnedPathComponent>,
+        bool,
+    ) -> PyResult<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some((path, is_final)) = core_apply_event(event, &mut root.borrow_mut()) {
+                    records.push(build_record(py, *next_index, path, is_final)?);
+                    if is_final {
+                        *next_index += 1;
+                    }
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_view_value_finish_with(
+    py: Python<'_>,
+    parser: CoreJsonModem<StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    next_index: &mut usize,
+    records: &mut Vec<ValueRecord>,
+    mut build_record: impl FnMut(
+        Python<'_>,
+        usize,
+        Vec<OwnedPathComponent>,
+        bool,
+    ) -> PyResult<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.finish();
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some((path, is_final)) = core_apply_event(event, &mut root.borrow_mut()) {
+                    records.push(build_record(py, *next_index, path, is_final)?);
+                    if is_final {
+                        *next_index += 1;
+                    }
+                }
+            }
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mutable_event_record(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    root: &mut Option<PyObject>,
+    next_index: &mut usize,
+) -> PyResult<Option<ValueRecord>> {
+    let Some((path, is_final)) = mutable_apply_event(py, event, root)? else {
+        return Ok(None);
+    };
+    let Some(root_object) = root.as_ref() else {
+        return Ok(None);
+    };
+    let record = value_update_record(py, *next_index, root_object.clone_ref(py), &path, is_final)?;
+    if is_final {
+        *next_index += 1;
+    }
+    Ok(Some(record))
+}
+
+fn cached_view_update_record(
+    py: Python<'_>,
+    index: usize,
+    root_view: &Py<PyJsonModemValueView>,
+    path: &[OwnedPathComponent],
+    is_final: bool,
+) -> PyResult<ValueRecord> {
+    value_update_record(
+        py,
+        index,
+        root_view.clone_ref(py).into_bound(py).into_any().unbind(),
+        path,
+        is_final,
+    )
+}
+
+fn path_only_update_record(
+    py: Python<'_>,
+    index: usize,
+    path: Vec<OwnedPathComponent>,
+    is_final: bool,
+) -> PyResult<ValueRecord> {
+    let index = index.into_pyobject(py)?.into_any().unbind();
+    let path = build_path_tuple_for_event(py, &path)?;
+    let is_final = PyBool::new(py, is_final).to_owned().into_any().unbind();
+    let tuple = PyTuple::new(py, [index, path, is_final])?;
+    Ok(ValueRecord::Value(tuple.into_any().unbind()))
+}
+
+fn cached_view_path_view_update_record(
+    py: Python<'_>,
+    index: usize,
+    root_view: &Py<PyJsonModemValueView>,
+    path: Vec<OwnedPathComponent>,
+    is_final: bool,
+) -> PyResult<ValueRecord> {
+    let index = index.into_pyobject(py)?.into_any().unbind();
+    let root_view = root_view.clone_ref(py).into_bound(py).into_any().unbind();
+    let path = Py::new(py, PyPathView { path })?
+        .into_bound(py)
+        .into_any()
+        .unbind();
+    let is_final = PyBool::new(py, is_final).to_owned().into_any().unbind();
+    let tuple = PyTuple::new(py, [index, root_view, path, is_final])?;
+    Ok(ValueRecord::Value(tuple.into_any().unbind()))
+}
+
+fn view_value_event_record(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    next_index: &mut usize,
+) -> PyResult<Option<ValueRecord>> {
+    let Some((path, is_final)) = core_apply_event(event, &mut root.borrow_mut()) else {
+        return Ok(None);
+    };
+    let view = Py::new(
+        py,
+        PyJsonModemValueView {
+            root: Rc::clone(root),
+            path: Vec::new(),
+        },
+    )?
+    .into_bound(py)
+    .into_any()
+    .unbind();
+    let record = value_update_record(py, *next_index, view, &path, is_final)?;
+    if is_final {
+        *next_index += 1;
+    }
+    Ok(Some(record))
+}
+
+fn value_update_record(
+    py: Python<'_>,
+    index: usize,
+    root_or_view: PyObject,
+    path: &[OwnedPathComponent],
+    is_final: bool,
+) -> PyResult<ValueRecord> {
+    let index = index.into_pyobject(py)?.into_any().unbind();
+    let path = build_path_tuple_for_event(py, path)?;
+    let is_final = PyBool::new(py, is_final).to_owned().into_any().unbind();
+    let tuple = PyTuple::new(py, [index, root_or_view, path, is_final])?;
+    Ok(ValueRecord::Value(tuple.into_any().unbind()))
+}
+
+fn mutable_apply_event(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    root: &mut Option<PyObject>,
+) -> PyResult<Option<(Vec<OwnedPathComponent>, bool)>> {
+    match event {
+        ParseEvent::Null { path } => {
+            let path = convert_borrowed_path(path);
+            py_assign_at_path(py, root, &path, py.None())?;
+            let is_final = path.is_empty();
+            Ok(Some((path, is_final)))
+        }
+        ParseEvent::Boolean { path, value } => {
+            let path = convert_borrowed_path(path);
+            py_assign_at_path(
+                py,
+                root,
+                &path,
+                PyBool::new(py, value).to_owned().into_any().unbind(),
+            )?;
+            let is_final = path.is_empty();
+            Ok(Some((path, is_final)))
+        }
+        ParseEvent::Number { path, value } => {
+            let path = convert_borrowed_path(path);
+            py_assign_at_path(
+                py,
+                root,
+                &path,
+                value.into_pyobject(py)?.into_any().unbind(),
+            )?;
+            let is_final = path.is_empty();
+            Ok(Some((path, is_final)))
+        }
+        ParseEvent::String {
+            path,
+            fragment,
+            is_initial,
+            is_final,
+        } => {
+            let path = convert_borrowed_path(path);
+            let is_final_root = is_final && path.is_empty();
+            if is_initial {
+                py_assign_at_path(
+                    py,
+                    root,
+                    &path,
+                    PyString::new(py, fragment.as_ref()).into_any().unbind(),
+                )?;
+            } else {
+                let mut text = py_value_at_path(py, root, &path)?
+                    .and_then(|value| value.extract::<String>(py).ok())
+                    .unwrap_or_default();
+                text.push_str(fragment.as_ref());
+                py_assign_at_path(
+                    py,
+                    root,
+                    &path,
+                    PyString::new(py, &text).into_any().unbind(),
+                )?;
+            }
+            Ok(Some((path, is_final_root)))
+        }
+        ParseEvent::ArrayBegin { path } => {
+            let path = convert_borrowed_path(path);
+            py_assign_at_path(py, root, &path, PyList::empty(py).into_any().unbind())?;
+            Ok(Some((path, false)))
+        }
+        ParseEvent::ObjectBegin { path } => {
+            let path = convert_borrowed_path(path);
+            py_assign_at_path(py, root, &path, PyDict::new(py).into_any().unbind())?;
+            Ok(Some((path, false)))
+        }
+        ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+            if path.is_empty() {
+                Ok(Some((Vec::new(), true)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn py_value_at_path(
+    py: Python<'_>,
+    root: &Option<PyObject>,
+    path: &[OwnedPathComponent],
+) -> PyResult<Option<PyObject>> {
+    let Some(root) = root else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Ok(Some(root.clone_ref(py)));
+    }
+
+    let mut current = root.clone_ref(py);
+    for component in path {
+        let current_bound = current.bind(py);
+        current = match component {
+            OwnedPathComponent::Key(key) => {
+                let dict = current_bound.downcast::<PyDict>()?;
+                let Some(value) = dict.get_item(key)? else {
+                    return Ok(None);
+                };
+                value.into_any().unbind()
+            }
+            OwnedPathComponent::Index(index) => {
+                let list = current_bound.downcast::<PyList>()?;
+                if *index >= list.len() {
+                    return Ok(None);
+                }
+                list.get_item(*index)?.into_any().unbind()
+            }
+        };
+    }
+    Ok(Some(current))
+}
+
+fn py_assign_at_path(
+    py: Python<'_>,
+    root: &mut Option<PyObject>,
+    path: &[OwnedPathComponent],
+    value: PyObject,
+) -> PyResult<()> {
+    if path.is_empty() {
+        *root = Some(value);
+        return Ok(());
+    }
+
+    let root_object = root.get_or_insert_with(|| match path.first() {
+        Some(OwnedPathComponent::Index(_)) => PyList::empty(py).into_any().unbind(),
+        _ => PyDict::new(py).into_any().unbind(),
+    });
+
+    let parent_path = &path[..path.len() - 1];
+    let mut current = root_object.clone_ref(py);
+    for (position, component) in parent_path.iter().enumerate() {
+        let next_component = path.get(position + 1);
+        let current_bound = current.bind(py);
+        current = match component {
+            OwnedPathComponent::Key(key) => {
+                let dict = current_bound.downcast::<PyDict>()?;
+                if let Some(value) = dict.get_item(key)? {
+                    value.into_any().unbind()
+                } else {
+                    let container = py_container_for_next(py, next_component);
+                    dict.set_item(key, container.clone_ref(py))?;
+                    container
+                }
+            }
+            OwnedPathComponent::Index(index) => {
+                let list = current_bound.downcast::<PyList>()?;
+                while list.len() <= *index {
+                    list.append(py.None())?;
+                }
+                let value = list.get_item(*index)?;
+                if value.is_none() {
+                    let container = py_container_for_next(py, next_component);
+                    list.set_item(*index, container.clone_ref(py))?;
+                    container
+                } else {
+                    value.into_any().unbind()
+                }
+            }
+        };
+    }
+
+    let Some(last) = path.last() else {
+        return Ok(());
+    };
+    let current_bound = current.bind(py);
+    match last {
+        OwnedPathComponent::Key(key) => {
+            current_bound.downcast::<PyDict>()?.set_item(key, value)?;
+        }
+        OwnedPathComponent::Index(index) => {
+            let list = current_bound.downcast::<PyList>()?;
+            while list.len() < *index {
+                list.append(py.None())?;
+            }
+            if list.len() == *index {
+                list.append(value)?;
+            } else {
+                list.set_item(*index, value)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn py_container_for_next(py: Python<'_>, next: Option<&OwnedPathComponent>) -> PyObject {
+    match next {
+        Some(OwnedPathComponent::Index(_)) => PyList::empty(py).into_any().unbind(),
+        _ => PyDict::new(py).into_any().unbind(),
+    }
+}
+
+fn core_apply_event(
+    event: ParseEvent<'_, &Path, StdBackend>,
+    root: &mut Option<CoreValue>,
+) -> Option<(Vec<OwnedPathComponent>, bool)> {
+    match event {
+        ParseEvent::Null { path } => {
+            let path = convert_borrowed_path(path);
+            core_assign_at_path(root, &path, CoreValue::Null);
+            let is_final = path.is_empty();
+            Some((path, is_final))
+        }
+        ParseEvent::Boolean { path, value } => {
+            let path = convert_borrowed_path(path);
+            core_assign_at_path(root, &path, CoreValue::Boolean(value));
+            let is_final = path.is_empty();
+            Some((path, is_final))
+        }
+        ParseEvent::Number { path, value } => {
+            let path = convert_borrowed_path(path);
+            core_assign_at_path(root, &path, CoreValue::Number(value));
+            let is_final = path.is_empty();
+            Some((path, is_final))
+        }
+        ParseEvent::String {
+            path,
+            fragment,
+            is_initial,
+            is_final,
+        } => {
+            let path = convert_borrowed_path(path);
+            let is_final_root = is_final && path.is_empty();
+            if is_initial {
+                core_assign_at_path(
+                    root,
+                    &path,
+                    CoreValue::String(fragment.as_ref().to_string()),
+                );
+            } else if let Some(CoreValue::String(text)) = core_value_at_path_mut(root, &path) {
+                text.push_str(fragment.as_ref());
+            } else {
+                core_assign_at_path(
+                    root,
+                    &path,
+                    CoreValue::String(fragment.as_ref().to_string()),
+                );
+            }
+            Some((path, is_final_root))
+        }
+        ParseEvent::ArrayBegin { path } => {
+            let path = convert_borrowed_path(path);
+            core_assign_at_path(root, &path, CoreValue::Array(Vec::new()));
+            Some((path, false))
+        }
+        ParseEvent::ObjectBegin { path } => {
+            let path = convert_borrowed_path(path);
+            core_assign_at_path(root, &path, CoreValue::Object(BTreeMap::new()));
+            Some((path, false))
+        }
+        ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+            if path.is_empty() {
+                Some((Vec::new(), true))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn core_value_at_path<'a>(
+    root: &'a Option<CoreValue>,
+    path: &[OwnedPathComponent],
+) -> Option<&'a CoreValue> {
+    let mut current = root.as_ref()?;
+    for component in path {
+        current = match (component, current) {
+            (OwnedPathComponent::Key(key), CoreValue::Object(map)) => map.get(key.as_str())?,
+            (OwnedPathComponent::Index(index), CoreValue::Array(values)) => values.get(*index)?,
+            _ => return None,
+        };
+    }
+    Some(current)
+}
+
+fn core_value_at_path_mut<'a>(
+    root: &'a mut Option<CoreValue>,
+    path: &[OwnedPathComponent],
+) -> Option<&'a mut CoreValue> {
+    let mut current = root.as_mut()?;
+    for component in path {
+        current = match component {
+            OwnedPathComponent::Key(key) => match current {
+                CoreValue::Object(map) => map.get_mut(key.as_str())?,
+                _ => return None,
+            },
+            OwnedPathComponent::Index(index) => match current {
+                CoreValue::Array(values) => values.get_mut(*index)?,
+                _ => return None,
+            },
+        };
+    }
+    Some(current)
+}
+
+fn core_assign_at_path(
+    root: &mut Option<CoreValue>,
+    path: &[OwnedPathComponent],
+    value: CoreValue,
+) {
+    if path.is_empty() {
+        *root = Some(value);
+        return;
+    }
+
+    let root_value = root.get_or_insert_with(|| core_container_for_next(path.first()));
+    core_assign_inside(root_value, path, value);
+}
+
+fn core_assign_inside(current: &mut CoreValue, path: &[OwnedPathComponent], value: CoreValue) {
+    if path.len() == 1 {
+        match &path[0] {
+            OwnedPathComponent::Key(key) => {
+                let map = ensure_core_object(current);
+                map.insert(key.as_str().into(), value);
+            }
+            OwnedPathComponent::Index(index) => {
+                let values = ensure_core_array(current);
+                while values.len() < *index {
+                    values.push(CoreValue::Null);
+                }
+                if values.len() == *index {
+                    values.push(value);
+                } else {
+                    values[*index] = value;
+                }
+            }
+        }
+        return;
+    }
+
+    let next = path.get(1);
+    match &path[0] {
+        OwnedPathComponent::Key(key) => {
+            let map = ensure_core_object(current);
+            let child = map
+                .entry(key.as_str().into())
+                .or_insert_with(|| core_container_for_next(next));
+            core_assign_inside(child, &path[1..], value);
+        }
+        OwnedPathComponent::Index(index) => {
+            let values = ensure_core_array(current);
+            while values.len() <= *index {
+                values.push(core_container_for_next(next));
+            }
+            core_assign_inside(&mut values[*index], &path[1..], value);
+        }
+    }
+}
+
+fn core_container_for_next(next: Option<&OwnedPathComponent>) -> CoreValue {
+    match next {
+        Some(OwnedPathComponent::Index(_)) => CoreValue::Array(Vec::new()),
+        _ => CoreValue::Object(BTreeMap::new()),
+    }
+}
+
+fn ensure_core_object(current: &mut CoreValue) -> &mut BTreeMap<std::sync::Arc<str>, CoreValue> {
+    if !matches!(current, CoreValue::Object(_)) {
+        *current = CoreValue::Object(BTreeMap::new());
+    }
+    match current {
+        CoreValue::Object(map) => map,
+        _ => unreachable!(),
+    }
+}
+
+fn ensure_core_array(current: &mut CoreValue) -> &mut Vec<CoreValue> {
+    if !matches!(current, CoreValue::Array(_)) {
+        *current = CoreValue::Array(Vec::new());
+    }
+    match current {
+        CoreValue::Array(values) => values,
+        _ => unreachable!(),
+    }
 }
 
 fn drain_pending_events(
@@ -2000,12 +3320,11 @@ fn drain_pending_events(
     Ok(())
 }
 
-fn drain_filtered_pending_events(
+fn drain_filtered_view_pending_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     patterns: &[PathPattern],
     interns: &InternedStrings,
-    mut active_string_paths: Option<&mut HashMap<Vec<OwnedPathComponent>, PyObject>>,
     records: &mut Vec<EventRecord>,
 ) -> PyResult<()> {
     loop {
@@ -2017,12 +3336,7 @@ fn drain_filtered_pending_events(
                 match item {
                     Ok(event) => {
                         if path_matches_patterns(event.path(), patterns) {
-                            records.push(event_record(
-                                py,
-                                event,
-                                interns,
-                                active_string_paths.as_deref_mut(),
-                            )?);
+                            records.push(view_event_record(py, event, interns)?);
                         }
                     }
                     Err(err) => {
@@ -2037,20 +3351,6 @@ fn drain_filtered_pending_events(
         }
     }
     Ok(())
-}
-
-fn event_record(
-    py: Python<'_>,
-    event: ParseEvent<'_, &Path, StdBackend>,
-    interns: &InternedStrings,
-    active_string_paths: Option<&mut HashMap<Vec<OwnedPathComponent>, PyObject>>,
-) -> PyResult<EventRecord> {
-    Ok(EventRecord::Event(borrowed_parse_event_to_raw_event(
-        py,
-        event,
-        interns,
-        active_string_paths,
-    )?))
 }
 
 fn view_event_record(
@@ -2376,6 +3676,12 @@ fn is_single_json_input(data: &Bound<'_, PyAny>) -> bool {
         || supports_buffer_protocol(data)
 }
 
+fn is_single_byte_view_input(data: &Bound<'_, PyAny>) -> bool {
+    data.downcast::<PyString>().is_ok()
+        || data.downcast::<PyBytes>().is_ok()
+        || supports_buffer_protocol(data)
+}
+
 fn supports_buffer_protocol(data: &Bound<'_, PyAny>) -> bool {
     const PYBUF_SIMPLE: c_int = 0;
 
@@ -2595,9 +3901,10 @@ fn jsonmodem(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEventIter>()?;
     m.add_class::<PyPathView>()?;
     m.add_class::<PyStringPayload>()?;
-    m.add_class::<PyJsonModemByteViews>()?;
+    m.add_class::<PyValueIter>()?;
+    m.add_class::<PyJsonModemValueView>()?;
+    m.add_class::<PyJsonModemValueViewsPathView>()?;
     m.add_class::<PyByteEventIter>()?;
-    m.add_class::<PyJsonModemPathFilter>()?;
     m.add(
         "JsonModemSyntaxError",
         py.get_type::<JsonModemSyntaxError>(),

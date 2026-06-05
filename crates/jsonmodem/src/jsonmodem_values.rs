@@ -42,7 +42,9 @@ impl ValuesOptions {
 /// Error surfaced while streaming values.
 #[derive(Debug)]
 pub enum ValuesError<Ctx: EventCtx> {
+    /// Error reported by the underlying streaming parser.
     Parser(crate::parser::ParserError<Ctx>),
+    /// Error reported while converting a parsed event into backend values.
     Assembler(Ctx::Error),
 }
 

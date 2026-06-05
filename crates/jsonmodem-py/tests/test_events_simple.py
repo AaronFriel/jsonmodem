@@ -2,8 +2,6 @@ import pytest
 
 from jsonmodem import (
     JsonModem,
-    JsonModemByteViews,
-    JsonModemPathFilter,
     ParserOptions,
 )
 
@@ -120,7 +118,7 @@ def test_feed_rejects_invalid_utf8_bytes():
 
 
 def test_byte_views_return_memoryview_for_borrowed_string_payload():
-    parser = JsonModemByteViews(ParserOptions())
+    parser = JsonModem(ParserOptions(), byte_views=True)
     data = b'{"a": "hi"}'
 
     events = list(parser.feed(data))
@@ -140,7 +138,7 @@ def test_byte_views_return_memoryview_for_borrowed_string_payload():
 
 
 def test_byte_views_accept_readonly_memoryview_input():
-    parser = JsonModemByteViews(ParserOptions())
+    parser = JsonModem(ParserOptions(), byte_views=True)
 
     events = list(parser.feed(memoryview(b'["ok"]')))
     events.extend(parser.finish())
@@ -153,7 +151,7 @@ def test_byte_views_accept_readonly_memoryview_input():
 
 
 def test_byte_views_reject_non_byte_memoryview_input():
-    parser = JsonModemByteViews(ParserOptions())
+    parser = JsonModem(ParserOptions(), byte_views=True)
     data = memoryview(b'["AB"]').cast("H")
 
     with pytest.raises(TypeError, match="itemsize 1"):
@@ -161,7 +159,7 @@ def test_byte_views_reject_non_byte_memoryview_input():
 
 
 def test_byte_views_materialize_escaped_fragments_as_text():
-    parser = JsonModemByteViews(ParserOptions())
+    parser = JsonModem(ParserOptions(), byte_views=True)
 
     events = list(parser.feed(b'["\\u0042"]'))
     events.extend(parser.finish())
@@ -178,7 +176,7 @@ def test_byte_views_materialize_escaped_fragments_as_text():
 
 
 def test_byte_views_reject_str_and_mutable_input():
-    parser = JsonModemByteViews(ParserOptions())
+    parser = JsonModem(ParserOptions(), byte_views=True)
 
     with pytest.raises(TypeError, match="str input"):
         list(parser.feed('{"a": "hi"}'))
@@ -192,7 +190,7 @@ def test_byte_views_reject_str_and_mutable_input():
 
 
 def test_path_filter_matches_wildcard_path():
-    parser = JsonModemPathFilter("items.*.metadata.etag")
+    parser = JsonModem(paths="items.*.metadata.etag")
     data = b'{"items":[{"metadata":{"etag":"a"}},{"metadata":{"etag":"b"}}]}'
 
     events = list(parser.feed(data))
@@ -213,7 +211,7 @@ def test_path_filter_matches_wildcard_path():
 
 
 def test_path_filter_accepts_multiple_patterns():
-    parser = JsonModemPathFilter(["content", "metadata.model"])
+    parser = JsonModem(paths=["content", "metadata.model"])
     data = b'{"content":"hello","metadata":{"model":"example"},"ignored":"x"}'
 
     events = list(parser.feed(data))
@@ -227,7 +225,7 @@ def test_path_filter_accepts_multiple_patterns():
 
 
 def test_path_filter_byte_views_only_materializes_matching_events():
-    parser = JsonModemPathFilter("content", byte_views=True)
+    parser = JsonModem(paths="content", byte_views=True)
     data = b'{"ignored":"skip","content":"hello"}'
 
     events = list(parser.feed(data))
@@ -244,7 +242,24 @@ def test_path_filter_byte_views_only_materializes_matching_events():
 
 
 def test_path_filter_byte_views_rejects_str_input():
-    parser = JsonModemPathFilter("content", byte_views=True)
+    parser = JsonModem(paths="content", byte_views=True)
 
     with pytest.raises(TypeError, match="str input"):
         list(parser.feed('{"content":"hello"}'))
+
+
+def test_byte_views_accept_iterable_readonly_byte_chunks():
+    parser = JsonModem(byte_views=True)
+
+    events = list(parser.feed([b'{"a":"', b"hi", b'"}']))
+    events.extend(parser.finish())
+
+    fragments = [
+        payload["fragment"]
+        for kind, path, payload in events
+        if kind == "string" and path == (("key", "a"),)
+    ]
+    assert b"".join(
+        bytes(fragment) if isinstance(fragment, memoryview) else fragment.encode()
+        for fragment in fragments
+    ) == b"hi"
