@@ -10,23 +10,23 @@ The repository root `PLANS.md` still defines the detailed ExecPlan rules for imp
 
 - `plans/customer-incremental-json/plans.md`: this overview and the active worktree list.
 - `plans/customer-incremental-json/records.md`: shared observations, commands, benchmark decisions, and final recommendations.
-- `plans/customer-incremental-json/active/per-feed-compaction/plan.md`: implementation A, a minimal extension of the current `JsonModem` Python API.
-- `plans/customer-incremental-json/active/feed-result-api/plan.md`: implementation B, an explicit `FeedResult` API that separates parser advancement from result consumption.
-- `plans/customer-incremental-json/active/adapter-stack/plan.md`: implementation C, Rust-first adapters for selected strings, prefixes, live values, completed subtrees, and byte payloads.
-- `plans/customer-incremental-json/active/requirements-benchmarks/plan.md`: benchmark, fixture, competitor, and recommendation work.
-- `plans/customer-incremental-json/active/production-integration/plan.md`: production branch that integrates the selected API and completes phases 1 through 5.
+- `plans/customer-incremental-json/completed/2026-06-09-per-feed-compaction/plan.md`: implementation A, a minimal extension of the current `JsonModem` Python API.
+- `plans/customer-incremental-json/completed/2026-06-09-feed-result-api/plan.md`: implementation B, an explicit `FeedResult` API that separates parser advancement from result consumption.
+- `plans/customer-incremental-json/completed/2026-06-09-adapter-stack/plan.md`: implementation C, Rust-first adapters for selected strings, prefixes, live values, completed subtrees, and byte payloads.
+- `plans/customer-incremental-json/completed/2026-06-09-requirements-benchmarks/plan.md`: benchmark, fixture, competitor, and recommendation work.
+- `plans/customer-incremental-json/completed/2026-06-09-production-integration/plan.md`: production branch that integrates the selected API and completes phases 1 through 5.
 
-## Active Worktrees
+## Completed Worktrees
 
-`customer/per-feed-compaction` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-compaction`. This branch should keep the public API close to current `JsonModem` and prove whether `string_events="per_feed"` plus `feed_many(chunks)` can satisfy phase 1 without major restructuring. It may prototype later phases behind clearly named classes or options, but it should not complicate the default fragment behavior.
+`customer/per-feed-compaction` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-compaction`. This branch proved the minimal `JsonModem(..., string_events="per_feed")` API and native per-feed string compaction approach.
 
-`customer/feed-result-api` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-feedresult`. This branch should prototype a result-returning API such as `parser.feed_many(chunks) -> FeedResult`, where the parser consumes input eagerly and the result owns compacted events, changed paths, completed roots, or errors for that feed operation.
+`customer/feed-result-api` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-feedresult`. This branch proved the explicit `FeedResult` alternative, but production kept the simpler event-stream API.
 
-`customer/adapter-stack` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-adapters`. This branch should move more behavior into Rust adapters before Python conversion. It should test whether a composable Rust design gives lower Python allocation and cleaner phase 3 through phase 5 semantics.
+`customer/adapter-stack` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-adapters`. This branch proved the Rust-first implementation ideas that were folded into the production API.
 
-`customer/requirements-benchmarks` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-benchmarks`. This branch should build the fixture generators, pyperf benchmark groups, competitor comparisons, memory accounting, and final recommendation report used to judge all implementation branches.
+`customer/requirements-benchmarks` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-benchmarks`. This branch produced the benchmark and memory harnesses that were ported into the production branch.
 
-`codex/customer-incremental-json-production` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-production`. This branch owns the production implementation, public Python API, tests, docs, and final benchmark report.
+`codex/customer-incremental-json-production` lives in `/home/friel/c/aaronfriel/jsonmodem-customer-production`. This branch owns the production implementation, public Python API, tests, docs, benchmark report, and PR #73.
 
 ## Requirements Interpretation
 
@@ -114,8 +114,8 @@ Each child `record.md` may include more detailed command output, failed attempts
 - [x] Refresh A-K smoke evidence without the public prefix API.
 - [x] Open PR #73 for `codex/customer-incremental-json-production` and request Codex review.
 - [x] Address first relevant Codex review comment.
-- [ ] Address any further Codex review feedback until review passes.
-- [ ] Move the production integration plan to `completed/` when the review goal is complete.
+- [x] Address any Codex review feedback received before plan completion.
+- [x] Move child plan folders to `completed/` when the review goal is complete.
 
 ## Decisions
 

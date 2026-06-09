@@ -74,8 +74,8 @@ Changed files recorded by the worker:
 - `crates/jsonmodem-py/README.md`
 - `crates/jsonmodem-py/tests/test_feed_result.py`
 - `crates/jsonmodem-py/benchmarks/bench_feed_result_api.py`
-- `plans/customer-incremental-json/active/feed-result-api/plan.md`
-- `plans/customer-incremental-json/active/feed-result-api/record.md`
+- `plans/customer-incremental-json/completed/2026-06-09-feed-result-api/plan.md`
+- branch-local `record.md` in `/home/friel/c/aaronfriel/jsonmodem-customer-feedresult`
 
 Observation: this branch adds `FeedResult`, `JsonModemFeed`, and `JsonModemPrefixes`. `JsonModemFeed.feed()` accepts one scalar input, `feed_many()` accepts an iterable and consumes it eagerly, and compacted selected string events are stored as native feed records before Python event tuples, paths, and payloads are built. `FeedResult` also exposes prototype fields for `changed_paths`, `completed_subtrees`, `view`, error state, prefix status, and bytes consumed.
 
@@ -105,8 +105,8 @@ Changed files recorded by the worker:
 - `crates/jsonmodem-py/python/jsonmodem/__init__.pyi`
 - `crates/jsonmodem-py/README.md`
 - `crates/jsonmodem-py/benchmarks/bench_jiter_chunked.py`
-- `plans/customer-incremental-json/active/per-feed-compaction/plan.md`
-- `plans/customer-incremental-json/active/per-feed-compaction/record.md`
+- `plans/customer-incremental-json/completed/2026-06-09-per-feed-compaction/plan.md`
+- branch-local `record.md` in `/home/friel/c/aaronfriel/jsonmodem-customer-compaction`
 
 Observation: this branch adds `JsonModem(..., string_events="per_feed")` and explicit eager `feed_many(chunks)`. Fragment mode remains default. In per-feed mode, `feed()` accepts one scalar input and rejects iterables; `feed_many()` accepts an iterable and rejects scalar inputs. Selected string compaction happens in the native binding before Python event tuples, path views, and `StringPayload` objects are built.
 
@@ -131,8 +131,8 @@ Changed files recorded by the worker:
 
 - `crates/jsonmodem-py/benchmarks/bench_customer_requirements.py`
 - `crates/jsonmodem-py/benchmarks/measure_customer_requirements_memory.py`
-- `plans/customer-incremental-json/active/requirements-benchmarks/plan.md`
-- `plans/customer-incremental-json/active/requirements-benchmarks/record.md`
+- `plans/customer-incremental-json/completed/2026-06-09-requirements-benchmarks/plan.md`
+- branch-local `record.md` in `/home/friel/c/aaronfriel/jsonmodem-customer-benchmarks`
 
 Artifacts:
 
@@ -172,8 +172,8 @@ Changed files recorded by the worker:
 - `crates/jsonmodem-py/python/jsonmodem/__init__.py`
 - `crates/jsonmodem-py/python/jsonmodem/__init__.pyi`
 - `crates/jsonmodem-py/tests/test_selected_strings_adapter.py`
-- `plans/customer-incremental-json/active/adapter-stack/plan.md`
-- `plans/customer-incremental-json/active/adapter-stack/record.md`
+- `plans/customer-incremental-json/completed/2026-06-09-adapter-stack/plan.md`
+- branch-local `record.md` in `/home/friel/c/aaronfriel/jsonmodem-customer-adapters`
 
 Observation: this branch adds a native `JsonModemSelectedStrings` adapter with selected-path matching and per-feed string compaction before Python object creation. It also exposes Python prototypes for `JsonModemSelectedStrings`, `JsonModemLiveValuesNoNotify`, and `JsonModemCompletedSubtrees`.
 

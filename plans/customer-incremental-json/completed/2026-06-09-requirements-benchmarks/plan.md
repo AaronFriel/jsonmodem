@@ -39,13 +39,13 @@ Every benchmark must compute a checksum over event type, path, payload length, o
 ## Progress
 
 - [x] Worktree created from `origin/main`.
-- [ ] Add branch-local `record.md`.
-- [ ] Implement fixture generators for benchmarks A, B, H, I, and K.
-- [ ] Add current-main baseline benchmark results.
-- [ ] Add competitor setup and version recording.
-- [ ] Add benchmark commands for each implementation worktree.
-- [ ] Add memory measurement harness.
-- [ ] Write final recommendation.
+- [x] Record branch evidence in `plans/customer-incremental-json/records.md`.
+- [x] Implement fixture generators for benchmarks A, B, H, I, and K.
+- [x] Add current-main baseline benchmark results.
+- [x] Add competitor setup and version recording.
+- [x] Add benchmark commands for each implementation worktree.
+- [x] Add memory measurement harness.
+- [x] Write final recommendation.
 
 ## Validation
 

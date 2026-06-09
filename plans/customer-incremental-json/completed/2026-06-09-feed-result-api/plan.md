@@ -45,12 +45,12 @@ Phase 5 should make payload ownership explicit with fields such as `payload.mode
 ## Progress
 
 - [x] Worktree created from `origin/main`.
-- [ ] Add branch-local `record.md`.
-- [ ] Define `FeedResult` and minimal selected-string phase 1 behavior.
-- [ ] Add tests for eager feed execution and error state.
-- [ ] Run `.agent/check-py.sh`.
-- [ ] Prototype phases 2 through 5 or record precise blockers.
-- [ ] Write branch recommendation and changed file list.
+- [x] Record branch evidence in `plans/customer-incremental-json/records.md`.
+- [x] Define `FeedResult` and minimal selected-string phase 1 behavior.
+- [x] Add tests for eager feed execution and error state.
+- [x] Run `.agent/check-py.sh`.
+- [x] Prototype phases 2 through 5 or record precise blockers.
+- [x] Write branch recommendation and changed file list.
 
 ## Validation
 

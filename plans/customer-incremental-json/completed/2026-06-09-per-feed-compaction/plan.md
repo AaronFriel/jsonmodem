@@ -18,7 +18,7 @@ This branch is a completed evidence branch. Its useful phase 1 API and native
 compaction behavior were folded into
 `/home/friel/c/aaronfriel/jsonmodem-customer-production`; production completion
 through phases 1 through 5 is tracked in
-`plans/customer-incremental-json/active/production-integration/plan.md`.
+`plans/customer-incremental-json/completed/2026-06-09-production-integration/plan.md`.
 
 ## API Hypothesis
 
@@ -46,12 +46,12 @@ Phase 5 should reuse or extend `byte_views=True` so borrowed and owned payloads 
 ## Progress
 
 - [x] Worktree created from `origin/main`.
-- [ ] Add branch-local `record.md`.
-- [ ] Implement phase 1 API and tests.
-- [ ] Run `.agent/check-py.sh`.
-- [ ] Add benchmark hooks compatible with the benchmark worktree.
-- [ ] Prototype phases 2 through 5 or record precise blockers.
-- [ ] Write branch recommendation and changed file list.
+- [x] Record branch evidence in `plans/customer-incremental-json/records.md`.
+- [x] Implement phase 1 API and tests.
+- [x] Run `.agent/check-py.sh`.
+- [x] Add benchmark hooks compatible with the benchmark worktree.
+- [x] Prototype phases 2 through 5 or record precise blockers.
+- [x] Write branch recommendation and changed file list.
 
 ## Validation
 

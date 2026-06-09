@@ -46,12 +46,12 @@ Phase 5 should add a byte payload policy that never claims zero-copy for escaped
 ## Progress
 
 - [x] Worktree created from `origin/main`.
-- [ ] Add branch-local `record.md`.
-- [ ] Implement the phase 1 Rust adapter and Python wrapper.
-- [ ] Add Rust and Python correctness tests.
-- [ ] Run `.agent/check-py.sh`.
-- [ ] Prototype phases 2 through 5 or record precise blockers.
-- [ ] Write branch recommendation and changed file list.
+- [x] Record branch evidence in `plans/customer-incremental-json/records.md`.
+- [x] Implement the phase 1 Rust adapter and Python wrapper.
+- [x] Add Rust and Python correctness tests.
+- [x] Run `.agent/check-py.sh`.
+- [x] Prototype phases 2 through 5 or record precise blockers.
+- [x] Write branch recommendation and changed file list.
 
 ## Validation
 

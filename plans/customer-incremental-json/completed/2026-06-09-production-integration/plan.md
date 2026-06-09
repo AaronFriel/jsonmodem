@@ -43,7 +43,7 @@ The goal is to ship the customer incremental JSON requirements through phases 1 
 - [x] A-K smoke evidence refreshed without public prefix rows.
 - [x] PR #73 opened and Codex review requested.
 - [x] First Codex review comment addressed.
-- [ ] Plan moved to `completed/` together with goal completion.
+- [x] Plan moved to `completed/` together with goal completion.
 
 ## Record Format
 
