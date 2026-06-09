@@ -473,6 +473,14 @@ Change: the production branch now tracks released array placeholder paths separa
 
 Validation: `cargo check -p jsonmodem-py`, `.agent/check-py.sh`, `PATH="$HOME/.local/bin:$PATH" .agent/check.sh`, and `git diff --check` passed.
 
+## 2026-06-09 PR #73 Value Update Error-State Review Fix
+
+Observation: Codex review found that `JsonModemValues.update()` raised on syntax errors without closing the parser, so a caller could catch the exception and later call `finish(changed_paths=False)` to inspect partial state.
+
+Change: the production branch now marks `JsonModemValues` finished, removes the parser, and clears pending UTF-8 state when a `JsonModemSyntaxError` reaches `update()`. Regression tests verify later `update()` and `finish()` calls raise `JsonModemStateError`.
+
+Validation: `cargo check -p jsonmodem-py`, `.agent/check-py.sh`, `PATH="$HOME/.local/bin:$PATH" .agent/check.sh`, and `git diff --check` passed.
+
 ## 2026-06-09 PR #73 Overlapping Subtree Review Fix
 
 Observation: Codex review found that overlapping completed-subtree paths such as `["items", "items.*"]` could release child entries before the selected ancestor emitted, so the ancestor result could contain placeholders instead of original values.

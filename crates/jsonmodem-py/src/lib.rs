@@ -2518,6 +2518,17 @@ struct PyJsonModemValueViewsPathView {
     finished: bool,
 }
 
+impl PyJsonModemValueViewsPathView {
+    fn close_after_update_error(&mut self, py: Python<'_>, err: PyErr) -> PyErr {
+        if err.is_instance_of::<JsonModemSyntaxError>(py) {
+            self.parser = None;
+            self.utf8_input.clear();
+            self.finished = true;
+        }
+        err
+    }
+}
+
 #[pymethods]
 impl PyJsonModemValueViewsPathView {
     #[new]
@@ -2627,27 +2638,46 @@ impl PyJsonModemValueViewsPathView {
         chunk_or_chunks: Bound<'_, PyAny>,
         changed_paths: bool,
     ) -> PyResult<PyObject> {
-        let parser = self
-            .parser
-            .as_mut()
-            .ok_or_else(|| state_error("parser has already finished"))?;
+        if self.parser.is_none() {
+            return Err(state_error("parser has already finished"));
+        }
 
         let mut paths = changed_paths.then(Vec::new);
         if is_single_json_input(&chunk_or_chunks) {
-            self.utf8_input.with_input_text(
-                &chunk_or_chunks,
-                "JsonModemValues.update()",
-                |chunk| collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut()),
-            )?;
+            let result = {
+                let parser = self
+                    .parser
+                    .as_mut()
+                    .ok_or_else(|| state_error("parser has already finished"))?;
+                self.utf8_input.with_input_text(
+                    &chunk_or_chunks,
+                    "JsonModemValues.update()",
+                    |chunk| {
+                        collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut())
+                    },
+                )
+            };
+            if let Err(err) = result {
+                return Err(self.close_after_update_error(py, err));
+            }
             return live_values_update_result(py, self.root_view.clone_ref(py), paths);
         }
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            self.utf8_input
-                .with_input_text(&chunk, "JsonModemValues.update()", |chunk| {
-                    collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut())
-                })?;
+            let result = {
+                let parser = self
+                    .parser
+                    .as_mut()
+                    .ok_or_else(|| state_error("parser has already finished"))?;
+                self.utf8_input
+                    .with_input_text(&chunk, "JsonModemValues.update()", |chunk| {
+                        collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut())
+                    })
+            };
+            if let Err(err) = result {
+                return Err(self.close_after_update_error(py, err));
+            }
         }
         live_values_update_result(py, self.root_view.clone_ref(py), paths)
     }

@@ -214,3 +214,24 @@ git diff --check
 Result: all passed. `.agent/check-py.sh` passed with `54` Python tests and the existing pdoc `__hash__` stub warnings. `.agent/check.sh` passed; Miri was skipped by the repo default `AGENT_CHECK_MIRI_DISABLE=true`.
 
 Consequence: the completed-subtree API preserves selected ancestor values when paths overlap while still reporting whether each emitted value was released.
+
+## 2026-06-09 Codex Review Value Update Error-State Fix
+
+Source: PR #73 discussion `https://github.com/AaronFriel/jsonmodem/pull/73#discussion_r3378019014`.
+
+Observation: Codex review correctly noted that `JsonModemValues.update()` raised on syntax errors without closing the parser. A caller that caught the exception could later call `finish(changed_paths=False)` and inspect partial state from a corrupted stream.
+
+Change: `JsonModemValues.update()` now closes the parser, clears pending UTF-8 state, and sets `is_finished` when a `JsonModemSyntaxError` reaches the wrapper. Later `update()` or `finish()` calls raise `JsonModemStateError`.
+
+Validation:
+
+```bash
+cargo check -p jsonmodem-py
+.agent/check-py.sh
+PATH="$HOME/.local/bin:$PATH" .agent/check.sh
+git diff --check
+```
+
+Result: all passed. `.agent/check-py.sh` passed with `55` Python tests and the existing pdoc `__hash__` stub warnings. `.agent/check.sh` passed; Miri was skipped by the repo default `AGENT_CHECK_MIRI_DISABLE=true`.
+
+Consequence: low-notification live value updates now fail closed on syntax errors instead of allowing later partial-state reads through `finish()`.

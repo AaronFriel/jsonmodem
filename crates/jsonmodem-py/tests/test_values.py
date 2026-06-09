@@ -1,6 +1,6 @@
 import pytest
 
-from jsonmodem import JsonModemStateError, JsonModemValues, ParserOptions
+from jsonmodem import JsonModemStateError, JsonModemSyntaxError, JsonModemValues, ParserOptions
 
 
 def test_values_reuse_root_view_and_report_path_views():
@@ -141,6 +141,19 @@ def test_values_update_changed_paths_are_optional_and_include_duplicate_keys():
     assert changed.count((("key", "a"),)) == 2
     assert changed[-1] == ()
     assert finished["changed_paths"] == ()
+
+
+def test_values_update_syntax_error_closes_parser():
+    parser = JsonModemValues()
+
+    with pytest.raises(JsonModemSyntaxError):
+        parser.update(b'{"a":}')
+
+    assert parser.is_finished is True
+    with pytest.raises(JsonModemStateError):
+        parser.update(b'{"b":2}')
+    with pytest.raises(JsonModemStateError):
+        parser.finish(changed_paths=False)
 
 
 def test_values_reset_preserves_outstanding_view_object_as_live_empty_view():
