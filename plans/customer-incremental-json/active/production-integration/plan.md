@@ -41,7 +41,7 @@ The goal is to ship the customer incremental JSON requirements through phases 1 
 - [x] Full required validation passes.
 - [x] Public `JsonModemPrefixes` and `PrefixResult` API removed.
 - [x] A-K smoke evidence refreshed without public prefix rows.
-- [ ] PR opened and Codex review requested.
+- [x] PR #73 opened and Codex review requested.
 - [ ] Relevant review comments addressed.
 - [ ] Plan moved to `completed/` together with goal completion.
 

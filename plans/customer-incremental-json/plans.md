@@ -112,7 +112,7 @@ Each child `record.md` may include more detailed command output, failed attempts
 - [x] Write the final production recommendation in `records.md`.
 - [x] Remove the public `JsonModemPrefixes` and `PrefixResult` API from the production branch.
 - [x] Refresh A-K smoke evidence without the public prefix API.
-- [ ] Open a PR for `codex/customer-incremental-json-production` and request Codex review.
+- [x] Open PR #73 for `codex/customer-incremental-json-production` and request Codex review.
 - [ ] Address relevant Codex review feedback until review passes.
 - [ ] Move the production integration plan to `completed/` when the review goal is complete.
 
