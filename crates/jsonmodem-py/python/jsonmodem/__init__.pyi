@@ -4,6 +4,7 @@ JSONInput: TypeAlias = Union[str, bytes, bytearray, memoryview]
 JSONByteInput: TypeAlias = Union[bytes, memoryview]
 JSONValue: TypeAlias = Union[None, bool, float, str, list["JSONValue"], dict[str, "JSONValue"]]
 PathPatterns: TypeAlias = Union[str, Sequence[str]]
+StringEvents: TypeAlias = Literal["fragment", "fragments", "per_feed", "per-feed"]
 _ByteViews = TypeVar("_ByteViews", Literal[False], Literal[True])
 EventKind: TypeAlias = Literal[
     "null",
@@ -43,6 +44,8 @@ class ByteViewStringPayload(TypedDict):
     is_initial: bool
     is_final: bool
     is_view: bool
+    payload_kind: Literal["raw_source", "decoded_text"]
+    ownership: Literal["borrowed", "owned"]
 
 ByteViewPayload: TypeAlias = Union[None, bool, float, ByteViewStringPayload]
 ByteViewEvent: TypeAlias = Tuple[EventKind, Path, ByteViewPayload]
@@ -91,6 +94,7 @@ class JsonModem(Generic[_ByteViews]):
         *,
         paths: Optional[PathPatterns] = ...,
         byte_views: Literal[False] = ...,
+        string_events: StringEvents = ...,
     ) -> None: ...
     @overload
     def __init__(
@@ -99,6 +103,7 @@ class JsonModem(Generic[_ByteViews]):
         *,
         paths: Optional[PathPatterns] = ...,
         byte_views: Literal[True],
+        string_events: StringEvents = ...,
     ) -> None: ...
 
     @property
@@ -113,6 +118,16 @@ class JsonModem(Generic[_ByteViews]):
     def feed(
         self: "JsonModem[Literal[True]]",
         chunk_or_chunks: Union[JSONByteInput, Iterable[JSONByteInput]],
+    ) -> Iterator[ByteViewEvent]: ...
+    @overload
+    def feed_many(
+        self: "JsonModem[Literal[False]]",
+        chunks: Iterable[JSONInput],
+    ) -> Iterator[Event]: ...
+    @overload
+    def feed_many(
+        self: "JsonModem[Literal[True]]",
+        chunks: Iterable[JSONByteInput],
     ) -> Iterator[ByteViewEvent]: ...
     @overload
     def finish(self: "JsonModem[Literal[False]]") -> Iterator[Event]: ...
@@ -130,6 +145,21 @@ class JsonModemValueView:
 
 ValueUpdate: TypeAlias = Tuple[int, JsonModemValueView, PathView, bool]
 
+class LiveValueSummary(TypedDict):
+    view: JsonModemValueView
+    changed_paths: Tuple[PathView, ...]
+
+class RetainedState(TypedDict):
+    nodes: int
+    nulls: int
+    arrays: int
+    array_slots: int
+    objects: int
+    object_entries: int
+    strings: int
+    string_bytes: int
+    released_array_entries_retained_as_null: int
+
 class JsonModemValues:
     def __init__(self, options: Optional[ParserOptions] = ...) -> None: ...
 
@@ -137,8 +167,48 @@ class JsonModemValues:
     def is_finished(self) -> bool: ...
 
     def feed(self, chunk_or_chunks: Union[JSONInput, Iterable[JSONInput]]) -> Iterator[ValueUpdate]: ...
+    @overload
+    def update(
+        self,
+        chunk_or_chunks: Union[JSONInput, Iterable[JSONInput]],
+        *,
+        changed_paths: Literal[False] = ...,
+    ) -> JsonModemValueView: ...
+    @overload
+    def update(
+        self,
+        chunk_or_chunks: Union[JSONInput, Iterable[JSONInput]],
+        *,
+        changed_paths: Literal[True],
+    ) -> LiveValueSummary: ...
+    @overload
     def finish(self) -> Iterator[ValueUpdate]: ...
+    @overload
+    def finish(self, *, changed_paths: Literal[False]) -> JsonModemValueView: ...
+    @overload
+    def finish(self, *, changed_paths: Literal[True]) -> LiveValueSummary: ...
     def view(self) -> JsonModemValueView: ...
+    def reset(self) -> None: ...
+
+CompletedSubtree: TypeAlias = Tuple[PathView, JSONValue, bool]
+
+class JsonModemCompletedSubtrees:
+    def __init__(
+        self,
+        options: Optional[ParserOptions] = ...,
+        *,
+        paths: PathPatterns,
+        release_after_emit: bool = ...,
+    ) -> None: ...
+
+    @property
+    def is_finished(self) -> bool: ...
+
+    def feed(self, chunk: JSONInput) -> Iterator[CompletedSubtree]: ...
+    def feed_many(self, chunks: Iterable[JSONInput]) -> Iterator[CompletedSubtree]: ...
+    def finish(self) -> Iterator[CompletedSubtree]: ...
+    def retained_state(self) -> RetainedState: ...
+    def reset(self) -> None: ...
 
 class JsonModemSyntaxError(Exception): ...
 class JsonModemStateError(Exception): ...

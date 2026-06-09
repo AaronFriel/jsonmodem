@@ -44,6 +44,25 @@ impl DecodeMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum StringEventMode {
+    #[default]
+    Fragment,
+    PerFeed,
+}
+
+impl StringEventMode {
+    fn parse(value: &str) -> PyResult<Self> {
+        match value {
+            "fragment" | "fragments" => Ok(Self::Fragment),
+            "per_feed" | "per-feed" => Ok(Self::PerFeed),
+            other => Err(PyTypeError::new_err(format!(
+                "string_events must be 'fragment' or 'per_feed', got {other:?}"
+            ))),
+        }
+    }
+}
+
 create_exception!(jsonmodem._jsonmodem, JsonModemSyntaxError, PyException);
 create_exception!(jsonmodem._jsonmodem, JsonModemStateError, PyException);
 
@@ -77,6 +96,165 @@ enum EventRecord {
     Consumed,
 }
 
+struct PendingStringEvent {
+    path: Vec<OwnedPathComponent>,
+    fragment: String,
+    is_initial: bool,
+    is_final: bool,
+    has_decoded_output: bool,
+}
+
+#[derive(Default)]
+struct Utf8InputBuffer {
+    pending: Vec<u8>,
+}
+
+impl Utf8InputBuffer {
+    fn with_input_text<T>(
+        &mut self,
+        data: &Bound<'_, PyAny>,
+        caller: &str,
+        f: impl FnOnce(&str) -> PyResult<T>,
+    ) -> PyResult<T> {
+        if let Ok(text) = data.downcast::<PyString>() {
+            self.reject_str_when_pending(caller)?;
+            let text = <Bound<'_, PyString> as PyStringMethods<'_>>::to_cow(text)?;
+            return f(text.as_ref());
+        }
+
+        if let Ok(bytes) = data.downcast::<PyBytes>() {
+            return self.with_bytes_text(bytes.as_bytes(), caller, |text, _| f(text));
+        }
+
+        const PYBUF_SIMPLE: c_int = 0;
+
+        let mut view = PyBufferView::new();
+        let status = unsafe { PyObject_GetBuffer(data.as_ptr(), &mut view, PYBUF_SIMPLE) };
+        if status != 0 {
+            unsafe { ffi::PyErr_Clear() };
+            return Err(PyTypeError::new_err(format!(
+                "{caller} expected str, bytes, bytearray, or contiguous memoryview, got {}",
+                data.get_type().name()?
+            )));
+        }
+
+        let guard = PyBufferGuard { view };
+        let bytes = buffer_bytes(&guard, caller)?;
+        self.with_bytes_text(bytes, caller, |text, _| f(text))
+    }
+
+    fn with_readonly_byte_text<T>(
+        &mut self,
+        data: &Bound<'_, PyAny>,
+        caller: &str,
+        f: impl FnOnce(&str, Option<&Bound<'_, PyMemoryView>>) -> PyResult<T>,
+    ) -> PyResult<T> {
+        if data.downcast::<PyString>().is_ok() {
+            return Err(PyTypeError::new_err(format!(
+                "{caller} cannot return no-copy memoryview payloads from str input; pass bytes or a read-only memoryview"
+            )));
+        }
+
+        const PYBUF_SIMPLE: c_int = 0;
+
+        let mut view = PyBufferView::new();
+        let status = unsafe { PyObject_GetBuffer(data.as_ptr(), &mut view, PYBUF_SIMPLE) };
+        if status != 0 {
+            unsafe { ffi::PyErr_Clear() };
+            return Err(PyTypeError::new_err(format!(
+                "{caller} expected bytes or a read-only contiguous memoryview, got {}",
+                data.get_type().name()?
+            )));
+        }
+
+        let guard = PyBufferGuard { view };
+        validate_readonly_byte_buffer(&guard, data, caller)?;
+        let bytes = buffer_bytes(&guard, caller)?;
+        let borrow_from_caller = self.pending.is_empty();
+        self.with_bytes_text(bytes, caller, |text, source_usable| {
+            if borrow_from_caller && source_usable {
+                let source = PyMemoryView::from(data)?;
+                f(text, Some(&source))
+            } else {
+                f(text, None)
+            }
+        })
+    }
+
+    fn finish(&self, caller: &str) -> PyResult<()> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "{caller} cannot finish while an incomplete UTF-8 byte sequence is pending"
+            )))
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+    }
+
+    fn reject_str_when_pending(&self, caller: &str) -> PyResult<()> {
+        if self.pending.is_empty() {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err(format!(
+                "{caller} cannot accept str while incomplete UTF-8 bytes are pending; pass bytes or memoryview input to complete the character"
+            )))
+        }
+    }
+
+    fn with_bytes_text<T>(
+        &mut self,
+        bytes: &[u8],
+        caller: &str,
+        f: impl FnOnce(&str, bool) -> PyResult<T>,
+    ) -> PyResult<T> {
+        let source_usable = self.pending.is_empty();
+        if source_usable {
+            self.decode_bytes(bytes, caller, source_usable, f)
+        } else {
+            let mut combined = Vec::with_capacity(self.pending.len() + bytes.len());
+            combined.extend_from_slice(&self.pending);
+            combined.extend_from_slice(bytes);
+            self.decode_bytes(&combined, caller, source_usable, f)
+        }
+    }
+
+    fn decode_bytes<T>(
+        &mut self,
+        bytes: &[u8],
+        caller: &str,
+        source_usable: bool,
+        f: impl FnOnce(&str, bool) -> PyResult<T>,
+    ) -> PyResult<T> {
+        match core::str::from_utf8(bytes) {
+            Ok(text) => {
+                self.pending.clear();
+                f(text, source_usable)
+            }
+            Err(err) if err.error_len().is_none() => {
+                let valid_up_to = err.valid_up_to();
+                let text = core::str::from_utf8(&bytes[..valid_up_to]).map_err(|inner| {
+                    PyTypeError::new_err(format!(
+                        "{caller} input bytes are not valid UTF-8: {inner}"
+                    ))
+                })?;
+                self.pending.clear();
+                self.pending.extend_from_slice(&bytes[valid_up_to..]);
+                f(text, source_usable)
+            }
+            Err(err) => {
+                self.pending.clear();
+                Err(PyTypeError::new_err(format!(
+                    "{caller} input bytes are not valid UTF-8: {err}"
+                )))
+            }
+        }
+    }
+}
+
 type EventRecordPool = Arc<Mutex<Vec<Vec<EventRecord>>>>;
 
 fn new_event_record_pool() -> EventRecordPool {
@@ -108,6 +286,8 @@ struct ByteViewStringFragment {
     is_initial: bool,
     is_final: bool,
     is_view: bool,
+    payload_kind: &'static str,
+    ownership: &'static str,
 }
 
 enum ByteViewPayload {
@@ -299,6 +479,8 @@ fn build_byte_view_payload_with_interns<'py>(
             dict.set_item(interns.is_initial_key(py), fragment.is_initial)?;
             dict.set_item(interns.is_final_key(py), fragment.is_final)?;
             dict.set_item(interns.is_view_key(py), fragment.is_view)?;
+            dict.set_item(interns.payload_kind_key(py), fragment.payload_kind)?;
+            dict.set_item(interns.ownership_key(py), fragment.ownership)?;
             Ok(dict.into_any())
         }
     }
@@ -479,6 +661,8 @@ struct PayloadInterns {
     is_initial: Py<PyString>,
     is_final: Py<PyString>,
     is_view: Py<PyString>,
+    payload_kind: Py<PyString>,
+    ownership: Py<PyString>,
 }
 
 impl PayloadInterns {
@@ -488,6 +672,8 @@ impl PayloadInterns {
             is_initial: PyString::intern(py, "is_initial").into(),
             is_final: PyString::intern(py, "is_final").into(),
             is_view: PyString::intern(py, "is_view").into(),
+            payload_kind: PyString::intern(py, "payload_kind").into(),
+            ownership: PyString::intern(py, "ownership").into(),
         })
     }
 }
@@ -528,6 +714,8 @@ impl InternedStrings {
                 is_initial: self.payload.is_initial.clone_ref(py),
                 is_final: self.payload.is_final.clone_ref(py),
                 is_view: self.payload.is_view.clone_ref(py),
+                payload_kind: self.payload.payload_kind.clone_ref(py),
+                ownership: self.payload.ownership.clone_ref(py),
             },
         }
     }
@@ -564,6 +752,16 @@ impl InternedStrings {
 
     fn is_view_key<'py>(&'py self, py: Python<'py>) -> Bound<'py, PyString> {
         let owned = self.payload.is_view.clone_ref(py);
+        owned.into_bound(py)
+    }
+
+    fn payload_kind_key<'py>(&'py self, py: Python<'py>) -> Bound<'py, PyString> {
+        let owned = self.payload.payload_kind.clone_ref(py);
+        owned.into_bound(py)
+    }
+
+    fn ownership_key<'py>(&'py self, py: Python<'py>) -> Bound<'py, PyString> {
+        let owned = self.payload.ownership.clone_ref(py);
         owned.into_bound(py)
     }
 }
@@ -1055,6 +1253,9 @@ struct PyJsonModem {
     finished: bool,
     patterns: Option<Vec<PathPattern>>,
     byte_views: bool,
+    string_events: StringEventMode,
+    utf8_input: Utf8InputBuffer,
+    suppressed_string_initial: Option<Vec<OwnedPathComponent>>,
     interns: InternedStrings,
     record_pool: EventRecordPool,
 }
@@ -1068,12 +1269,13 @@ impl PyJsonModem {
     /// options:
     ///     Optional `ParserOptions` instance.  When omitted, defaults are used.
     #[new]
-    #[pyo3(signature=(options=None, *, paths=None, byte_views=false))]
+    #[pyo3(signature=(options=None, *, paths=None, byte_views=false, string_events="fragment"))]
     fn new(
         py: Python<'_>,
         options: Option<Bound<'_, PyAny>>,
         paths: Option<Bound<'_, PyAny>>,
         byte_views: bool,
+        string_events: &str,
     ) -> PyResult<Self> {
         let parsed_options = match options {
             Some(item) => read_parser_options(item)?,
@@ -1083,12 +1285,16 @@ impl PyJsonModem {
             Some(item) if !item.is_none() => Some(read_path_patterns(&item)?),
             _ => None,
         };
+        let string_events = StringEventMode::parse(string_events)?;
 
         Ok(Self {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
             finished: false,
             patterns,
             byte_views,
+            string_events,
+            utf8_input: Utf8InputBuffer::default(),
+            suppressed_string_initial: None,
             interns: InternedStrings::new(py)?,
             record_pool: new_event_record_pool(),
         })
@@ -1097,7 +1303,9 @@ impl PyJsonModem {
     /// Feed UTF-8 JSON to the parser and get an iterator over new events.
     ///
     /// `chunk` may be one `str`, `bytes`, `bytearray`, or contiguous
-    /// `memoryview`, or it may be an iterable of those chunk types.
+    /// `memoryview`.  Fragment mode also accepts an iterable for compatibility;
+    /// per-feed mode requires `feed_many(chunks)` for iterable input so the
+    /// compaction boundary is explicit.
     /// Bytes-like inputs are borrowed for the duration of this call when the
     /// buffer protocol allows it.
     ///
@@ -1112,12 +1320,80 @@ impl PyJsonModem {
             .as_mut()
             .ok_or_else(|| state_error("parser has already finished"))?;
 
+        if self.string_events == StringEventMode::PerFeed {
+            if !is_single_json_input(&chunk_or_chunks) {
+                return Err(PyTypeError::new_err(
+                    "JsonModem.feed() expects one str, bytes, bytearray, or memoryview; use feed_many() for an iterable of chunks",
+                ));
+            }
+
+            if self.byte_views {
+                let patterns = self.patterns.as_deref();
+                return self.utf8_input.with_readonly_byte_text(
+                    &chunk_or_chunks,
+                    "JsonModem.feed()",
+                    |text, _source| {
+                        let mut records = Vec::new();
+                        let mut pending = None;
+                        collect_per_feed_byte_view_events(
+                            py,
+                            parser,
+                            text,
+                            patterns,
+                            &mut records,
+                            &mut pending,
+                            &mut self.suppressed_string_initial,
+                        )?;
+                        flush_pending_byte_string(
+                            py,
+                            pending.take(),
+                            &mut records,
+                            &mut self.suppressed_string_initial,
+                        )?;
+                        Ok(
+                            PyByteEventIter::new(py, records, self.interns.clone_ref(py))?
+                                .into_any(),
+                        )
+                    },
+                );
+            }
+
+            let interns = self.interns.clone_ref(py);
+            let record_pool = Arc::clone(&self.record_pool);
+            let patterns = self.patterns.as_deref();
+            return self.utf8_input.with_input_text(
+                &chunk_or_chunks,
+                "JsonModem.feed()",
+                |chunk| {
+                    let mut records = take_event_records(&record_pool);
+                    let mut pending = None;
+                    collect_per_feed_view_feed_events(
+                        py,
+                        parser,
+                        chunk,
+                        patterns,
+                        &interns,
+                        &mut records,
+                        &mut pending,
+                        &mut self.suppressed_string_initial,
+                    )?;
+                    flush_pending_string(
+                        py,
+                        pending.take(),
+                        &interns,
+                        &mut records,
+                        &mut self.suppressed_string_initial,
+                    )?;
+                    Ok(PyEventIter::new(py, records, record_pool)?.into_any())
+                },
+            );
+        }
+
         if self.byte_views {
             let patterns = self.patterns.as_deref();
             let mut records = Vec::new();
             if is_single_byte_view_input(&chunk_or_chunks) {
-                return with_readonly_byte_text(
-                    py,
+                return self.utf8_input.with_readonly_byte_text(
                     &chunk_or_chunks,
                     "JsonModem.feed()",
                     |text, source| {
@@ -1137,15 +1413,16 @@ impl PyJsonModem {
 
             for item in chunk_or_chunks.try_iter()? {
                 let chunk = item?;
-                let mut chunk_records =
-                    with_readonly_byte_text(py, &chunk, "JsonModem.feed()", |text, source| {
-                        match patterns {
-                            Some(patterns) => collect_filtered_byte_view_feed_events(
-                                py, parser, text, source, patterns,
-                            ),
-                            None => collect_byte_view_feed_events(py, parser, text, source),
-                        }
-                    })?;
+                let mut chunk_records = self.utf8_input.with_readonly_byte_text(
+                    &chunk,
+                    "JsonModem.feed()",
+                    |text, source| match patterns {
+                        Some(patterns) => collect_filtered_byte_view_feed_events(
+                            py, parser, text, source, patterns,
+                        ),
+                        None => collect_byte_view_feed_events(py, parser, text, source),
+                    },
+                )?;
                 let has_error = chunk_records
                     .iter()
                     .any(|record| matches!(record, ByteViewRecord::Error(_)));
@@ -1161,9 +1438,30 @@ impl PyJsonModem {
         let record_pool = Arc::clone(&self.record_pool);
         let patterns = self.patterns.as_deref();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(py, &chunk_or_chunks, "feed()", |chunk| {
-                let mut records = take_event_records(&record_pool);
-                match patterns {
+            return self
+                .utf8_input
+                .with_input_text(&chunk_or_chunks, "feed()", |chunk| {
+                    let mut records = take_event_records(&record_pool);
+                    match patterns {
+                        Some(patterns) => collect_filtered_view_feed_events(
+                            py,
+                            parser,
+                            chunk,
+                            patterns,
+                            &interns,
+                            &mut records,
+                        )?,
+                        None => collect_feed_events(py, parser, chunk, &interns, &mut records)?,
+                    }
+                    Ok(PyEventIter::new(py, records, record_pool)?.into_any())
+                });
+        }
+
+        let mut records = take_event_records(&record_pool);
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            self.utf8_input
+                .with_input_text(&chunk, "feed()", |chunk| match patterns {
                     Some(patterns) => collect_filtered_view_feed_events(
                         py,
                         parser,
@@ -1171,27 +1469,147 @@ impl PyJsonModem {
                         patterns,
                         &interns,
                         &mut records,
-                    )?,
-                    None => collect_feed_events(py, parser, chunk, &interns, &mut records)?,
-                }
-                Ok(PyEventIter::new(py, records, record_pool)?.into_any())
-            });
+                    ),
+                    None => collect_feed_events(py, parser, chunk, &interns, &mut records),
+                })?;
+            if matches!(records.last(), Some(EventRecord::Error(_))) {
+                break;
+            }
+        }
+        Ok(PyEventIter::new(py, records, record_pool)?.into_any())
+    }
+
+    /// Feed an iterable of chunks eagerly and use the method call as the output
+    /// boundary for `string_events="per_feed"`.
+    #[pyo3(text_signature = "($self, chunks)")]
+    fn feed_many(&mut self, py: Python<'_>, chunks: Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        if is_single_json_input(&chunks) {
+            return Err(PyTypeError::new_err(
+                "JsonModem.feed_many() expects an iterable of chunks; use feed() for one chunk",
+            ));
         }
 
-        let mut records = take_event_records(&record_pool);
-        for item in chunk_or_chunks.try_iter()? {
-            let chunk = item?;
-            with_input_text(py, &chunk, "feed()", |chunk| match patterns {
-                Some(patterns) => collect_filtered_view_feed_events(
+        if self.string_events == StringEventMode::PerFeed {
+            let patterns = self.patterns.as_deref();
+            if self.byte_views {
+                let mut records = Vec::new();
+                let mut pending = None;
+                for item in chunks.try_iter()? {
+                    let chunk = item?;
+                    self.utf8_input.with_readonly_byte_text(
+                        &chunk,
+                        "JsonModem.feed_many()",
+                        |text, _source| {
+                            collect_per_feed_byte_view_events(
+                                py,
+                                parser,
+                                text,
+                                patterns,
+                                &mut records,
+                                &mut pending,
+                                &mut self.suppressed_string_initial,
+                            )
+                        },
+                    )?;
+                    if matches!(records.last(), Some(ByteViewRecord::Error(_))) {
+                        break;
+                    }
+                }
+                flush_pending_byte_string(
                     py,
-                    parser,
-                    chunk,
-                    patterns,
-                    &interns,
+                    pending.take(),
                     &mut records,
-                ),
-                None => collect_feed_events(py, parser, chunk, &interns, &mut records),
-            })?;
+                    &mut self.suppressed_string_initial,
+                )?;
+                return Ok(
+                    PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any(),
+                );
+            }
+
+            let interns = self.interns.clone_ref(py);
+            let record_pool = Arc::clone(&self.record_pool);
+            let mut records = take_event_records(&record_pool);
+            let mut pending = None;
+            for item in chunks.try_iter()? {
+                let chunk = item?;
+                self.utf8_input
+                    .with_input_text(&chunk, "JsonModem.feed_many()", |chunk| {
+                        collect_per_feed_view_feed_events(
+                            py,
+                            parser,
+                            chunk,
+                            patterns,
+                            &interns,
+                            &mut records,
+                            &mut pending,
+                            &mut self.suppressed_string_initial,
+                        )
+                    })?;
+                if matches!(records.last(), Some(EventRecord::Error(_))) {
+                    break;
+                }
+            }
+            flush_pending_string(
+                py,
+                pending.take(),
+                &interns,
+                &mut records,
+                &mut self.suppressed_string_initial,
+            )?;
+            return Ok(PyEventIter::new(py, records, record_pool)?.into_any());
+        }
+
+        if self.byte_views {
+            let patterns = self.patterns.as_deref();
+            let mut records = Vec::new();
+            for item in chunks.try_iter()? {
+                let chunk = item?;
+                let mut chunk_records = self.utf8_input.with_readonly_byte_text(
+                    &chunk,
+                    "JsonModem.feed_many()",
+                    |text, source| match patterns {
+                        Some(patterns) => collect_filtered_byte_view_feed_events(
+                            py, parser, text, source, patterns,
+                        ),
+                        None => collect_byte_view_feed_events(py, parser, text, source),
+                    },
+                )?;
+                let has_error = chunk_records
+                    .iter()
+                    .any(|record| matches!(record, ByteViewRecord::Error(_)));
+                records.append(&mut chunk_records);
+                if has_error {
+                    break;
+                }
+            }
+            return Ok(PyByteEventIter::new(py, records, self.interns.clone_ref(py))?.into_any());
+        }
+
+        let interns = self.interns.clone_ref(py);
+        let record_pool = Arc::clone(&self.record_pool);
+        let patterns = self.patterns.as_deref();
+        let mut records = take_event_records(&record_pool);
+        for item in chunks.try_iter()? {
+            let chunk = item?;
+            self.utf8_input.with_input_text(
+                &chunk,
+                "JsonModem.feed_many()",
+                |chunk| match patterns {
+                    Some(patterns) => collect_filtered_view_feed_events(
+                        py,
+                        parser,
+                        chunk,
+                        patterns,
+                        &interns,
+                        &mut records,
+                    ),
+                    None => collect_feed_events(py, parser, chunk, &interns, &mut records),
+                },
+            )?;
             if matches!(records.last(), Some(EventRecord::Error(_))) {
                 break;
             }
@@ -1209,6 +1627,7 @@ impl PyJsonModem {
         if self.finished {
             return Err(state_error("finish() has already been called"));
         }
+        self.utf8_input.finish("JsonModem.finish()")?;
 
         let parser = self
             .parser
@@ -1319,6 +1738,7 @@ enum ValueRecord {
 )]
 struct PyJsonModemValues {
     parser: Option<CoreJsonModemValues<StdBackend>>,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -1348,6 +1768,7 @@ impl PyJsonModemValues {
                 parsed_options.to_core(),
                 values_options,
             )),
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -1370,17 +1791,22 @@ impl PyJsonModemValues {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(py, &chunk_or_chunks, "JsonModemValues.feed()", |chunk| {
-                collect_value_feed(py, parser, chunk, &mut records)?;
-                PyValueIter::new(py, records)
-            });
+            return self.utf8_input.with_input_text(
+                &chunk_or_chunks,
+                "JsonModemValues.feed()",
+                |chunk| {
+                    collect_value_feed(py, parser, chunk, &mut records)?;
+                    PyValueIter::new(py, records)
+                },
+            );
         }
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemValues.feed()", |chunk| {
-                collect_value_feed(py, parser, chunk, &mut records)
-            })?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemValues.feed()", |chunk| {
+                    collect_value_feed(py, parser, chunk, &mut records)
+                })?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -1477,6 +1903,7 @@ struct PyJsonModemMutableValues {
     parser: Option<CoreJsonModem<StdBackend>>,
     root: Option<PyObject>,
     next_index: usize,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -1494,6 +1921,7 @@ impl PyJsonModemMutableValues {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
             root: None,
             next_index: 0,
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -1512,8 +1940,7 @@ impl PyJsonModemMutableValues {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(
-                py,
+            return self.utf8_input.with_input_text(
                 &chunk_or_chunks,
                 "JsonModemMutableValues.feed()",
                 |chunk| {
@@ -1532,16 +1959,17 @@ impl PyJsonModemMutableValues {
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemMutableValues.feed()", |chunk| {
-                collect_mutable_value_feed(
-                    py,
-                    parser,
-                    chunk,
-                    &mut self.root,
-                    &mut self.next_index,
-                    &mut records,
-                )
-            })?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemMutableValues.feed()", |chunk| {
+                    collect_mutable_value_feed(
+                        py,
+                        parser,
+                        chunk,
+                        &mut self.root,
+                        &mut self.next_index,
+                        &mut records,
+                    )
+                })?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -1703,6 +2131,7 @@ struct PyJsonModemValueViews {
     parser: Option<CoreJsonModem<StdBackend>>,
     root: Rc<RefCell<Option<CoreValue>>>,
     next_index: usize,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -1720,6 +2149,7 @@ impl PyJsonModemValueViews {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
             root: Rc::new(RefCell::new(None)),
             next_index: 0,
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -1738,8 +2168,7 @@ impl PyJsonModemValueViews {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(
-                py,
+            return self.utf8_input.with_input_text(
                 &chunk_or_chunks,
                 "JsonModemValueViews.feed()",
                 |chunk| {
@@ -1758,16 +2187,17 @@ impl PyJsonModemValueViews {
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemValueViews.feed()", |chunk| {
-                collect_view_value_feed(
-                    py,
-                    parser,
-                    chunk,
-                    &self.root,
-                    &mut self.next_index,
-                    &mut records,
-                )
-            })?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemValueViews.feed()", |chunk| {
+                    collect_view_value_feed(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                    )
+                })?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -1820,6 +2250,7 @@ struct PyJsonModemValueViewsCached {
     root: Rc<RefCell<Option<CoreValue>>>,
     root_view: Py<PyJsonModemValueView>,
     next_index: usize,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -1846,6 +2277,7 @@ impl PyJsonModemValueViewsCached {
             root,
             root_view,
             next_index: 0,
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -1864,8 +2296,7 @@ impl PyJsonModemValueViewsCached {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(
-                py,
+            return self.utf8_input.with_input_text(
                 &chunk_or_chunks,
                 "JsonModemValueViewsCached.feed()",
                 |chunk| {
@@ -1887,19 +2318,23 @@ impl PyJsonModemValueViewsCached {
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemValueViewsCached.feed()", |chunk| {
-                collect_view_value_feed_with(
-                    py,
-                    parser,
-                    chunk,
-                    &self.root,
-                    &mut self.next_index,
-                    &mut records,
-                    |py, index, path, is_final| {
-                        cached_view_update_record(py, index, &self.root_view, &path, is_final)
-                    },
-                )
-            })?;
+            self.utf8_input.with_input_text(
+                &chunk,
+                "JsonModemValueViewsCached.feed()",
+                |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        |py, index, path, is_final| {
+                            cached_view_update_record(py, index, &self.root_view, &path, is_final)
+                        },
+                    )
+                },
+            )?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -1954,6 +2389,7 @@ struct PyJsonModemValuePaths {
     parser: Option<CoreJsonModem<StdBackend>>,
     root: Rc<RefCell<Option<CoreValue>>>,
     next_index: usize,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -1971,6 +2407,7 @@ impl PyJsonModemValuePaths {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
             root: Rc::new(RefCell::new(None)),
             next_index: 0,
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -1989,8 +2426,7 @@ impl PyJsonModemValuePaths {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(
-                py,
+            return self.utf8_input.with_input_text(
                 &chunk_or_chunks,
                 "JsonModemValuePaths.feed()",
                 |chunk| {
@@ -2010,17 +2446,18 @@ impl PyJsonModemValuePaths {
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemValuePaths.feed()", |chunk| {
-                collect_view_value_feed_with(
-                    py,
-                    parser,
-                    chunk,
-                    &self.root,
-                    &mut self.next_index,
-                    &mut records,
-                    path_only_update_record,
-                )
-            })?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemValuePaths.feed()", |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        path_only_update_record,
+                    )
+                })?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -2073,9 +2510,11 @@ impl PyJsonModemValuePaths {
 #[pyclass(module = "jsonmodem._jsonmodem", name = "JsonModemValues", unsendable)]
 struct PyJsonModemValueViewsPathView {
     parser: Option<CoreJsonModem<StdBackend>>,
+    options: PyParserOptions,
     root: Rc<RefCell<Option<CoreValue>>>,
     root_view: Py<PyJsonModemValueView>,
     next_index: usize,
+    utf8_input: Utf8InputBuffer,
     finished: bool,
 }
 
@@ -2099,9 +2538,11 @@ impl PyJsonModemValueViewsPathView {
 
         Ok(Self {
             parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            options: parsed_options,
             root,
             root_view,
             next_index: 0,
+            utf8_input: Utf8InputBuffer::default(),
             finished: false,
         })
     }
@@ -2120,49 +2561,54 @@ impl PyJsonModemValueViewsPathView {
 
         let mut records = Vec::new();
         if is_single_json_input(&chunk_or_chunks) {
-            return with_input_text(py, &chunk_or_chunks, "JsonModemValues.feed()", |chunk| {
-                collect_view_value_feed_with(
-                    py,
-                    parser,
-                    chunk,
-                    &self.root,
-                    &mut self.next_index,
-                    &mut records,
-                    |py, index, path, is_final| {
-                        cached_view_path_view_update_record(
-                            py,
-                            index,
-                            &self.root_view,
-                            path,
-                            is_final,
-                        )
-                    },
-                )?;
-                PyValueIter::new(py, records)
-            });
+            return self.utf8_input.with_input_text(
+                &chunk_or_chunks,
+                "JsonModemValues.feed()",
+                |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        |py, index, path, is_final| {
+                            cached_view_path_view_update_record(
+                                py,
+                                index,
+                                &self.root_view,
+                                path,
+                                is_final,
+                            )
+                        },
+                    )?;
+                    PyValueIter::new(py, records)
+                },
+            );
         }
 
         for item in chunk_or_chunks.try_iter()? {
             let chunk = item?;
-            with_input_text(py, &chunk, "JsonModemValues.feed()", |chunk| {
-                collect_view_value_feed_with(
-                    py,
-                    parser,
-                    chunk,
-                    &self.root,
-                    &mut self.next_index,
-                    &mut records,
-                    |py, index, path, is_final| {
-                        cached_view_path_view_update_record(
-                            py,
-                            index,
-                            &self.root_view,
-                            path,
-                            is_final,
-                        )
-                    },
-                )
-            })?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemValues.feed()", |chunk| {
+                    collect_view_value_feed_with(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &mut self.next_index,
+                        &mut records,
+                        |py, index, path, is_final| {
+                            cached_view_path_view_update_record(
+                                py,
+                                index,
+                                &self.root_view,
+                                path,
+                                is_final,
+                            )
+                        },
+                    )
+                })?;
             if matches!(records.last(), Some(ValueRecord::Error(_))) {
                 break;
             }
@@ -2170,22 +2616,81 @@ impl PyJsonModemValueViewsPathView {
         PyValueIter::new(py, records)
     }
 
+    /// Consume input, update the reused root view, and emit no update tuples.
+    ///
+    /// Passing `changed_paths=True` returns a dict with the reused view and the
+    /// paths changed by this call. The default returns only the view.
+    #[pyo3(signature=(chunk_or_chunks, *, changed_paths=false))]
+    fn update(
+        &mut self,
+        py: Python<'_>,
+        chunk_or_chunks: Bound<'_, PyAny>,
+        changed_paths: bool,
+    ) -> PyResult<PyObject> {
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+
+        let mut paths = changed_paths.then(Vec::new);
+        if is_single_json_input(&chunk_or_chunks) {
+            self.utf8_input.with_input_text(
+                &chunk_or_chunks,
+                "JsonModemValues.update()",
+                |chunk| collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut()),
+            )?;
+            return live_values_update_result(py, self.root_view.clone_ref(py), paths);
+        }
+
+        for item in chunk_or_chunks.try_iter()? {
+            let chunk = item?;
+            self.utf8_input
+                .with_input_text(&chunk, "JsonModemValues.update()", |chunk| {
+                    collect_view_value_no_notify(py, parser, chunk, &self.root, paths.as_mut())
+                })?;
+        }
+        live_values_update_result(py, self.root_view.clone_ref(py), paths)
+    }
+
     /// Return the cached root view.
     fn view(&self, py: Python<'_>) -> Py<PyJsonModemValueView> {
         self.root_view.clone_ref(py)
     }
 
+    /// Reset parser state while preserving the same root view object.
+    fn reset(&mut self) {
+        self.parser = Some(CoreJsonModem::new(self.options.to_core()));
+        *self.root.borrow_mut() = None;
+        self.next_index = 0;
+        self.utf8_input.clear();
+        self.finished = false;
+    }
+
     /// Mark the parser as complete and emit any remaining updates.
-    #[pyo3(text_signature = "($self)")]
-    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+    ///
+    /// By default this preserves the original notification iterator behavior.
+    /// Passing `changed_paths=False` returns the reused root view after
+    /// validation; passing `changed_paths=True` returns a dict containing the
+    /// view and any paths changed while finishing.
+    #[pyo3(signature=(*, changed_paths=None))]
+    fn finish(&mut self, py: Python<'_>, changed_paths: Option<bool>) -> PyResult<PyObject> {
         if self.finished {
             return Err(state_error("finish() has already been called"));
         }
+        self.utf8_input.finish("JsonModemValues.finish()")?;
 
         let parser = self
             .parser
             .take()
             .ok_or_else(|| state_error("parser has already finished"))?;
+
+        if let Some(include_paths) = changed_paths {
+            let mut paths = include_paths.then(Vec::new);
+            collect_view_value_finish_no_notify(py, parser, &self.root, paths.as_mut())?;
+            self.finished = true;
+            return live_values_update_result(py, self.root_view.clone_ref(py), paths);
+        }
+
         let mut records = Vec::new();
         collect_view_value_finish_with(
             py,
@@ -2198,7 +2703,168 @@ impl PyJsonModemValueViewsPathView {
             },
         )?;
         self.finished = true;
+        Ok(PyValueIter::new(py, records)?
+            .into_bound(py)
+            .into_any()
+            .unbind())
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// Streaming parser that emits selected subtrees after they close.
+#[pyclass(
+    module = "jsonmodem._jsonmodem",
+    name = "JsonModemCompletedSubtrees",
+    unsendable
+)]
+struct PyJsonModemCompletedSubtrees {
+    parser: Option<CoreJsonModem<StdBackend>>,
+    options: PyParserOptions,
+    root: Rc<RefCell<Option<CoreValue>>>,
+    patterns: Vec<PathPattern>,
+    release_after_emit: bool,
+    utf8_input: Utf8InputBuffer,
+    finished: bool,
+}
+
+#[pymethods]
+impl PyJsonModemCompletedSubtrees {
+    #[new]
+    #[pyo3(signature=(options=None, *, paths, release_after_emit=true))]
+    fn new(
+        options: Option<Bound<'_, PyAny>>,
+        paths: Bound<'_, PyAny>,
+        release_after_emit: bool,
+    ) -> PyResult<Self> {
+        let parsed_options = match options {
+            Some(item) => read_parser_options(item)?,
+            None => PyParserOptions::default(),
+        };
+
+        Ok(Self {
+            parser: Some(CoreJsonModem::new(parsed_options.to_core())),
+            options: parsed_options,
+            root: Rc::new(RefCell::new(None)),
+            patterns: read_path_patterns(&paths)?,
+            release_after_emit,
+            utf8_input: Utf8InputBuffer::default(),
+            finished: false,
+        })
+    }
+
+    /// Feed one scalar JSON chunk and emit selected completed subtrees.
+    #[pyo3(text_signature = "($self, chunk)")]
+    fn feed(&mut self, py: Python<'_>, chunk: Bound<'_, PyAny>) -> PyResult<Py<PyValueIter>> {
+        if !is_single_json_input(&chunk) {
+            return Err(PyTypeError::new_err(
+                "JsonModemCompletedSubtrees.feed() expects one str, bytes, bytearray, or memoryview chunk; use feed_many() for iterables",
+            ));
+        }
+
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        self.utf8_input
+            .with_input_text(&chunk, "JsonModemCompletedSubtrees.feed()", |chunk| {
+                collect_completed_subtree_feed(
+                    py,
+                    parser,
+                    chunk,
+                    &self.root,
+                    &self.patterns,
+                    self.release_after_emit,
+                    &mut records,
+                )
+            })?;
         PyValueIter::new(py, records)
+    }
+
+    /// Feed several caller chunks and emit completed subtrees in document
+    /// order.
+    #[pyo3(text_signature = "($self, chunks)")]
+    fn feed_many(&mut self, py: Python<'_>, chunks: Bound<'_, PyAny>) -> PyResult<Py<PyValueIter>> {
+        if is_single_json_input(&chunks) {
+            return Err(PyTypeError::new_err(
+                "JsonModemCompletedSubtrees.feed_many() expects an iterable of chunks; use feed() for one chunk",
+            ));
+        }
+
+        let parser = self
+            .parser
+            .as_mut()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        for item in chunks.try_iter()? {
+            let chunk = item?;
+            self.utf8_input.with_input_text(
+                &chunk,
+                "JsonModemCompletedSubtrees.feed_many()",
+                |chunk| {
+                    collect_completed_subtree_feed(
+                        py,
+                        parser,
+                        chunk,
+                        &self.root,
+                        &self.patterns,
+                        self.release_after_emit,
+                        &mut records,
+                    )
+                },
+            )?;
+            if matches!(records.last(), Some(ValueRecord::Error(_))) {
+                break;
+            }
+        }
+        PyValueIter::new(py, records)
+    }
+
+    /// Finish parsing and drain final completed selected subtrees.
+    #[pyo3(text_signature = "($self)")]
+    fn finish(&mut self, py: Python<'_>) -> PyResult<Py<PyValueIter>> {
+        if self.finished {
+            return Err(state_error("finish() has already been called"));
+        }
+        self.utf8_input
+            .finish("JsonModemCompletedSubtrees.finish()")?;
+
+        let parser = self
+            .parser
+            .take()
+            .ok_or_else(|| state_error("parser has already finished"))?;
+        let mut records = Vec::new();
+        collect_completed_subtree_finish(
+            py,
+            parser,
+            &self.root,
+            &self.patterns,
+            self.release_after_emit,
+            &mut records,
+        )?;
+        self.finished = true;
+        PyValueIter::new(py, records)
+    }
+
+    /// Return a coarse measurement of native root state still retained.
+    ///
+    /// Released array entries currently remain as null placeholders, so this is
+    /// an accounting API rather than a constant-memory guarantee.
+    fn retained_state(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let stats = CoreValueStats::from_root(&self.root.borrow());
+        core_value_stats_to_py(py, &stats)
+    }
+
+    /// Reset parser and accumulated root state while preserving configuration.
+    fn reset(&mut self) {
+        self.parser = Some(CoreJsonModem::new(self.options.to_core()));
+        *self.root.borrow_mut() = None;
+        self.utf8_input.clear();
+        self.finished = false;
     }
 
     #[getter]
@@ -2301,16 +2967,410 @@ fn collect_filtered_view_feed_events(
     drain_filtered_view_pending_events(py, parser, patterns, interns, records)
 }
 
+fn collect_per_feed_view_feed_events(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    patterns: Option<&[PathPattern]>,
+    interns: &InternedStrings,
+    records: &mut Vec<EventRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => push_per_feed_view_event(
+                py,
+                event,
+                patterns,
+                interns,
+                records,
+                pending,
+                suppressed_initial,
+            )?,
+            Err(err) => {
+                flush_pending_string(py, pending.take(), interns, records, suppressed_initial)?;
+                records.push(error_record(err.to_string(), err.line(), err.column()));
+                return Ok(());
+            }
+        }
+    }
+    drop(events);
+    drain_per_feed_view_pending_events(
+        py,
+        parser,
+        patterns,
+        interns,
+        records,
+        pending,
+        suppressed_initial,
+    )
+}
+
+fn collect_per_feed_byte_view_events(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    patterns: Option<&[PathPattern]>,
+    records: &mut Vec<ByteViewRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => push_per_feed_byte_view_event(
+                py,
+                event,
+                patterns,
+                records,
+                pending,
+                suppressed_initial,
+            )?,
+            Err(err) => {
+                flush_pending_byte_string(py, pending.take(), records, suppressed_initial)?;
+                records.push(byte_view_error_record(
+                    err.to_string(),
+                    err.line(),
+                    err.column(),
+                ));
+                return Ok(());
+            }
+        }
+    }
+    drop(events);
+    drain_per_feed_byte_view_pending_events(
+        py,
+        parser,
+        patterns,
+        records,
+        pending,
+        suppressed_initial,
+    )
+}
+
+fn drain_per_feed_byte_view_pending_events(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    patterns: Option<&[PathPattern]>,
+    records: &mut Vec<ByteViewRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    loop {
+        let mut produced = false;
+        {
+            let mut events = parser.feed("");
+            while let Some(item) = CoreLendingIterator::next(&mut events) {
+                produced = true;
+                match item {
+                    Ok(event) => push_per_feed_byte_view_event(
+                        py,
+                        event,
+                        patterns,
+                        records,
+                        pending,
+                        suppressed_initial,
+                    )?,
+                    Err(err) => {
+                        flush_pending_byte_string(py, pending.take(), records, suppressed_initial)?;
+                        records.push(byte_view_error_record(
+                            err.to_string(),
+                            err.line(),
+                            err.column(),
+                        ));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if !produced {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn push_per_feed_byte_view_event(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    patterns: Option<&[PathPattern]>,
+    records: &mut Vec<ByteViewRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let selected = match patterns {
+        Some(patterns) => path_matches_patterns(event.path(), patterns),
+        None => true,
+    };
+    if !selected {
+        return Ok(());
+    }
+
+    match event {
+        ParseEvent::String {
+            path,
+            fragment,
+            is_initial,
+            is_final,
+        } => {
+            let path = convert_borrowed_path(path);
+            let is_initial = if suppressed_initial
+                .as_ref()
+                .is_some_and(|suppressed_path| suppressed_path == &path)
+            {
+                true
+            } else {
+                is_initial
+            };
+            let starts_new_string = pending
+                .as_ref()
+                .is_some_and(|current| current.is_final || is_initial || current.path != path);
+            if starts_new_string {
+                flush_pending_byte_string(py, pending.take(), records, suppressed_initial)?;
+            }
+
+            if pending.is_none() {
+                *pending = Some(PendingStringEvent {
+                    path,
+                    fragment: String::new(),
+                    is_initial,
+                    is_final: false,
+                    has_decoded_output: false,
+                });
+            }
+
+            if let Some(current) = pending.as_mut() {
+                current.has_decoded_output |= !fragment.is_empty();
+                current.fragment.push_str(fragment.as_ref());
+                current.is_final = is_final;
+            }
+
+            if is_final {
+                flush_pending_byte_string(py, pending.take(), records, suppressed_initial)?;
+            }
+        }
+        event => {
+            flush_pending_byte_string(py, pending.take(), records, suppressed_initial)?;
+            records.push(borrowed_byte_view_event_record(py, event, "", None)?);
+        }
+    }
+    Ok(())
+}
+
+fn flush_pending_byte_string(
+    py: Python<'_>,
+    pending: Option<PendingStringEvent>,
+    records: &mut Vec<ByteViewRecord>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+
+    if !pending.has_decoded_output && !pending.is_final {
+        if pending.is_initial {
+            *suppressed_initial = Some(pending.path);
+        }
+        return Ok(());
+    }
+
+    if suppressed_initial
+        .as_ref()
+        .is_some_and(|suppressed_path| suppressed_path == &pending.path)
+    {
+        *suppressed_initial = None;
+    }
+
+    let fragment = PyString::new(py, &pending.fragment).into_any().unbind();
+    records.push(ByteViewRecord::Event(ByteViewEvent {
+        kind: OwnedEventKind::String,
+        path: pending.path,
+        payload: ByteViewPayload::String(ByteViewStringFragment {
+            fragment,
+            is_initial: pending.is_initial,
+            is_final: pending.is_final,
+            is_view: false,
+            payload_kind: "decoded_text",
+            ownership: "owned",
+        }),
+    }));
+    Ok(())
+}
+
+fn drain_per_feed_view_pending_events(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    patterns: Option<&[PathPattern]>,
+    interns: &InternedStrings,
+    records: &mut Vec<EventRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    loop {
+        let mut produced = false;
+        {
+            let mut events = parser.feed("");
+            while let Some(item) = CoreLendingIterator::next(&mut events) {
+                produced = true;
+                match item {
+                    Ok(event) => {
+                        push_per_feed_view_event(
+                            py,
+                            event,
+                            patterns,
+                            interns,
+                            records,
+                            pending,
+                            suppressed_initial,
+                        )?;
+                    }
+                    Err(err) => {
+                        flush_pending_string(
+                            py,
+                            pending.take(),
+                            interns,
+                            records,
+                            suppressed_initial,
+                        )?;
+                        records.push(error_record(err.to_string(), err.line(), err.column()));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if !produced {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn push_per_feed_view_event(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    patterns: Option<&[PathPattern]>,
+    interns: &InternedStrings,
+    records: &mut Vec<EventRecord>,
+    pending: &mut Option<PendingStringEvent>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let selected = match patterns {
+        Some(patterns) => path_matches_patterns(event.path(), patterns),
+        None => true,
+    };
+    if !selected {
+        return Ok(());
+    }
+
+    match event {
+        ParseEvent::String {
+            path,
+            fragment,
+            is_initial,
+            is_final,
+        } => {
+            let path = convert_borrowed_path(path);
+            let is_initial = if suppressed_initial
+                .as_ref()
+                .is_some_and(|suppressed_path| suppressed_path == &path)
+            {
+                true
+            } else {
+                is_initial
+            };
+            let starts_new_string = pending
+                .as_ref()
+                .is_some_and(|current| current.is_final || is_initial || current.path != path);
+            if starts_new_string {
+                flush_pending_string(py, pending.take(), interns, records, suppressed_initial)?;
+            }
+
+            if pending.is_none() {
+                *pending = Some(PendingStringEvent {
+                    path,
+                    fragment: String::new(),
+                    is_initial,
+                    is_final: false,
+                    has_decoded_output: false,
+                });
+            }
+
+            if let Some(current) = pending.as_mut() {
+                current.has_decoded_output |= !fragment.is_empty();
+                current.fragment.push_str(fragment.as_ref());
+                current.is_final = is_final;
+            }
+
+            if is_final {
+                flush_pending_string(py, pending.take(), interns, records, suppressed_initial)?;
+            }
+        }
+        event => {
+            flush_pending_string(py, pending.take(), interns, records, suppressed_initial)?;
+            records.push(view_event_record(py, event, interns)?);
+        }
+    }
+    Ok(())
+}
+
+fn flush_pending_string(
+    py: Python<'_>,
+    pending: Option<PendingStringEvent>,
+    interns: &InternedStrings,
+    records: &mut Vec<EventRecord>,
+    suppressed_initial: &mut Option<Vec<OwnedPathComponent>>,
+) -> PyResult<()> {
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+
+    if !pending.has_decoded_output && !pending.is_final {
+        if pending.is_initial {
+            *suppressed_initial = Some(pending.path);
+        }
+        return Ok(());
+    }
+
+    if suppressed_initial
+        .as_ref()
+        .is_some_and(|suppressed_path| suppressed_path == &pending.path)
+    {
+        *suppressed_initial = None;
+    }
+
+    let payload = Py::new(
+        py,
+        PyStringPayload {
+            fragment: pending.fragment,
+            is_initial: pending.is_initial,
+            is_final: pending.is_final,
+        },
+    )?
+    .into_bound(py)
+    .into_any()
+    .unbind();
+    records.push(EventRecord::Event(build_view_event(
+        py,
+        OwnedEventKind::String,
+        pending.path,
+        payload,
+        interns,
+    )?));
+    Ok(())
+}
+
 fn collect_byte_view_feed_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
-    source: &Bound<'_, PyMemoryView>,
+    source: Option<&Bound<'_, PyMemoryView>>,
 ) -> PyResult<Vec<ByteViewRecord>> {
     let mut records = Vec::new();
     for item in parser.feed(chunk).to_iter() {
         match item {
-            Ok(event) => records.push(byte_view_event_record(py, event, chunk, Some(source))?),
+            Ok(event) => records.push(byte_view_event_record(py, event, chunk, source)?),
             Err(err) => {
                 records.push(byte_view_error_record(
                     err.to_string(),
@@ -2329,7 +3389,7 @@ fn collect_filtered_byte_view_feed_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
-    source: &Bound<'_, PyMemoryView>,
+    source: Option<&Bound<'_, PyMemoryView>>,
     patterns: &[PathPattern],
 ) -> PyResult<Vec<ByteViewRecord>> {
     let mut records = Vec::new();
@@ -2338,12 +3398,7 @@ fn collect_filtered_byte_view_feed_events(
         match item {
             Ok(event) => {
                 if path_matches_patterns(event.path(), patterns) {
-                    records.push(borrowed_byte_view_event_record(
-                        py,
-                        event,
-                        chunk,
-                        Some(source),
-                    )?);
+                    records.push(borrowed_byte_view_event_record(py, event, chunk, source)?);
                 }
             }
             Err(err) => {
@@ -2413,7 +3468,7 @@ fn drain_byte_view_pending_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
-    source: &Bound<'_, PyMemoryView>,
+    source: Option<&Bound<'_, PyMemoryView>>,
     records: &mut Vec<ByteViewRecord>,
 ) -> PyResult<()> {
     loop {
@@ -2422,7 +3477,7 @@ fn drain_byte_view_pending_events(
             produced = true;
             match item {
                 Ok(event) => {
-                    records.push(byte_view_event_record(py, event, chunk, Some(source))?);
+                    records.push(byte_view_event_record(py, event, chunk, source)?);
                 }
                 Err(err) => {
                     records.push(byte_view_error_record(
@@ -2445,7 +3500,7 @@ fn drain_filtered_byte_view_pending_events(
     py: Python<'_>,
     parser: &mut CoreJsonModem<StdBackend>,
     chunk: &str,
-    source: &Bound<'_, PyMemoryView>,
+    source: Option<&Bound<'_, PyMemoryView>>,
     patterns: &[PathPattern],
     records: &mut Vec<ByteViewRecord>,
 ) -> PyResult<()> {
@@ -2458,12 +3513,8 @@ fn drain_filtered_byte_view_pending_events(
                 match item {
                     Ok(event) => {
                         if path_matches_patterns(event.path(), patterns) {
-                            records.push(borrowed_byte_view_event_record(
-                                py,
-                                event,
-                                chunk,
-                                Some(source),
-                            )?);
+                            records
+                                .push(borrowed_byte_view_event_record(py, event, chunk, source)?);
                         }
                     }
                     Err(err) => {
@@ -2701,6 +3752,38 @@ fn collect_view_value_feed(
     Ok(())
 }
 
+fn collect_view_value_no_notify(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    mut changed_paths: Option<&mut Vec<Vec<OwnedPathComponent>>>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some((path, _is_final)) = core_apply_event(event, &mut root.borrow_mut()) {
+                    if let Some(paths) = changed_paths.as_mut() {
+                        (*paths).push(path);
+                    }
+                }
+            }
+            Err(err) => {
+                return Err(parser_error_to_py(
+                    py,
+                    &OwnedParserError {
+                        message: err.to_string(),
+                        line: err.line(),
+                        column: err.column(),
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_view_value_finish(
     py: Python<'_>,
     parser: CoreJsonModem<StdBackend>,
@@ -2727,6 +3810,189 @@ fn collect_view_value_finish(
         }
     }
     Ok(())
+}
+
+fn collect_view_value_finish_no_notify(
+    py: Python<'_>,
+    parser: CoreJsonModem<StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    mut changed_paths: Option<&mut Vec<Vec<OwnedPathComponent>>>,
+) -> PyResult<()> {
+    let mut events = parser.finish();
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => {
+                if let Some((path, _is_final)) = core_apply_event(event, &mut root.borrow_mut()) {
+                    if let Some(paths) = changed_paths.as_mut() {
+                        (*paths).push(path);
+                    }
+                }
+            }
+            Err(err) => {
+                return Err(parser_error_to_py(
+                    py,
+                    &OwnedParserError {
+                        message: err.to_string(),
+                        line: err.line(),
+                        column: err.column(),
+                    },
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn live_values_update_result(
+    py: Python<'_>,
+    view: Py<PyJsonModemValueView>,
+    changed_paths: Option<Vec<Vec<OwnedPathComponent>>>,
+) -> PyResult<PyObject> {
+    let Some(changed_paths) = changed_paths else {
+        return Ok(view.into_bound(py).into_any().unbind());
+    };
+
+    let result = PyDict::new(py);
+    result.set_item("view", view)?;
+    result.set_item("changed_paths", changed_paths_to_py(py, changed_paths)?)?;
+    Ok(result.into_any().unbind())
+}
+
+fn changed_paths_to_py(py: Python<'_>, paths: Vec<Vec<OwnedPathComponent>>) -> PyResult<PyObject> {
+    let mut items = Vec::with_capacity(paths.len());
+    for path in paths {
+        items.push(
+            Py::new(py, PyPathView { path })?
+                .into_bound(py)
+                .into_any()
+                .unbind(),
+        );
+    }
+    Ok(PyTuple::new(py, items)?.into_any().unbind())
+}
+
+fn collect_completed_subtree_feed(
+    py: Python<'_>,
+    parser: &mut CoreJsonModem<StdBackend>,
+    chunk: &str,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    patterns: &[PathPattern],
+    release_after_emit: bool,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.feed(chunk);
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => completed_subtree_event_record(
+                py,
+                event,
+                root,
+                patterns,
+                release_after_emit,
+                records,
+            )?,
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_completed_subtree_finish(
+    py: Python<'_>,
+    parser: CoreJsonModem<StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    patterns: &[PathPattern],
+    release_after_emit: bool,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let mut events = parser.finish();
+    while let Some(item) = CoreLendingIterator::next(&mut events) {
+        match item {
+            Ok(event) => completed_subtree_event_record(
+                py,
+                event,
+                root,
+                patterns,
+                release_after_emit,
+                records,
+            )?,
+            Err(err) => {
+                records.push(ValueRecord::Error(OwnedParserError {
+                    message: err.to_string(),
+                    line: err.line(),
+                    column: err.column(),
+                }));
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn completed_subtree_event_record(
+    py: Python<'_>,
+    event: ParseEvent<'_, &Path, StdBackend>,
+    root: &Rc<RefCell<Option<CoreValue>>>,
+    patterns: &[PathPattern],
+    release_after_emit: bool,
+    records: &mut Vec<ValueRecord>,
+) -> PyResult<()> {
+    let completed_path = match &event {
+        ParseEvent::ArrayEnd { path, .. } | ParseEvent::ObjectEnd { path, .. } => {
+            path_matches_patterns(path, patterns).then(|| convert_borrowed_path(path))
+        }
+        _ => None,
+    };
+
+    let _ = core_apply_event(event, &mut root.borrow_mut());
+
+    let Some(path) = completed_path else {
+        return Ok(());
+    };
+
+    let value = if release_after_emit {
+        core_take_value_at_path(&mut root.borrow_mut(), &path)
+    } else {
+        core_value_at_path(&root.borrow(), &path).cloned()
+    };
+
+    if let Some(value) = value {
+        records.push(completed_subtree_record(
+            py,
+            &path,
+            &value,
+            release_after_emit,
+        )?);
+    }
+    Ok(())
+}
+
+fn completed_subtree_record(
+    py: Python<'_>,
+    path: &[OwnedPathComponent],
+    value: &CoreValue,
+    released: bool,
+) -> PyResult<ValueRecord> {
+    let path = Py::new(
+        py,
+        PyPathView {
+            path: path.to_vec(),
+        },
+    )?
+    .into_bound(py)
+    .into_any()
+    .unbind();
+    let value = value_to_py(py, value)?;
+    let released = PyBool::new(py, released).to_owned().into_any().unbind();
+    let tuple = PyTuple::new(py, [path, value, released])?;
+    Ok(ValueRecord::Value(tuple.into_any().unbind()))
 }
 
 fn collect_view_value_feed_with(
@@ -3210,6 +4476,54 @@ fn core_value_at_path_mut<'a>(
     Some(current)
 }
 
+fn core_take_value_at_path(
+    root: &mut Option<CoreValue>,
+    path: &[OwnedPathComponent],
+) -> Option<CoreValue> {
+    if path.is_empty() {
+        return root.take();
+    }
+
+    let current = root.as_mut()?;
+    core_take_value_inside(current, path)
+}
+
+fn core_take_value_inside(
+    current: &mut CoreValue,
+    path: &[OwnedPathComponent],
+) -> Option<CoreValue> {
+    if path.len() == 1 {
+        return match &path[0] {
+            OwnedPathComponent::Key(key) => match current {
+                CoreValue::Object(map) => map.remove(key.as_str()),
+                _ => None,
+            },
+            OwnedPathComponent::Index(index) => match current {
+                CoreValue::Array(values) => {
+                    if *index >= values.len() {
+                        None
+                    } else {
+                        Some(std::mem::replace(&mut values[*index], CoreValue::Null))
+                    }
+                }
+                _ => None,
+            },
+        };
+    }
+
+    let child = match &path[0] {
+        OwnedPathComponent::Key(key) => match current {
+            CoreValue::Object(map) => map.get_mut(key.as_str())?,
+            _ => return None,
+        },
+        OwnedPathComponent::Index(index) => match current {
+            CoreValue::Array(values) => values.get_mut(*index)?,
+            _ => return None,
+        },
+    };
+    core_take_value_inside(child, &path[1..])
+}
+
 fn core_assign_at_path(
     root: &mut Option<CoreValue>,
     path: &[OwnedPathComponent],
@@ -3290,6 +4604,70 @@ fn ensure_core_array(current: &mut CoreValue) -> &mut Vec<CoreValue> {
         CoreValue::Array(values) => values,
         _ => unreachable!(),
     }
+}
+
+#[derive(Default)]
+struct CoreValueStats {
+    nodes: usize,
+    nulls: usize,
+    arrays: usize,
+    array_slots: usize,
+    objects: usize,
+    object_entries: usize,
+    strings: usize,
+    string_bytes: usize,
+}
+
+impl CoreValueStats {
+    fn from_root(root: &Option<CoreValue>) -> Self {
+        let mut stats = Self::default();
+        if let Some(value) = root {
+            stats.observe(value);
+        }
+        stats
+    }
+
+    fn observe(&mut self, value: &CoreValue) {
+        self.nodes += 1;
+        match value {
+            CoreValue::Null => {
+                self.nulls += 1;
+            }
+            CoreValue::Boolean(_) | CoreValue::Number(_) => {}
+            CoreValue::String(text) => {
+                self.strings += 1;
+                self.string_bytes += text.len();
+            }
+            CoreValue::Array(values) => {
+                self.arrays += 1;
+                self.array_slots += values.len();
+                for item in values {
+                    self.observe(item);
+                }
+            }
+            CoreValue::Object(map) => {
+                self.objects += 1;
+                self.object_entries += map.len();
+                for value in map.values() {
+                    self.observe(value);
+                }
+            }
+        }
+    }
+}
+
+fn core_value_stats_to_py(py: Python<'_>, stats: &CoreValueStats) -> PyResult<PyObject> {
+    let result = PyDict::new(py);
+    result.set_item("nodes", stats.nodes)?;
+    result.set_item("nulls", stats.nulls)?;
+    result.set_item("arrays", stats.arrays)?;
+    result.set_item("array_slots", stats.array_slots)?;
+    result.set_item("objects", stats.objects)?;
+    result.set_item("object_entries", stats.object_entries)?;
+    result.set_item("strings", stats.strings)?;
+    result.set_item("string_bytes", stats.string_bytes)?;
+    result.set_item("released_array_entries_retained_as_null", stats.nulls)?;
+    Ok(result.into_any().unbind())
 }
 
 fn drain_pending_events(
@@ -3407,7 +4785,8 @@ fn byte_view_event_record(
             is_initial,
             is_final,
         } => {
-            let (fragment, is_view) = byte_view_fragment(py, input, source, fragment)?;
+            let (fragment, is_view, payload_kind, ownership) =
+                byte_view_fragment(py, input, source, fragment)?;
             ByteViewEvent {
                 kind: OwnedEventKind::String,
                 path: convert_path(path),
@@ -3416,6 +4795,8 @@ fn byte_view_event_record(
                     is_initial,
                     is_final,
                     is_view,
+                    payload_kind,
+                    ownership,
                 }),
             }
         }
@@ -3472,7 +4853,8 @@ fn borrowed_byte_view_event_record(
             is_initial,
             is_final,
         } => {
-            let (fragment, is_view) = byte_view_fragment(py, input, source, fragment)?;
+            let (fragment, is_view, payload_kind, ownership) =
+                byte_view_fragment(py, input, source, fragment)?;
             ByteViewEvent {
                 kind: OwnedEventKind::String,
                 path: convert_borrowed_path(path),
@@ -3481,6 +4863,8 @@ fn borrowed_byte_view_event_record(
                     is_initial,
                     is_final,
                     is_view,
+                    payload_kind,
+                    ownership,
                 }),
             }
         }
@@ -3514,17 +4898,19 @@ fn byte_view_fragment(
     input: &str,
     source: Option<&Bound<'_, PyMemoryView>>,
     fragment: Cow<'_, str>,
-) -> PyResult<(PyObject, bool)> {
+) -> PyResult<(PyObject, bool, &'static str, &'static str)> {
     if let (Some(source), Cow::Borrowed(fragment)) = (source, &fragment) {
         if let Some((start, end)) = borrowed_range(input, fragment) {
             let view = memoryview_range(py, source, start, end)?;
-            return Ok((view, true));
+            return Ok((view, true, "raw_source", "borrowed"));
         }
     }
 
     Ok((
         PyString::new(py, fragment.as_ref()).into_any().unbind(),
         false,
+        "decoded_text",
+        "owned",
     ))
 }
 
@@ -3642,34 +5028,6 @@ fn format_error_message(err: &OwnedParserError) -> String {
     }
 }
 
-fn with_input_text<T>(
-    py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    caller: &str,
-    f: impl FnOnce(&str) -> PyResult<T>,
-) -> PyResult<T> {
-    if let Ok(text) = data.downcast::<PyString>() {
-        let text = <Bound<'_, PyString> as PyStringMethods<'_>>::to_cow(text)?;
-        return f(text.as_ref());
-    }
-
-    if let Ok(bytes) = data.downcast::<PyBytes>() {
-        let text = core::str::from_utf8(bytes.as_bytes()).map_err(|err| {
-            PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
-        })?;
-        return f(text);
-    }
-
-    if let Some(result) = with_buffer_text(py, data, caller, f)? {
-        return result;
-    }
-
-    Err(PyTypeError::new_err(format!(
-        "{caller} expected str, bytes, bytearray, or contiguous memoryview, got {}",
-        data.get_type().name()?
-    )))
-}
-
 fn is_single_json_input(data: &Bound<'_, PyAny>) -> bool {
     data.downcast::<PyString>().is_ok()
         || data.downcast::<PyBytes>().is_ok()
@@ -3708,6 +5066,46 @@ impl Drop for PyBufferGuard {
     }
 }
 
+fn buffer_bytes<'a>(guard: &'a PyBufferGuard, caller: &str) -> PyResult<&'a [u8]> {
+    if guard.view.len < 0 {
+        return Err(PyTypeError::new_err(format!(
+            "{caller} received a negative buffer length"
+        )));
+    }
+
+    Ok(if guard.view.len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(guard.view.buf.cast::<u8>(), guard.view.len as usize) }
+    })
+}
+
+fn validate_readonly_byte_buffer(
+    guard: &PyBufferGuard,
+    data: &Bound<'_, PyAny>,
+    caller: &str,
+) -> PyResult<()> {
+    if guard.view.readonly == 0 {
+        return Err(PyTypeError::new_err(format!(
+            "{caller} requires read-only bytes-like input for no-copy payload views"
+        )));
+    }
+    if guard.view.itemsize != 1 {
+        return Err(PyTypeError::new_err(format!(
+            "{caller} requires a bytes-like input with itemsize 1 for no-copy payload views"
+        )));
+    }
+    if let Ok(memoryview) = data.downcast::<PyMemoryView>() {
+        let owner = memoryview.getattr("obj")?;
+        if owner.downcast::<PyBytes>().is_err() {
+            return Err(PyTypeError::new_err(format!(
+                "{caller} requires memoryview input backed by bytes for stable no-copy payload views"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[repr(C)]
 struct PyBufferView {
     buf: *mut c_void,
@@ -3744,100 +5142,6 @@ impl PyBufferView {
 unsafe extern "C" {
     fn PyObject_GetBuffer(obj: *mut ffi::PyObject, view: *mut PyBufferView, flags: c_int) -> c_int;
     fn PyBuffer_Release(view: *mut PyBufferView);
-}
-
-fn with_buffer_text<T>(
-    _py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    caller: &str,
-    f: impl FnOnce(&str) -> PyResult<T>,
-) -> PyResult<Option<PyResult<T>>> {
-    const PYBUF_SIMPLE: c_int = 0;
-
-    let mut view = PyBufferView::new();
-    let status = unsafe { PyObject_GetBuffer(data.as_ptr(), &mut view, PYBUF_SIMPLE) };
-    if status != 0 {
-        unsafe { ffi::PyErr_Clear() };
-        return Ok(None);
-    }
-
-    let guard = PyBufferGuard { view };
-    if guard.view.len < 0 {
-        return Ok(Some(Err(PyTypeError::new_err(format!(
-            "{caller} received a negative buffer length"
-        )))));
-    }
-
-    let bytes = if guard.view.len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(guard.view.buf.cast::<u8>(), guard.view.len as usize) }
-    };
-    let text = core::str::from_utf8(bytes).map_err(|err| {
-        PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
-    });
-    Ok(Some(text.and_then(f)))
-}
-
-fn with_readonly_byte_text<T>(
-    _py: Python<'_>,
-    data: &Bound<'_, PyAny>,
-    caller: &str,
-    f: impl FnOnce(&str, &Bound<'_, PyMemoryView>) -> PyResult<T>,
-) -> PyResult<T> {
-    if data.downcast::<PyString>().is_ok() {
-        return Err(PyTypeError::new_err(format!(
-            "{caller} cannot return no-copy memoryview payloads from str input; pass bytes or a read-only memoryview"
-        )));
-    }
-
-    const PYBUF_SIMPLE: c_int = 0;
-
-    let mut view = PyBufferView::new();
-    let status = unsafe { PyObject_GetBuffer(data.as_ptr(), &mut view, PYBUF_SIMPLE) };
-    if status != 0 {
-        unsafe { ffi::PyErr_Clear() };
-        return Err(PyTypeError::new_err(format!(
-            "{caller} expected bytes or a read-only contiguous memoryview, got {}",
-            data.get_type().name()?
-        )));
-    }
-
-    let guard = PyBufferGuard { view };
-    if guard.view.readonly == 0 {
-        return Err(PyTypeError::new_err(format!(
-            "{caller} requires read-only bytes-like input for no-copy payload views"
-        )));
-    }
-    if guard.view.len < 0 {
-        return Err(PyTypeError::new_err(format!(
-            "{caller} received a negative buffer length"
-        )));
-    }
-    if guard.view.itemsize != 1 {
-        return Err(PyTypeError::new_err(format!(
-            "{caller} requires a bytes-like input with itemsize 1 for no-copy payload views"
-        )));
-    }
-    if let Ok(memoryview) = data.downcast::<PyMemoryView>() {
-        let owner = memoryview.getattr("obj")?;
-        if owner.downcast::<PyBytes>().is_err() {
-            return Err(PyTypeError::new_err(format!(
-                "{caller} requires memoryview input backed by bytes for stable no-copy payload views"
-            )));
-        }
-    }
-
-    let bytes = if guard.view.len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(guard.view.buf.cast::<u8>(), guard.view.len as usize) }
-    };
-    let text = core::str::from_utf8(bytes).map_err(|err| {
-        PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
-    })?;
-    let source = PyMemoryView::from(data)?;
-    f(text, &source)
 }
 
 fn memoryview_range(
@@ -3904,6 +5208,7 @@ fn jsonmodem(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyValueIter>()?;
     m.add_class::<PyJsonModemValueView>()?;
     m.add_class::<PyJsonModemValueViewsPathView>()?;
+    m.add_class::<PyJsonModemCompletedSubtrees>()?;
     m.add_class::<PyByteEventIter>()?;
     m.add(
         "JsonModemSyntaxError",

@@ -7,6 +7,7 @@ PathView = _native.PathView
 StringPayload = _native.StringPayload
 JsonModemValues = _native.JsonModemValues
 JsonModemValueView = _native.JsonModemValueView
+JsonModemCompletedSubtrees = _native.JsonModemCompletedSubtrees
 ParserOptions = _native.ParserOptions
 DecodeMode = _native.DecodeMode
 JsonModemSyntaxError = _native.JsonModemSyntaxError
@@ -18,6 +19,7 @@ __all__ = [
     "StringPayload",
     "JsonModemValues",
     "JsonModemValueView",
+    "JsonModemCompletedSubtrees",
     "ParserOptions",
     "DecodeMode",
     "JsonModemSyntaxError",
