@@ -67,7 +67,29 @@ def test_completed_subtrees_report_retained_null_placeholders_after_release():
     assert len(records) == 2
     retained = parser.retained_state()
     assert retained["array_slots"] >= 2
-    assert retained["released_array_entries_retained_as_null"] >= 2
+    assert retained["released_array_entries_retained_as_null"] == 2
+
+
+def test_completed_subtrees_do_not_count_json_nulls_as_released_placeholders():
+    parser = JsonModemCompletedSubtrees(paths="items.*", release_after_emit=True)
+
+    records = list(parser.feed_many([b'{"items":[null,{"id":1}],"other":null}']))
+
+    assert len(records) == 1
+    retained = parser.retained_state()
+    assert retained["nulls"] == 3
+    assert retained["released_array_entries_retained_as_null"] == 1
+
+
+def test_completed_subtrees_retained_state_has_no_placeholders_without_release():
+    parser = JsonModemCompletedSubtrees(paths="items.*", release_after_emit=False)
+
+    records = list(parser.feed_many([b'{"items":[{"id":1},null],"other":null}']))
+
+    assert len(records) == 1
+    retained = parser.retained_state()
+    assert retained["nulls"] == 2
+    assert retained["released_array_entries_retained_as_null"] == 0
 
 
 def test_completed_subtrees_feed_many_rejects_scalar_input_and_reset_reuses_config():

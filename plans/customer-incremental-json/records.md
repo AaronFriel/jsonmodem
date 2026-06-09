@@ -464,3 +464,11 @@ Adopt the production branch API. Do not ship the prototype-only public classes f
 Remaining caveat:
 
 `JsonModemCompletedSubtrees(release_after_emit=True)` releases owned emitted values safely and reports retained state, but arrays still retain `null` placeholders for emitted items. The implementation is production-safe and measurable, but it should not claim parser-retained memory independent of completed array item count until the core value store can retain only necessary container progress.
+
+## 2026-06-09 PR #73 Codex Review Fix
+
+Observation: Codex review found that `released_array_entries_retained_as_null` counted all retained JSON nulls instead of only placeholders left behind by released array entries.
+
+Change: the production branch now tracks released array placeholder paths separately and counts only those paths in `retained_state()`. Regression tests cover ordinary JSON nulls and `release_after_emit=False`.
+
+Validation: `cargo check -p jsonmodem-py`, `.agent/check-py.sh`, `PATH="$HOME/.local/bin:$PATH" .agent/check.sh`, and `git diff --check` passed.

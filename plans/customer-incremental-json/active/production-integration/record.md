@@ -172,3 +172,24 @@ Conclusion: production implementation satisfies phases 1 through 5 with the
 documented phase 4 retained-array-placeholder caveat, and the public prefix
 API has been removed in favor of caller-side append validation plus normal
 `JsonModem.feed()` / `JsonModem.feed_many()` calls.
+
+## 2026-06-09 Codex Review Placeholder Accounting Fix
+
+Source: PR #73 discussion `https://github.com/AaronFriel/jsonmodem/pull/73#discussion_r3377922062`.
+
+Observation: Codex review correctly noted that `retained_state()["released_array_entries_retained_as_null"]` was derived from all retained JSON nulls. That made ordinary JSON null values look like released array placeholders, and made `release_after_emit=False` report releases that never happened.
+
+Change: `JsonModemCompletedSubtrees` now tracks released array placeholder paths separately from the retained `CoreValue` tree. `retained_state()` counts only tracked paths that still point at a retained `null` placeholder. Reset and new root events clear the tracked paths.
+
+Validation:
+
+```bash
+cargo check -p jsonmodem-py
+.agent/check-py.sh
+PATH="$HOME/.local/bin:$PATH" .agent/check.sh
+git diff --check
+```
+
+Result: all passed. `.agent/check-py.sh` passed with `53` Python tests and the existing pdoc `__hash__` stub warnings. `.agent/check.sh` passed; Miri was skipped by the repo default `AGENT_CHECK_MIRI_DISABLE=true`.
+
+Consequence: the review comment is fixed with regression tests for real JSON nulls, released placeholders, and `release_after_emit=False`.

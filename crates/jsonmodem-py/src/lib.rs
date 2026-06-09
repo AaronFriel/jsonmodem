@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     os::raw::{c_int, c_void},
     rc::Rc,
     sync::{Arc, Mutex},
@@ -2726,6 +2726,7 @@ struct PyJsonModemCompletedSubtrees {
     options: PyParserOptions,
     root: Rc<RefCell<Option<CoreValue>>>,
     patterns: Vec<PathPattern>,
+    released_array_placeholders: HashSet<Vec<OwnedPathComponent>>,
     release_after_emit: bool,
     utf8_input: Utf8InputBuffer,
     finished: bool,
@@ -2750,6 +2751,7 @@ impl PyJsonModemCompletedSubtrees {
             options: parsed_options,
             root: Rc::new(RefCell::new(None)),
             patterns: read_path_patterns(&paths)?,
+            released_array_placeholders: HashSet::new(),
             release_after_emit,
             utf8_input: Utf8InputBuffer::default(),
             finished: false,
@@ -2778,6 +2780,7 @@ impl PyJsonModemCompletedSubtrees {
                     chunk,
                     &self.root,
                     &self.patterns,
+                    &mut self.released_array_placeholders,
                     self.release_after_emit,
                     &mut records,
                 )
@@ -2812,6 +2815,7 @@ impl PyJsonModemCompletedSubtrees {
                         chunk,
                         &self.root,
                         &self.patterns,
+                        &mut self.released_array_placeholders,
                         self.release_after_emit,
                         &mut records,
                     )
@@ -2843,6 +2847,7 @@ impl PyJsonModemCompletedSubtrees {
             parser,
             &self.root,
             &self.patterns,
+            &mut self.released_array_placeholders,
             self.release_after_emit,
             &mut records,
         )?;
@@ -2855,7 +2860,8 @@ impl PyJsonModemCompletedSubtrees {
     /// Released array entries currently remain as null placeholders, so this is
     /// an accounting API rather than a constant-memory guarantee.
     fn retained_state(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let stats = CoreValueStats::from_root(&self.root.borrow());
+        let root = self.root.borrow();
+        let stats = CoreValueStats::from_root(&root, &self.released_array_placeholders);
         core_value_stats_to_py(py, &stats)
     }
 
@@ -2863,6 +2869,7 @@ impl PyJsonModemCompletedSubtrees {
     fn reset(&mut self) {
         self.parser = Some(CoreJsonModem::new(self.options.to_core()));
         *self.root.borrow_mut() = None;
+        self.released_array_placeholders.clear();
         self.utf8_input.clear();
         self.finished = false;
     }
@@ -3877,6 +3884,7 @@ fn collect_completed_subtree_feed(
     chunk: &str,
     root: &Rc<RefCell<Option<CoreValue>>>,
     patterns: &[PathPattern],
+    released_array_placeholders: &mut HashSet<Vec<OwnedPathComponent>>,
     release_after_emit: bool,
     records: &mut Vec<ValueRecord>,
 ) -> PyResult<()> {
@@ -3888,6 +3896,7 @@ fn collect_completed_subtree_feed(
                 event,
                 root,
                 patterns,
+                released_array_placeholders,
                 release_after_emit,
                 records,
             )?,
@@ -3909,6 +3918,7 @@ fn collect_completed_subtree_finish(
     parser: CoreJsonModem<StdBackend>,
     root: &Rc<RefCell<Option<CoreValue>>>,
     patterns: &[PathPattern],
+    released_array_placeholders: &mut HashSet<Vec<OwnedPathComponent>>,
     release_after_emit: bool,
     records: &mut Vec<ValueRecord>,
 ) -> PyResult<()> {
@@ -3920,6 +3930,7 @@ fn collect_completed_subtree_finish(
                 event,
                 root,
                 patterns,
+                released_array_placeholders,
                 release_after_emit,
                 records,
             )?,
@@ -3941,6 +3952,7 @@ fn completed_subtree_event_record(
     event: ParseEvent<'_, &Path, StdBackend>,
     root: &Rc<RefCell<Option<CoreValue>>>,
     patterns: &[PathPattern],
+    released_array_placeholders: &mut HashSet<Vec<OwnedPathComponent>>,
     release_after_emit: bool,
     records: &mut Vec<ValueRecord>,
 ) -> PyResult<()> {
@@ -3951,6 +3963,9 @@ fn completed_subtree_event_record(
         _ => None,
     };
 
+    if event_replaces_root(&event) {
+        released_array_placeholders.clear();
+    }
     let _ = core_apply_event(event, &mut root.borrow_mut());
 
     let Some(path) = completed_path else {
@@ -3964,6 +3979,9 @@ fn completed_subtree_event_record(
     };
 
     if let Some(value) = value {
+        if release_after_emit && matches!(path.last(), Some(OwnedPathComponent::Index(_))) {
+            released_array_placeholders.insert(path.clone());
+        }
         records.push(completed_subtree_record(
             py,
             &path,
@@ -3972,6 +3990,20 @@ fn completed_subtree_event_record(
         )?);
     }
     Ok(())
+}
+
+fn event_replaces_root(event: &ParseEvent<'_, &Path, StdBackend>) -> bool {
+    match event {
+        ParseEvent::Null { path }
+        | ParseEvent::Boolean { path, .. }
+        | ParseEvent::Number { path, .. }
+        | ParseEvent::ArrayBegin { path }
+        | ParseEvent::ObjectBegin { path } => path.is_empty(),
+        ParseEvent::String {
+            path, is_initial, ..
+        } => path.is_empty() && *is_initial,
+        ParseEvent::ArrayEnd { .. } | ParseEvent::ObjectEnd { .. } => false,
+    }
 }
 
 fn completed_subtree_record(
@@ -4616,14 +4648,22 @@ struct CoreValueStats {
     object_entries: usize,
     strings: usize,
     string_bytes: usize,
+    released_array_entries_retained_as_null: usize,
 }
 
 impl CoreValueStats {
-    fn from_root(root: &Option<CoreValue>) -> Self {
+    fn from_root(
+        root: &Option<CoreValue>,
+        released_array_placeholders: &HashSet<Vec<OwnedPathComponent>>,
+    ) -> Self {
         let mut stats = Self::default();
         if let Some(value) = root {
             stats.observe(value);
         }
+        stats.released_array_entries_retained_as_null = released_array_placeholders
+            .iter()
+            .filter(|path| matches!(core_value_at_path(root, path), Some(CoreValue::Null)))
+            .count();
         stats
     }
 
@@ -4666,7 +4706,10 @@ fn core_value_stats_to_py(py: Python<'_>, stats: &CoreValueStats) -> PyResult<Py
     result.set_item("object_entries", stats.object_entries)?;
     result.set_item("strings", stats.strings)?;
     result.set_item("string_bytes", stats.string_bytes)?;
-    result.set_item("released_array_entries_retained_as_null", stats.nulls)?;
+    result.set_item(
+        "released_array_entries_retained_as_null",
+        stats.released_array_entries_retained_as_null,
+    )?;
     Ok(result.into_any().unbind())
 }
 
