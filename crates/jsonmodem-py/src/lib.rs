@@ -3972,24 +3972,49 @@ fn completed_subtree_event_record(
         return Ok(());
     };
 
-    let value = if release_after_emit {
+    let should_release = release_after_emit && !has_selected_ancestor(&path, patterns);
+    let value = if should_release {
         core_take_value_at_path(&mut root.borrow_mut(), &path)
     } else {
         core_value_at_path(&root.borrow(), &path).cloned()
     };
 
     if let Some(value) = value {
-        if release_after_emit && matches!(path.last(), Some(OwnedPathComponent::Index(_))) {
+        if should_release && matches!(path.last(), Some(OwnedPathComponent::Index(_))) {
             released_array_placeholders.insert(path.clone());
         }
-        records.push(completed_subtree_record(
-            py,
-            &path,
-            &value,
-            release_after_emit,
-        )?);
+        records.push(completed_subtree_record(py, &path, &value, should_release)?);
     }
     Ok(())
+}
+
+fn has_selected_ancestor(path: &[OwnedPathComponent], patterns: &[PathPattern]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| owned_path_has_matching_ancestor(path, pattern))
+}
+
+fn owned_path_has_matching_ancestor(
+    path: &[OwnedPathComponent],
+    pattern: &[PathPatternComponent],
+) -> bool {
+    pattern.len() < path.len()
+        && path
+            .iter()
+            .zip(pattern)
+            .all(
+                |(path_component, pattern_component)| match (path_component, pattern_component) {
+                    (_, PathPatternComponent::Wildcard) => true,
+                    (OwnedPathComponent::Key(path_key), PathPatternComponent::Key(pattern_key)) => {
+                        path_key == pattern_key
+                    }
+                    (
+                        OwnedPathComponent::Index(path_index),
+                        PathPatternComponent::Index(pattern_index),
+                    ) => path_index == pattern_index,
+                    _ => false,
+                },
+            )
 }
 
 fn event_replaces_root(event: &ParseEvent<'_, &Path, StdBackend>) -> bool {

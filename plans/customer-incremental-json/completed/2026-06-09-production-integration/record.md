@@ -193,3 +193,24 @@ git diff --check
 Result: all passed. `.agent/check-py.sh` passed with `53` Python tests and the existing pdoc `__hash__` stub warnings. `.agent/check.sh` passed; Miri was skipped by the repo default `AGENT_CHECK_MIRI_DISABLE=true`.
 
 Consequence: the review comment is fixed with regression tests for real JSON nulls, released placeholders, and `release_after_emit=False`.
+
+## 2026-06-09 Codex Review Overlapping Subtree Fix
+
+Source: PR #73 discussion `https://github.com/AaronFriel/jsonmodem/pull/73#discussion_r3377986947`.
+
+Observation: Codex review correctly noted that overlapping completed-subtree paths such as `["items", "items.*"]` could release child entries before the selected ancestor emitted. The later ancestor value would then contain retained placeholders instead of the original child values.
+
+Change: `JsonModemCompletedSubtrees` now skips release for a completed selected child when any configured selected ancestor could still emit. The child event is still emitted in document order with `released == False`; the ancestor later emits the original value and can release normally.
+
+Validation:
+
+```bash
+cargo check -p jsonmodem-py
+.agent/check-py.sh
+PATH="$HOME/.local/bin:$PATH" .agent/check.sh
+git diff --check
+```
+
+Result: all passed. `.agent/check-py.sh` passed with `54` Python tests and the existing pdoc `__hash__` stub warnings. `.agent/check.sh` passed; Miri was skipped by the repo default `AGENT_CHECK_MIRI_DISABLE=true`.
+
+Consequence: the completed-subtree API preserves selected ancestor values when paths overlap while still reporting whether each emitted value was released.

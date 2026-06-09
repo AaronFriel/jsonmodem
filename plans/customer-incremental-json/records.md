@@ -472,3 +472,11 @@ Observation: Codex review found that `released_array_entries_retained_as_null` c
 Change: the production branch now tracks released array placeholder paths separately and counts only those paths in `retained_state()`. Regression tests cover ordinary JSON nulls and `release_after_emit=False`.
 
 Validation: `cargo check -p jsonmodem-py`, `.agent/check-py.sh`, `PATH="$HOME/.local/bin:$PATH" .agent/check.sh`, and `git diff --check` passed.
+
+## 2026-06-09 PR #73 Overlapping Subtree Review Fix
+
+Observation: Codex review found that overlapping completed-subtree paths such as `["items", "items.*"]` could release child entries before the selected ancestor emitted, so the ancestor result could contain placeholders instead of original values.
+
+Change: the production branch now skips release for selected children when a selected ancestor can still emit. The child event reports `released == False`, and the ancestor can later emit and release the original value.
+
+Validation: `cargo check -p jsonmodem-py`, `.agent/check-py.sh`, `PATH="$HOME/.local/bin:$PATH" .agent/check.sh`, and `git diff --check` passed.

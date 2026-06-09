@@ -233,6 +233,9 @@ parser releases its internal copy.
 
 `release_after_emit=True` removes emitted object fields and replaces emitted
 array entries with `null` placeholders in the current implementation.
+If overlapping selected paths are configured, a completed child is not released
+before a selected ancestor can emit its original value; the emitted child's
+`released` flag is `False` in that case.
 `retained_state()` reports the remaining native value-tree accounting, including
 `released_array_entries_retained_as_null`. This means completed subtree
 extraction can reduce retained payload bytes, but jsonmodem does not yet claim

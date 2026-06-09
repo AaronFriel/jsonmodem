@@ -81,6 +81,19 @@ def test_completed_subtrees_do_not_count_json_nulls_as_released_placeholders():
     assert retained["released_array_entries_retained_as_null"] == 1
 
 
+def test_completed_subtrees_keep_children_until_selected_ancestor_emits():
+    parser = JsonModemCompletedSubtrees(paths=["items", "items.*"])
+
+    records = list(parser.feed_many([b'{"items":[{"id":1},{"id":2}]}']))
+    records.extend(parser.finish())
+
+    assert [(path.as_tuple(), value, released) for path, value, released in records] == [
+        ((("key", "items"), ("index", 0)), {"id": 1.0}, False),
+        ((("key", "items"), ("index", 1)), {"id": 2.0}, False),
+        ((("key", "items"),), [{"id": 1.0}, {"id": 2.0}], True),
+    ]
+
+
 def test_completed_subtrees_retained_state_has_no_placeholders_without_release():
     parser = JsonModemCompletedSubtrees(paths="items.*", release_after_emit=False)
 
