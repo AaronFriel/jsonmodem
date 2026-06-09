@@ -32,6 +32,11 @@ PARTIAL_VALUE_WORKLOADS = DOC_WORKLOADS + ARRAY_WORKLOADS
 WORKLOAD_ENV = "JSONMODEM_PY_JITER_CHUNKED_WORKLOADS"
 GROUP_ENV = "JSONMODEM_PY_JITER_CHUNKED_GROUPS"
 CHUNK_ENV = "JSONMODEM_PY_JITER_CHUNKED_SIZE"
+CHUNKS_PER_FEED_ENV = "JSONMODEM_PY_JITER_CHUNKED_PER_FEED"
+SELECTED_STRING_PATHS = {
+    "medium_response.json": "person.avatar",
+    "response_large.json": "analysis",
+}
 
 
 def load_optional(module_name: str) -> Any | None:
@@ -53,6 +58,10 @@ def stable_hash(data: bytes) -> str:
 
 def chunk_bytes(data: bytes, size: int) -> list[bytes]:
     return [data[index : index + size] for index in range(0, len(data), size)]
+
+
+def chunk_groups(chunks: list[bytes], count: int) -> list[list[bytes]]:
+    return [chunks[index : index + count] for index in range(0, len(chunks), count)]
 
 
 def make_sequence(count: int) -> bytes:
@@ -141,6 +150,59 @@ def run_jsonmodem_feed_chunks_chunked(chunks: list[bytes]) -> int:
     for _event in parser.finish():
         count += 1
     return count
+
+
+def run_jsonmodem_selected_fragments(chunks: list[bytes], path_pattern: str) -> int:
+    from jsonmodem import JsonModem
+
+    parser = JsonModem(paths=path_pattern)
+    total = 0
+    for chunk in chunks:
+        for kind, path, payload in parser.feed(chunk):
+            if kind == "string":
+                total += len(path) + len(payload.fragment)
+                total += int(payload.is_initial) + int(payload.is_final)
+    for kind, path, payload in parser.finish():
+        if kind == "string":
+            total += len(path) + len(payload.fragment)
+            total += int(payload.is_initial) + int(payload.is_final)
+    return total
+
+
+def run_jsonmodem_selected_feed_many_fragments(
+    groups: list[list[bytes]], path_pattern: str
+) -> int:
+    from jsonmodem import JsonModem
+
+    parser = JsonModem(paths=path_pattern)
+    total = 0
+    for group in groups:
+        for kind, path, payload in parser.feed_many(group):
+            if kind == "string":
+                total += len(path) + len(payload.fragment)
+                total += int(payload.is_initial) + int(payload.is_final)
+    for kind, path, payload in parser.finish():
+        if kind == "string":
+            total += len(path) + len(payload.fragment)
+            total += int(payload.is_initial) + int(payload.is_final)
+    return total
+
+
+def run_jsonmodem_selected_per_feed(groups: list[list[bytes]], path_pattern: str) -> int:
+    from jsonmodem import JsonModem
+
+    parser = JsonModem(paths=path_pattern, string_events="per_feed")
+    total = 0
+    for group in groups:
+        for kind, path, payload in parser.feed_many(group):
+            if kind == "string":
+                total += len(path) + len(payload.fragment)
+                total += int(payload.is_initial) + int(payload.is_final)
+    for kind, path, payload in parser.finish():
+        if kind == "string":
+            total += len(path) + len(payload.fragment)
+            total += int(payload.is_initial) + int(payload.is_final)
+    return total
 
 
 def run_jsonmodem_values_chunked(chunks: list[bytes]) -> int:
@@ -257,13 +319,19 @@ def run_jiter_sequence_partial_first(chunks: list[bytes]) -> int:
     return len(repr(value))
 
 
-def add_metadata(runner: pyperf.Runner, workloads: dict[str, bytes], chunk_size: int) -> None:
+def add_metadata(
+    runner: pyperf.Runner,
+    workloads: dict[str, bytes],
+    chunk_size: int,
+    chunks_per_feed: int,
+) -> None:
     jiter = load_optional("jiter")
     runner.metadata["python"] = sys.version.replace("\n", " ")
     runner.metadata["platform"] = platform.platform()
     runner.metadata["jsonmodem_worktree"] = str(REPO_ROOT)
     runner.metadata["jiter_version"] = package_version(jiter)
     runner.metadata["chunk_size_bytes"] = str(chunk_size)
+    runner.metadata["chunks_per_feed"] = str(chunks_per_feed)
     runner.metadata["benchmark_method"] = (
         "primary results parse every stream fragment; jiter document results "
         "use cumulative prefixes with partial_mode=True; reassembled "
@@ -287,9 +355,10 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--group",
         action="append",
-        choices=("documents", "partial_values", "sequences", "reference"),
+        choices=("documents", "partial_values", "selected_strings", "sequences", "reference"),
     )
     parser.add_argument("--chunk-size", type=int)
+    parser.add_argument("--chunks-per-feed", type=int)
     parser.add_argument("--list", action="store_true")
     return parser.parse_known_args()
 
@@ -303,10 +372,20 @@ def main() -> None:
         os.environ[GROUP_ENV] = ",".join(args.group)
     if args.chunk_size is not None:
         os.environ[CHUNK_ENV] = str(args.chunk_size)
-    if (args.workload or args.group or args.chunk_size is not None) and not any(
+    if args.chunks_per_feed is not None:
+        os.environ[CHUNKS_PER_FEED_ENV] = str(args.chunks_per_feed)
+    if (
+        args.workload
+        or args.group
+        or args.chunk_size is not None
+        or args.chunks_per_feed is not None
+    ) and not any(
         item == "--copy-env" or item.startswith("--inherit-environ") for item in pyperf_args
     ):
-        pyperf_args.extend(["--inherit-environ", f"{WORKLOAD_ENV},{GROUP_ENV},{CHUNK_ENV}"])
+        pyperf_args.extend([
+            "--inherit-environ",
+            f"{WORKLOAD_ENV},{GROUP_ENV},{CHUNK_ENV},{CHUNKS_PER_FEED_ENV}",
+        ])
 
     sys.argv = [sys.argv[0], *pyperf_args]
 
@@ -320,16 +399,23 @@ def main() -> None:
     ]
     selected_groups = set(item for item in os.environ.get(GROUP_ENV, "documents,sequences").split(",") if item)
     chunk_size = int(os.environ.get(CHUNK_ENV, "64"))
+    chunks_per_feed = int(os.environ.get(CHUNKS_PER_FEED_ENV, "10"))
     all_workloads = load_workloads()
     workloads = {name: all_workloads[name] for name in selected_workloads}
 
     benches: list[tuple[str, Callable[[], int]]] = []
     for name, data in workloads.items():
         chunks = chunk_bytes(data, chunk_size)
+        groups = chunk_groups(chunks, chunks_per_feed)
         if name in DOC_WORKLOADS and "documents" in selected_groups:
             benches.append((f"jsonmodem_events_chunked:{name}", lambda chunks=chunks: run_jsonmodem_events_chunked(chunks)))
             benches.append((f"jsonmodem_feed_chunks_chunked:{name}", lambda chunks=chunks: run_jsonmodem_feed_chunks_chunked(chunks)))
             benches.append((f"jiter_cumulative_partial_prefixes:{name}", lambda chunks=chunks: run_jiter_cumulative_partial_prefixes(chunks)))
+        if name in SELECTED_STRING_PATHS and "selected_strings" in selected_groups:
+            path_pattern = SELECTED_STRING_PATHS[name]
+            benches.append((f"jsonmodem_selected_fragments:{name}", lambda chunks=chunks, path_pattern=path_pattern: run_jsonmodem_selected_fragments(chunks, path_pattern)))
+            benches.append((f"jsonmodem_selected_feed_many_fragments:{name}", lambda groups=groups, path_pattern=path_pattern: run_jsonmodem_selected_feed_many_fragments(groups, path_pattern)))
+            benches.append((f"jsonmodem_selected_per_feed:{name}", lambda groups=groups, path_pattern=path_pattern: run_jsonmodem_selected_per_feed(groups, path_pattern)))
         if name in PARTIAL_VALUE_WORKLOADS and "partial_values" in selected_groups:
             benches.append((f"jsonmodem_values_chunked:{name}", lambda chunks=chunks: run_jsonmodem_values_chunked(chunks)))
             benches.append((f"jsonmodem_values_feed_chunks:{name}", lambda chunks=chunks: run_jsonmodem_values_feed_chunks(chunks)))
@@ -350,7 +436,7 @@ def main() -> None:
         return
 
     runner = pyperf.Runner()
-    add_metadata(runner, workloads, chunk_size)
+    add_metadata(runner, workloads, chunk_size, chunks_per_feed)
     for name, func in benches:
         runner.bench_func(name, func)
 

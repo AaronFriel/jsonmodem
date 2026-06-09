@@ -117,6 +117,39 @@ def test_feed_rejects_invalid_utf8_bytes():
         raise AssertionError("feed() accepted invalid UTF-8 bytes")
 
 
+def test_feed_carries_incomplete_utf8_between_byte_chunks():
+    parser = JsonModem(ParserOptions())
+
+    events = []
+    events.extend(parser.feed(b'{"word":"caf\xc3'))
+    events.extend(parser.feed(b'\xa9"}'))
+    events.extend(parser.finish())
+
+    assert events == [
+        ("object_begin", (), None),
+        (
+            "string",
+            (("key", "word"),),
+            {"fragment": "caf", "is_initial": True, "is_final": False},
+        ),
+        (
+            "string",
+            (("key", "word"),),
+            {"fragment": "é", "is_initial": False, "is_final": True},
+        ),
+        ("object_end", (), None),
+    ]
+
+
+def test_finish_rejects_pending_incomplete_utf8():
+    parser = JsonModem(ParserOptions())
+
+    list(parser.feed(b'{"word":"caf\xc3'))
+
+    with pytest.raises(TypeError, match="incomplete UTF-8"):
+        list(parser.finish())
+
+
 def test_byte_views_return_memoryview_for_borrowed_string_payload():
     parser = JsonModem(ParserOptions(), byte_views=True)
     data = b'{"a": "hi"}'
@@ -131,6 +164,8 @@ def test_byte_views_return_memoryview_for_borrowed_string_payload():
     assert payload["is_initial"] is True
     assert payload["is_final"] is True
     assert payload["is_view"] is True
+    assert payload["payload_kind"] == "raw_source"
+    assert payload["ownership"] == "borrowed"
     assert isinstance(payload["fragment"], memoryview)
     assert payload["fragment"].obj is data
     assert bytes(payload["fragment"]) == b"hi"
@@ -147,6 +182,8 @@ def test_byte_views_accept_readonly_memoryview_input():
     assert kind == "string"
     assert path == (("index", 0),)
     assert payload["is_view"] is True
+    assert payload["payload_kind"] == "raw_source"
+    assert payload["ownership"] == "borrowed"
     assert bytes(payload["fragment"]) == b"ok"
 
 
@@ -167,12 +204,12 @@ def test_byte_views_materialize_escaped_fragments_as_text():
     kind, path, payload = events[1]
     assert kind == "string"
     assert path == (("index", 0),)
-    assert payload == {
-        "fragment": "B",
-        "is_initial": True,
-        "is_final": True,
-        "is_view": False,
-    }
+    assert payload["fragment"] == "B"
+    assert payload["is_initial"] is True
+    assert payload["is_final"] is True
+    assert payload["is_view"] is False
+    assert payload["payload_kind"] == "decoded_text"
+    assert payload["ownership"] == "owned"
 
 
 def test_byte_views_reject_str_and_mutable_input():
@@ -236,6 +273,8 @@ def test_path_filter_byte_views_only_materializes_matching_events():
     assert kind == "string"
     assert path == (("key", "content"),)
     assert payload["is_view"] is True
+    assert payload["payload_kind"] == "raw_source"
+    assert payload["ownership"] == "borrowed"
     assert isinstance(payload["fragment"], memoryview)
     assert payload["fragment"].obj is data
     assert bytes(payload["fragment"]) == b"hello"
@@ -263,3 +302,194 @@ def test_byte_views_accept_iterable_readonly_byte_chunks():
         bytes(fragment) if isinstance(fragment, memoryview) else fragment.encode()
         for fragment in fragments
     ) == b"hi"
+
+
+def test_byte_views_split_utf8_boundary_falls_back_to_owned_text():
+    parser = JsonModem(paths="content", byte_views=True)
+
+    events = list(parser.feed([b'{"content":"caf\xc3', b'\xa9"}']))
+    events.extend(parser.finish())
+
+    assert len(events) == 2
+    first = events[0][2]
+    second = events[1][2]
+    assert bytes(first["fragment"]) == b"caf"
+    assert first["payload_kind"] == "raw_source"
+    assert first["ownership"] == "borrowed"
+    assert second["fragment"] == "é"
+    assert second["is_view"] is False
+    assert second["payload_kind"] == "decoded_text"
+    assert second["ownership"] == "owned"
+
+
+def test_per_feed_mode_compacts_selected_string_across_many_chunks():
+    parser = JsonModem(paths="content", string_events="per_feed")
+    chunks = [b'{"content":"', b"hello", b" world", b'","done":true}']
+
+    events = list(parser.feed_many(chunks))
+    events.extend(parser.finish())
+
+    assert events == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "hello world", "is_initial": True, "is_final": True},
+        )
+    ]
+
+
+def test_per_feed_mode_uses_each_feed_call_as_compaction_boundary():
+    parser = JsonModem(paths="content", string_events="per_feed")
+
+    first = list(parser.feed(b'{"content":"he'))
+    second = list(parser.feed(b"llo"))
+    third = list(parser.feed(b'"}'))
+
+    assert first == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "he", "is_initial": True, "is_final": False},
+        )
+    ]
+    assert second == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "llo", "is_initial": False, "is_final": False},
+        )
+    ]
+    assert third == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "", "is_initial": False, "is_final": True},
+        )
+    ]
+    assert list(parser.finish()) == []
+
+
+def test_per_feed_mode_suppresses_non_final_empty_escape_progress():
+    parser = JsonModem(paths="content", string_events="per_feed")
+
+    assert list(parser.feed(b'{"content":"\\u00')) == []
+    assert list(parser.feed(b'41"}')) == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "A", "is_initial": True, "is_final": True},
+        )
+    ]
+    assert list(parser.finish()) == []
+
+
+def test_per_feed_mode_does_not_merge_separate_strings_at_same_path():
+    parser = JsonModem(paths="content", string_events="per_feed")
+
+    events = list(parser.feed_many([b'{"content":"a",', b'"content":"b"}']))
+    events.extend(parser.finish())
+
+    assert events == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "a", "is_initial": True, "is_final": True},
+        ),
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "b", "is_initial": True, "is_final": True},
+        ),
+    ]
+
+
+def test_per_feed_mode_matches_fragment_mode_for_split_escape_content():
+    chunks = [b'{"content":"a\\', b"u0042", b'c"}']
+
+    fragment_parser = JsonModem(paths="content")
+    fragment_events = []
+    for chunk in chunks:
+        fragment_events.extend(fragment_parser.feed(chunk))
+    fragment_events.extend(fragment_parser.finish())
+
+    per_feed_parser = JsonModem(paths="content", string_events="per_feed")
+    per_feed_events = list(per_feed_parser.feed_many(chunks))
+    per_feed_events.extend(per_feed_parser.finish())
+
+    assert len(per_feed_events) == 1
+    assert per_feed_events[0][2]["fragment"] == "".join(
+        event[2]["fragment"] for event in fragment_events
+    )
+    assert per_feed_events[0][2]["fragment"] == "aBc"
+    assert per_feed_events[0][2]["is_initial"] is True
+    assert per_feed_events[0][2]["is_final"] is True
+
+
+def test_per_feed_mode_feed_many_consumes_iterable_eagerly():
+    parser = JsonModem(paths="content", string_events="per_feed")
+    consumed = []
+
+    def chunks():
+        consumed.append("first")
+        yield b'{"content":"he'
+        consumed.append("second")
+        yield b'llo"}'
+
+    result = parser.feed_many(chunks())
+
+    assert consumed == ["first", "second"]
+    assert list(result) == [
+        (
+            "string",
+            (("key", "content"),),
+            {"fragment": "hello", "is_initial": True, "is_final": True},
+        )
+    ]
+
+
+def test_feed_many_rejects_single_scalar_input():
+    parser = JsonModem()
+
+    with pytest.raises(TypeError, match="use feed"):
+        list(parser.feed_many(b'{"content":"hello"}'))
+
+
+def test_per_feed_mode_feed_rejects_iterables():
+    parser = JsonModem(paths="content", string_events="per_feed")
+
+    with pytest.raises(TypeError, match="use feed_many"):
+        list(parser.feed([b'{"content":"hello"}']))
+
+
+def test_per_feed_byte_views_return_owned_decoded_text_for_cross_buffer_compaction():
+    parser = JsonModem(paths="content", byte_views=True, string_events="per_feed")
+
+    events = list(parser.feed_many([b'{"content":"\\u0041', b'BC"}']))
+
+    assert len(events) == 1
+    kind, path, payload = events[0]
+    assert kind == "string"
+    assert path == (("key", "content"),)
+    assert payload["fragment"] == "ABC"
+    assert payload["is_initial"] is True
+    assert payload["is_final"] is True
+    assert payload["is_view"] is False
+    assert payload["payload_kind"] == "decoded_text"
+    assert payload["ownership"] == "owned"
+
+
+def test_per_feed_byte_views_carry_split_utf8_and_return_owned_text():
+    parser = JsonModem(paths="content", byte_views=True, string_events="per_feed")
+
+    events = list(parser.feed_many([b'{"content":"caf\xc3', b'\xa9"}']))
+
+    assert len(events) == 1
+    kind, path, payload = events[0]
+    assert kind == "string"
+    assert path == (("key", "content"),)
+    assert payload["fragment"] == "café"
+    assert payload["is_initial"] is True
+    assert payload["is_final"] is True
+    assert payload["is_view"] is False
+    assert payload["payload_kind"] == "decoded_text"
+    assert payload["ownership"] == "owned"
