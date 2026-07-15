@@ -214,11 +214,15 @@ impl ValueApplicator {
         path: &StdPath,
         kind: ContainerKind,
     ) -> AppliedRef<'a> {
-        let (path, leaf) = self.zipper.with_leaf_mut(path, |slot| {
-            *slot = match kind {
-                ContainerKind::Array => Value::Array(Vec::new()),
-                ContainerKind::Object => Value::Object(BTreeMap::default()),
-            };
+        let (path, leaf) = self.zipper.with_leaf_mut(path, |slot| match kind {
+            ContainerKind::Array => match slot {
+                Value::Array(values) => values.clear(),
+                _ => *slot = Value::Array(Vec::new()),
+            },
+            ContainerKind::Object => match slot {
+                Value::Object(map) => map.clear(),
+                _ => *slot = Value::Object(BTreeMap::new()),
+            },
         });
 
         match kind {

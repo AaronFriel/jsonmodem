@@ -235,6 +235,30 @@ pub struct Scanner<'src> {
 }
 
 impl<'src> Scanner<'src> {
+    #[inline]
+    pub(crate) fn can_finish_without_merge(&self) -> bool {
+        self.anchor.is_none() && self.byte_idx >= self.batch.len()
+    }
+
+    #[inline]
+    pub(crate) fn into_state(self) -> ScannerState {
+        ScannerState {
+            pending: self.pending,
+            char_idx: self.char_idx,
+            line: self.line,
+            col: self.col,
+            scratch: self.scratch,
+        }
+    }
+
+    #[inline]
+    fn scratch_is_empty(&self) -> bool {
+        match &self.scratch {
+            CaptureBuf::Text(s) => s.is_empty(),
+            CaptureBuf::Raw(b) => b.is_empty(),
+        }
+    }
+
     /// Constructs a new session from prior carryover state and the current
     /// batch.
     ///
@@ -306,6 +330,7 @@ impl<'src> Scanner<'src> {
     ///
     /// Single‑shot: `finish(self)` consumes the session and should be called at
     /// most once per feed.
+    #[inline]
     pub fn finish(mut self) -> ScannerState {
         #[cfg(all(test, trace_scanner))]
         eprintln!(
@@ -321,15 +346,12 @@ impl<'src> Scanner<'src> {
         );
         // If token started in batch and not yet owned, copy prefix into scratch
         // so the next feed can continue in owned mode and emit a single fragment.
+        let scratch_is_empty = self.scratch_is_empty();
         if let Some(anchor) = &mut self.anchor {
             if anchor.source == Source::Batch && !anchor.owned {
                 // Avoid duplicating already consumed characters: if `consume()` has
                 // appended into scratch during this feed, the scratch already contains
                 // the batch prefix. In that case, do not copy again.
-                let scratch_is_empty = match &self.scratch {
-                    CaptureBuf::Text(s) => s.is_empty(),
-                    CaptureBuf::Raw(b) => b.is_empty(),
-                };
                 if scratch_is_empty {
                     if let Some(start) = anchor.start_byte_in_batch {
                         let end = cmp::min(self.byte_idx, self.batch.len());
@@ -344,8 +366,6 @@ impl<'src> Scanner<'src> {
                         }
                     }
                 }
-                // Mark as owned regardless to ensure coherent continuation next feed
-                anchor.owned = true;
             }
         }
 
@@ -361,13 +381,7 @@ impl<'src> Scanner<'src> {
             );
         }
 
-        ScannerState {
-            pending: self.pending,
-            char_idx: self.char_idx,
-            line: self.line,
-            col: self.col,
-            scratch: self.scratch,
-        }
+        self.into_state()
     }
 
     /// Decodes but does not consume the next character from ring or batch.

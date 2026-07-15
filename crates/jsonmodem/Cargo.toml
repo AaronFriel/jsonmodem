@@ -93,3 +93,7 @@ harness = false
 [[bench]]
 name = "competitive_benchmarks"
 harness = false
+
+[[bench]]
+name = "hotspot_targets"
+harness = false

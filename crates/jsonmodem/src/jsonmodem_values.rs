@@ -334,6 +334,7 @@ enum EmitKind {
     Final,
 }
 
+#[inline]
 fn classify_event<Ctx>(
     event: &BorrowedBufferedEvent<'_, Ctx>,
     partial_enabled: bool,
@@ -343,11 +344,9 @@ where
     Ctx: BuilderCtx + EventCtx,
     Ctx::Path: PathRoot,
 {
-    let path_is_root = |path: &&Ctx::Path| path.is_root();
-
     match event {
         BorrowedBufferedEvent::String { path, is_final, .. } => {
-            if path_is_root(path) {
+            if path.is_root() {
                 if *is_final {
                     Some(EmitKind::Final)
                 } else {
@@ -368,7 +367,7 @@ where
         | BorrowedBufferedEvent::Null { path }
         | BorrowedBufferedEvent::Boolean { path, .. }
         | BorrowedBufferedEvent::Number { path, .. } => {
-            if path_is_root(path) {
+            if path.is_root() {
                 Some(EmitKind::Final)
             } else {
                 *saw_partial = true;
@@ -378,6 +377,7 @@ where
     }
 }
 
+#[inline]
 fn next_emit_kind<Ctx, S>(
     source: &mut S,
     options: ValuesOptions,
