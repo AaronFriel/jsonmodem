@@ -181,6 +181,8 @@ fn build_view_event(
         .into_bound(py)
         .into_any()
         .unbind();
+    // SAFETY: the new tuple is private, indices are in bounds, and SetItem
+    // steals each owned reference. DECREF cleans up any partially filled tuple.
     unsafe {
         let tuple_ptr = ffi::PyTuple_New(3);
         if tuple_ptr.is_null() {
@@ -313,6 +315,8 @@ fn build_path_tuple<'py>(
         return Ok(PyTuple::empty(py));
     }
 
+    // SAFETY: each index belongs to the newly allocated, private tuple. Each
+    // pair is transferred exactly once; DECREF handles incomplete initialization.
     unsafe {
         let tuple_ptr = ffi::PyTuple_New(path.len() as ffi::Py_ssize_t);
         if tuple_ptr.is_null() {
@@ -370,6 +374,8 @@ fn build_path_tuple_for_event(py: Python<'_>, path: &[OwnedPathComponent]) -> Py
         return Ok(PyTuple::empty(py).into_any().unbind());
     }
 
+    // SAFETY: SetItem receives an in-bounds index and an owned reference in a
+    // private tuple. Failure releases the tuple and all initialized elements.
     unsafe {
         let tuple_ptr = ffi::PyTuple_New(path.len() as ffi::Py_ssize_t);
         if tuple_ptr.is_null() {
@@ -795,6 +801,8 @@ impl PyPathView {
             return Ok(PyTuple::empty(py).into_any().unbind());
         }
 
+        // SAFETY: the slice indices are checked against self.path, and every
+        // target index is within the private tuple allocated here.
         unsafe {
             let tuple_ptr = ffi::PyTuple_New(length as ffi::Py_ssize_t);
             if tuple_ptr.is_null() {
@@ -3747,7 +3755,7 @@ unsafe extern "C" {
 }
 
 fn with_buffer_text<T>(
-    _py: Python<'_>,
+    py: Python<'_>,
     data: &Bound<'_, PyAny>,
     caller: &str,
     f: impl FnOnce(&str) -> PyResult<T>,
@@ -3768,19 +3776,35 @@ fn with_buffer_text<T>(
         )))));
     }
 
+    let immutable = if let Ok(memoryview) = data.downcast::<PyMemoryView>() {
+        memoryview
+            .getattr(pyo3::intern!(py, "obj"))?
+            .is_exact_instance_of::<PyBytes>()
+    } else {
+        false
+    };
     let bytes = if guard.view.len == 0 {
         &[]
     } else {
+        // SAFETY: the exporter supplies readable storage and the guard holds
+        // its export. No Python callback occurs before the copy below.
         unsafe { std::slice::from_raw_parts(guard.view.buf.cast::<u8>(), guard.view.len as usize) }
     };
-    let text = core::str::from_utf8(bytes).map_err(|err| {
+    // f can allocate Python objects and run GC callbacks on older interpreters.
+    // A read-only export alone does not make its backing storage immutable.
+    let bytes = if immutable {
+        Cow::Borrowed(bytes)
+    } else {
+        Cow::Owned(bytes.to_vec())
+    };
+    let text = core::str::from_utf8(&bytes).map_err(|err| {
         PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
     });
     Ok(Some(text.and_then(f)))
 }
 
 fn with_readonly_byte_text<T>(
-    _py: Python<'_>,
+    py: Python<'_>,
     data: &Bound<'_, PyAny>,
     caller: &str,
     f: impl FnOnce(&str, &Bound<'_, PyMemoryView>) -> PyResult<T>,
@@ -3793,8 +3817,17 @@ fn with_readonly_byte_text<T>(
 
     const PYBUF_SIMPLE: c_int = 0;
 
+    // Acquire the retained export before validating or borrowing any text.
+    // Asking data for another export afterward could call Python and return
+    // different storage, or mutate the bytes we have already validated.
+    let source = PyMemoryView::from(data).map_err(|_| {
+        PyTypeError::new_err(format!(
+            "{caller} expected bytes or a read-only contiguous memoryview"
+        ))
+    })?;
     let mut view = PyBufferView::new();
-    let status = unsafe { PyObject_GetBuffer(data.as_ptr(), &mut view, PYBUF_SIMPLE) };
+    // SAFETY: source is a built-in memoryview retaining the acquired export.
+    let status = unsafe { PyObject_GetBuffer(source.as_ptr(), &mut view, PYBUF_SIMPLE) };
     if status != 0 {
         unsafe { ffi::PyErr_Clear() };
         return Err(PyTypeError::new_err(format!(
@@ -3819,24 +3852,34 @@ fn with_readonly_byte_text<T>(
             "{caller} requires a bytes-like input with itemsize 1 for no-copy payload views"
         )));
     }
-    if let Ok(memoryview) = data.downcast::<PyMemoryView>() {
-        let owner = memoryview.getattr("obj")?;
-        if owner.downcast::<PyBytes>().is_err() {
-            return Err(PyTypeError::new_err(format!(
-                "{caller} requires memoryview input backed by bytes for stable no-copy payload views"
-            )));
-        }
+    let owner = source.getattr(pyo3::intern!(py, "obj"))?;
+    if data.is_instance_of::<PyMemoryView>() && owner.downcast::<PyBytes>().is_err() {
+        return Err(PyTypeError::new_err(format!(
+            "{caller} requires memoryview input backed by bytes for stable no-copy payload views"
+        )));
+    }
+
+    if !owner.is_exact_instance_of::<PyBytes>() {
+        // Copy through the built-in memoryview before creating a Rust borrow.
+        // Unknown exporters may expose mutable storage as read-only.
+        let snapshot = source.call_method0("tobytes")?.downcast_into::<PyBytes>()?;
+        let source = PyMemoryView::from(snapshot.as_any())?;
+        let text = core::str::from_utf8(snapshot.as_bytes()).map_err(|err| {
+            PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
+        })?;
+        return f(text, &source);
     }
 
     let bytes = if guard.view.len == 0 {
         &[]
     } else {
+        // SAFETY: this exact export is backed by immutable bytes. The guard
+        // and source keep it alive, including while f allocates Python objects.
         unsafe { std::slice::from_raw_parts(guard.view.buf.cast::<u8>(), guard.view.len as usize) }
     };
     let text = core::str::from_utf8(bytes).map_err(|err| {
         PyTypeError::new_err(format!("{caller} input bytes are not valid UTF-8: {err}"))
     })?;
-    let source = PyMemoryView::from(data)?;
     f(text, &source)
 }
 

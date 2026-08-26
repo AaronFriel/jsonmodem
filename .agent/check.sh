@@ -55,7 +55,7 @@ run_step "clippy (cfg=miri)" \
 # 3. Optional Miri (cfg via env var)
 ###############################################################################
 if [[ "${AGENT_CHECK_MIRI_DISABLE:-true}" != "true" ]]; then
-  run_step "miri test"      env JSONMODEM_TEST_FAST=1 JSONMODEM_BENCH_FAST=1 cargo +nightly miri test --workspace
+  run_step "miri tests" bash "$REPO_ROOT/.agent/check-miri.sh"
 else
   echo "⚠️  AGENT_CHECK_MIRI_DISABLE=true – skipping Miri checks."
 fi

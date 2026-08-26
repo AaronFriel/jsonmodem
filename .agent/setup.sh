@@ -56,7 +56,7 @@ fi
 # LLVM/Clang + perf tooling
 ################################################################################
 sudo apt-get update
-sudo apt-get install -y wget gnupg lsb-release
+sudo apt-get install -y wget gnupg lsb-release binutils build-essential
 wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /usr/share/keyrings/llvm.asc
 echo "deb [signed-by=/usr/share/keyrings/llvm.asc] \
   http://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-${CLANG_VERSION} main" | \

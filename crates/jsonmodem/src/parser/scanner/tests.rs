@@ -592,3 +592,64 @@ fn newline_updates_positions_across_ring_and_batch() {
     assert_eq!(s.line, 3);
     assert_eq!(s.col, 1);
 }
+
+#[test]
+fn memory_safety_prefix_copy_operations() {
+    for prefix in [
+        "",
+        "ascii",
+        "\u{e9}",
+        "\u{20ac}",
+        "\u{1f600}",
+        "a\u{e9}\u{20ac}\u{1f600}",
+    ] {
+        for operation in 0..3 {
+            let batch = alloc::format!("{prefix}\"tail");
+            let mut scanner = Scanner::from_state(carry(""), &batch);
+            for _ in prefix.chars() {
+                scanner.consume();
+            }
+            // Exercise copying from batch without a previously captured prefix.
+            scanner.scratch = CaptureBuf::Text(String::new());
+            match operation {
+                0 => {
+                    let state = scanner.finish();
+                    assert_eq!(state.test_scratch_text(), Some(prefix));
+                    assert_eq!(state.test_ring_bytes(), b"\"tail");
+                }
+                1 => {
+                    scanner.switch_to_owned_prefix_if_needed();
+                    scanner.switch_to_owned_prefix_if_needed();
+                    assert_eq!(scanner.scratch.as_text_mut(), prefix);
+                }
+                _ => {
+                    scanner.ensure_prefix_copied();
+                    scanner.ensure_prefix_copied();
+                    assert_eq!(scanner.scratch.as_text_mut(), prefix);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn memory_safety_owned_ascii_and_raw_captures() {
+    let mut scanner = Scanner::from_state(carry(""), "ascii\"tail");
+    scanner.switch_to_owned_prefix_if_needed();
+    scanner.ensure_anchor_started();
+    scanner.switch_to_owned_prefix_if_needed();
+    assert_eq!(scanner.consume_string_ascii_fast(), 5);
+    assert!(matches!(scanner.emit(), Capture::Owned(text) if text == "ascii"));
+
+    let mut scanner = Scanner::from_state(carry(""), "abc");
+    scanner.ensure_raw();
+    scanner.push_ascii_to_scratch(b"raw");
+    assert!(matches!(scanner.emit(), Capture::Raw(bytes) if bytes == b"raw"));
+}
+
+#[test]
+#[should_panic(expected = "assertion failed: core::str::from_utf8(slice).is_ok()")]
+fn memory_safety_invalid_utf8_fails_before_unchecked_conversion() {
+    let mut scanner = Scanner::from_state(carry(""), "");
+    scanner.push_ascii_to_scratch(&[0xff]);
+}

@@ -1,0 +1,33 @@
+name: Python memory safety
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  address-sanitizer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python: ['3.9', '3.13']
+    env:
+      JSONMODEM_MEMORY_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify instrumentation and test Python extension
+        run: bash .agent/check-py-memory.sh
+      - name: Save instrumentation failure check
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: address-sanitizer-activation-${{ matrix.python }}
+          path: target/python-memory/asan-failure.log

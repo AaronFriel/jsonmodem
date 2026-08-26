@@ -337,6 +337,10 @@ impl<'src> Scanner<'src> {
                             let slice = &self.batch.as_bytes()[start..end];
                             match &mut self.scratch {
                                 CaptureBuf::Text(s) => {
+                                    #[cfg(any(test, miri))]
+                                    assert!(core::str::from_utf8(slice).is_ok());
+                                    // SAFETY: the anchor and cursor are character boundaries in
+                                    // batch.
                                     s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
                                 }
                                 CaptureBuf::Raw(b) => b.extend_from_slice(slice),
@@ -602,6 +606,9 @@ impl<'src> Scanner<'src> {
                 let slice = &self.batch.as_bytes()[start..end];
                 match &mut self.scratch {
                     CaptureBuf::Text(s) => {
+                        #[cfg(any(test, miri))]
+                        assert!(core::str::from_utf8(slice).is_ok());
+                        // SAFETY: the anchor and cursor are character boundaries in batch.
                         s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
                     }
                     CaptureBuf::Raw(b) => b.extend_from_slice(slice),
@@ -628,6 +635,8 @@ impl<'src> Scanner<'src> {
     fn push_ascii_to_scratch(&mut self, slice: &[u8]) {
         match &mut self.scratch {
             CaptureBuf::Text(s) => {
+                #[cfg(any(test, miri))]
+                assert!(core::str::from_utf8(slice).is_ok());
                 // SAFETY: caller guarantees ASCII, hence valid UTF-8.
                 s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
             }
@@ -652,6 +661,9 @@ impl<'src> Scanner<'src> {
         let slice = &self.batch.as_bytes()[start..self.byte_idx];
         match &mut self.scratch {
             CaptureBuf::Text(s) => {
+                #[cfg(any(test, miri))]
+                assert!(core::str::from_utf8(slice).is_ok());
+                // SAFETY: the anchor and cursor are character boundaries in batch.
                 s.push_str(unsafe { core::str::from_utf8_unchecked(slice) });
             }
             CaptureBuf::Raw(b) => b.extend_from_slice(slice),

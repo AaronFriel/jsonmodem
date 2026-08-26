@@ -24,8 +24,9 @@ payloads are lightweight `StringPayload` objects with `.fragment`,
 `feed()` accepts one `str`, `bytes`, `bytearray`, or contiguous `memoryview`
 chunk, or an iterable of those chunk types. Passing an iterable is the preferred
 way to process many small HTTP or LLM fragments because it uses one Python/Rust
-call while preserving event order. Bytes-like chunks are read through Python's
-buffer protocol for the duration of the call.
+call while preserving event order. Immutable bytes-backed input can be borrowed.
+Mutable buffers and exporters whose storage cannot be verified as immutable are
+copied before parsing, so Python callbacks cannot change text being parsed.
 
 Use constructor options to shape the event stream without switching classes:
 
@@ -42,6 +43,12 @@ object key or array index, for example `"items.*.metadata.etag"`. With
 `memoryview` chunks, or an iterable of those chunks. Unescaped string fragments
 that point into the current input are returned as `memoryview` objects; escaped
 fragments fall back to `str`.
+
+Direct memoryview inputs in this mode must be backed by `bytes`. Other accepted
+read-only exporters are snapshotted into immutable bytes; their payload views
+retain the snapshot rather than the original exporter. Parsing and payloads use
+the same acquired storage even if an exporter returns different buffers on
+successive requests.
 
 ```python
 from jsonmodem import JsonModem, ParserOptions

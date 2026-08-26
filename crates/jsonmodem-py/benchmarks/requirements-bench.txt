@@ -1,4 +1,5 @@
 pyperf
+memray
 orjson
 msgspec
 jiter

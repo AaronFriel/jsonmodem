@@ -117,6 +117,16 @@ terminal.
 
 ## Python bindings
 
+Memory-safety checks are separate from the ordinary test scripts. Run
+`bash .agent/check-miri.sh` for the Rust suite and targeted tests under both Miri
+reference models. Run `bash .agent/check-py-memory.sh` for the Python extension
+under AddressSanitizer. The latter requires Linux x86_64, a Rust nightly
+toolchain, `uv`, `nm` (binutils), a C linker, and a Python interpreter with a
+shared `libpython`. It creates its own environment under `target/python-memory`.
+The existing setup scripts install the Rust and Python development tools;
+`.agent/setup.sh` installs binutils and the linker. See
+`docs/memory-safety-testing.md` for coverage and limitations.
+
 Building and testing the Python bindings is driven by two helper scripts,
 `setup-py.sh` and `check-py.sh`.  `setup-py.sh` installs
 [uv](https://github.com/astral-sh/uv), creates a `.venv` in the repository root,

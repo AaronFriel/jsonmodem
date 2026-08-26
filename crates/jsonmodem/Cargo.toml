@@ -47,6 +47,10 @@ path = "tests/jsonmodem_values/mod.rs"
 name = "fuzz_regressions"
 path = "tests/fuzz_regressions.rs"
 
+[[test]]
+name = "memory_safety"
+path = "tests/memory_safety.rs"
+
 [[example]]
 name = "profile_events"
 path = "examples/profile_events.rs"
